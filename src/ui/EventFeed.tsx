@@ -1,0 +1,65 @@
+import { Flag, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
+import type { BattleEvent } from "../sim/types";
+
+interface EventFeedProps {
+  readonly events: readonly BattleEvent[];
+}
+
+function describeEvent(event: BattleEvent): string | undefined {
+  switch (event.type) {
+    case "contact-spotted":
+      return `${event.observerGroupId} 发现 ${event.targetGroupId}`;
+    case "member-health-changed":
+      if (event.to === "incapacitated") {
+        return `${event.groupId} 有成员失去战斗能力`;
+      }
+      if (event.to === "dead") {
+        return `${event.groupId} 出现阵亡`;
+      }
+      return undefined;
+    case "morale-changed":
+      return event.to === "routing" ? `${event.groupId} 开始撤离` : undefined;
+    case "battle-ended":
+      return event.winnerFactionIds.length > 0 ? "敌对行动结束" : "战斗陷入僵局";
+    case "objective-state-changed": {
+      const labels: Readonly<Record<string, string>> = {
+        capturing: "进攻方开始占领目标",
+        contested: "目标区进入争夺",
+        recovering: "防守方正在恢复目标",
+        "attacker-controlled": "目标已被进攻方占领",
+        "defender-controlled": "防守方重新控制目标",
+      };
+      return labels[event.to] ?? "目标状态发生变化";
+    }
+    default:
+      return undefined;
+  }
+}
+
+function EventIcon({ event }: { readonly event: BattleEvent }) {
+  if (event.type === "contact-spotted") return <Radio size={14} />;
+  if (event.type === "member-health-changed" && event.to === "dead") return <Skull size={14} />;
+  if (event.type === "morale-changed") return <ShieldAlert size={14} />;
+  if (event.type === "objective-state-changed") return <Flag size={14} />;
+  return <Swords size={14} />;
+}
+
+export function EventFeed({ events }: EventFeedProps) {
+  const visible = events
+    .map((event) => ({ event, label: describeEvent(event) }))
+    .filter((item): item is { event: BattleEvent; label: string } => Boolean(item.label))
+    .slice(-3)
+    .reverse();
+
+  return (
+    <div className="event-feed" aria-live="polite">
+      {visible.map(({ event, label }) => (
+        <div className="event-line" key={`${event.tick}-${event.sequence}`}>
+          <EventIcon event={event} />
+          <span>{label}</span>
+          <time>{Math.floor(event.tick / 20)}s</time>
+        </div>
+      ))}
+    </div>
+  );
+}
