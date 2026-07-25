@@ -42,6 +42,7 @@ npm run verify       # check + e2e
 - [设计与工程文档索引](./docs/README.md)
 - [文档上下文与阅读指南](./docs/00-context-guide.md)
 - [当前实现状态](./docs/09-implementation-status.md)
+- [开发 TODO](./docs/14-todo.md)
 - [工程约束](./docs/10-engineering-constraints.md)
 - [模块参考](./docs/11-module-reference.md)
 - [扩展手册](./docs/12-extension-playbook.md)
