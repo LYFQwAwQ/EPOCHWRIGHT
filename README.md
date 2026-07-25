@@ -14,6 +14,10 @@
 
 ## 运行
 
+Windows 可以直接双击仓库根目录的 [`start.bat`](./start.bat)。脚本会检查 Node.js 版本，根据 `package-lock.json` 按需安装依赖，启动开发服务器并打开浏览器。
+
+也可以手动运行：
+
 ```powershell
 npm ci
 npm run dev
