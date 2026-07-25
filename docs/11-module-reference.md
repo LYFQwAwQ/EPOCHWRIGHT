@@ -63,7 +63,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/internal.ts`
 
-模拟私有运行时状态，包括成员、小队、感知、接触、情报队列、网格/掩体占用与目标状态。此文件不是公共 API。
+模拟私有运行时状态，包括成员、小队、感知、接触、情报队列、网格/掩体占用、掩体选择黑板与目标状态。此文件不是公共 API。
 
 新增字段通常还需要更新 `createRuntimeState`、`getStateHash`、结果或检查投影，以及测试。
 
@@ -105,6 +105,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 - 有限感知与延迟情报；
 - 小队 AI、路径和占用；
 - 掩体占用生命周期，以及发现/命中的统一方向效果；
+- 只消费接触快照的防守/压制掩体评分、选择迟滞和无槽位降级；
 - 弹匣、射击意图、伤情与压制；
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
@@ -187,7 +188,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | `ui/Toolbar.tsx` | 模式、暂停、重开、镜头和纯净界面控制 |
 | `ui/FactionSummary.tsx` | 势力有效人数、伤亡与溃散概览 |
 | `ui/ObjectiveSummary.tsx` | 目标状态、语义化进度条和占领力 |
-| `ui/Inspector.tsx` | 选中编组的行动原因、士气、压制、伤情、接触和路线 |
+| `ui/Inspector.tsx` | 选中编组的行动原因、士气、压制、伤情、接触、掩体评估和路线 |
 | `ui/EventFeed.tsx` | 将重要领域事件转换为有限的观察提示 |
 | `styles.css` | 全局工作台布局和桌面/窄屏响应式规则 |
 

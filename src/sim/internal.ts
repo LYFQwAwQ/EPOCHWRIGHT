@@ -3,6 +3,8 @@ import type {
   BattleResult,
   BattleSetup,
   CoverSlotId,
+  CoverEvaluationReason,
+  CoverThreatSource,
   FactionId,
   GridCoord,
   GroupAction,
@@ -43,6 +45,21 @@ export interface ContactState {
   sourceGroupId: GroupId;
 }
 
+export interface CoverThreatState {
+  readonly targetGroupId: GroupId;
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly source: CoverThreatSource;
+}
+
+export interface CoverDecisionState {
+  readonly reason: CoverEvaluationReason;
+  readonly selectedSlotId?: CoverSlotId;
+  score: number;
+  readonly evaluatedAt: Tick;
+  readonly threat?: CoverThreatState;
+}
+
 export interface GroupState {
   readonly id: GroupId;
   readonly factionId: FactionId;
@@ -70,6 +87,7 @@ export interface GroupState {
   localContacts: Map<GroupId, ContactState>;
   searchedContacts: Map<GroupId, Tick>;
   defenseSlot?: GridCoord;
+  coverDecision?: CoverDecisionState;
 }
 
 export interface IntelMessage {

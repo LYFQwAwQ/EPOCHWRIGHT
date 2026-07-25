@@ -155,7 +155,29 @@ interface CoverSlot {
 }
 ```
 
-槽位不是新的地图序列化字段，因此地图仍为 `map-2`。动态 `coverOccupancy` 只保存在模拟状态并进入状态哈希；按需 `GroupInspection.currentCover` 投影槽位稳定 ID、对象、方向、容量和当前覆盖人数，不扩大全量 `RenderFrame`。
+槽位不是新的地图序列化字段，因此地图仍为 `map-2`。动态 `coverOccupancy` 只保存在模拟状态并进入状态哈希；按需 `GroupInspection.currentCover` 投影槽位稳定 ID、对象、方向、容量和当前覆盖人数，不扩大全量 `RenderFrame`。AI 的最后一次掩体评估使用同一按需通道：
+
+```ts
+interface CoverEvaluationInspection {
+  readonly reason:
+    | "defend-objective-cover"
+    | "seek-cover-high-suppression"
+    | "seek-cover-defense"
+    | "hold-cover"
+    | "no-cover-available";
+  readonly selectedSlotId?: string;
+  readonly score: number;
+  readonly evaluatedAt: Tick;
+  readonly threat?: {
+    readonly targetGroupId: GroupId;
+    readonly lastKnown: GridCoord;
+    readonly observedAt: Tick;
+    readonly source: "direct-contact" | "local-contact" | "shared-contact";
+  };
+}
+```
+
+`threat` 只能复制接触快照，不能投影敌军当前真实位置。选择状态参与未来迟滞，因此进入状态哈希；UI 只本地化原因并显示分数，不重新计算候选。
 
 索引统一为 `index = z * width + x`。地图创建后视为只读，动态占用、接触和临时效果放在模拟状态中。
 
@@ -499,4 +521,4 @@ interface BattleResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前 `BattleSetup` schema 为 `stage-2`，规则为 `stage-2.3`，地图为 `map-2`。`stage-2.3` 在不改变地图结构的前提下加入静态对象掩体槽位、权威占用以及方向性发现/命中语义；旧 rules 输入仍明确拒绝。
+当前 `BattleSetup` schema 为 `stage-2`，规则为 `stage-2.4`，地图为 `map-2`。`stage-2.4` 在既有静态槽位上加入有限情报掩体评分、选择迟滞和可解释检查投影；旧 rules 输入仍明确拒绝。

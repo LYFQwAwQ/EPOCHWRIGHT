@@ -1,7 +1,7 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
-export const BATTLE_RULES_VERSION = "stage-2.3" as const;
+export const BATTLE_RULES_VERSION = "stage-2.4" as const;
 export const BATTLE_MAP_SCHEMA_VERSION = "map-2" as const;
 
 export const SURFACE_TYPE_IDS = {
@@ -113,6 +113,33 @@ export interface CoverInspection {
   readonly facing: StaticObjectFacing;
   readonly capacity: number;
   readonly coveredMembers: number;
+}
+
+export type CoverEvaluationReason =
+  | "defend-objective-cover"
+  | "seek-cover-high-suppression"
+  | "seek-cover-defense"
+  | "hold-cover"
+  | "no-cover-available";
+
+export type CoverThreatSource =
+  | "direct-contact"
+  | "local-contact"
+  | "shared-contact";
+
+export interface CoverThreatInspection {
+  readonly targetGroupId: GroupId;
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly source: CoverThreatSource;
+}
+
+export interface CoverEvaluationInspection {
+  readonly reason: CoverEvaluationReason;
+  readonly selectedSlotId?: CoverSlotId;
+  readonly score: number;
+  readonly evaluatedAt: Tick;
+  readonly threat?: CoverThreatInspection;
 }
 
 export interface BattleMapLayers {
@@ -315,6 +342,7 @@ export interface GroupInspection {
   readonly path: readonly GridCoord[];
   readonly defenseSlot?: GridCoord;
   readonly currentCover?: CoverInspection;
+  readonly coverEvaluation?: CoverEvaluationInspection;
 }
 
 export interface MemberInspection {

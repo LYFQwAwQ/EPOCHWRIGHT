@@ -295,6 +295,17 @@ test("defense mode renders its objective zone and semantic HUD", async ({ page }
   await expect(progress).toHaveAttribute("aria-valuemax", "100");
   await expect(progress).toHaveAttribute("aria-valuenow", "0");
 
+  const defenderGroup = await page.evaluate(() => {
+    const groupId = window.__battleTest
+      ?.getGroupIds()
+      .find((candidate) => candidate.startsWith("azure-"));
+    window.__battleTest?.selectGroup(groupId);
+    return groupId;
+  });
+  expect(defenderGroup).toBeTruthy();
+  await expect(page.locator(".panel-heading--unit strong")).toHaveText(defenderGroup!);
+  await expect(page.getByText("掩体评估", { exact: true })).toBeVisible();
+
   const metrics = await readCanvasMetrics(page);
   expect(metrics.luminanceRange).toBeGreaterThan(35);
   expect(metrics.quantizedColors).toBeGreaterThan(12);

@@ -16,6 +16,8 @@ import {
 } from "./cover";
 import type {
   ContactState,
+  CoverDecisionState,
+  CoverThreatState,
   GroupState,
   HitIntent,
   IntelMessage,
@@ -39,6 +41,7 @@ import type {
   BattleSetup,
   BattleSimulation,
   BattleTerminationReason,
+  CoverEvaluationReason,
   CoverSlot,
   DirectionalCoverEffect,
   EntityInspection,
@@ -67,6 +70,10 @@ const MOVEMENT_REPATH_WAIT_TICKS = 5;
 const MOVEMENT_REPATH_RETRY_TICKS = 20;
 const DETECTION_THRESHOLD_BPS = 10_000;
 const DIRECT_CONTACT_FRESH_TICKS = 0;
+const HIGH_SUPPRESSION_COVER_THRESHOLD_BPS = 7_200;
+const COVER_SEARCH_RADIUS_CELLS = 6;
+const COVER_CURRENT_SLOT_BONUS = 900;
+const COVER_SELECTED_SLOT_BONUS = 450;
 const GROUP_SLOT_OFFSETS: readonly (readonly [number, number])[] = [
   [-0.27, -0.25],
   [0, -0.29],
@@ -104,6 +111,14 @@ interface SuppressionImpact {
   hits: number;
 }
 
+interface CoverOption {
+  readonly slot: CoverSlot;
+  readonly path: readonly GridCoord[];
+  readonly pathCost: number;
+  readonly score: number;
+  readonly effect: DirectionalCoverEffect;
+}
+
 type PendingBattleEvent = BattleEvent extends infer Event
   ? Event extends BattleEvent
     ? Omit<Event, "tick" | "sequence">
@@ -119,6 +134,7 @@ export const createBattleSimulation = createSimulation;
 class StageOneBattleSimulation implements BattleSimulation {
   private readonly setup: BattleSetup;
   private readonly state: RuntimeState;
+  private readonly coverSlots: readonly CoverSlot[];
   private readonly coverSlotsByCell: ReadonlyMap<number, CoverSlot>;
   private readonly pathfinder: Pathfinder;
   private readonly walkableComponentIds: Int32Array;
@@ -128,8 +144,9 @@ class StageOneBattleSimulation implements BattleSimulation {
     validateBattleSetup(inputSetup);
     this.setup = cloneSetup(inputSetup);
     this.setupHash = hashBattleSetup(this.setup);
+    this.coverSlots = buildCoverSlots(this.setup.map);
     this.coverSlotsByCell = new Map(
-      buildCoverSlots(this.setup.map).map((slot) => [cellIndex(this.setup.map, slot.cell), slot]),
+      this.coverSlots.map((slot) => [cellIndex(this.setup.map, slot.cell), slot]),
     );
     this.state = createRuntimeState(this.setup, this.coverSlotsByCell);
     this.pathfinder = createPathfinder(this.setup.map);
@@ -285,6 +302,15 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(group.defenseSlot?.z ?? -1);
       hasher.addString(group.currentTargetId ?? "");
       hasher.addString(group.decisionReason);
+      hasher.addString(group.coverDecision?.reason ?? "");
+      hasher.addString(group.coverDecision?.selectedSlotId ?? "");
+      hasher.addNumber(group.coverDecision?.score ?? 0);
+      hasher.addNumber(group.coverDecision?.evaluatedAt ?? -1);
+      hasher.addString(group.coverDecision?.threat?.targetGroupId ?? "");
+      hasher.addNumber(group.coverDecision?.threat?.lastKnown.x ?? -1);
+      hasher.addNumber(group.coverDecision?.threat?.lastKnown.z ?? -1);
+      hasher.addNumber(group.coverDecision?.threat?.observedAt ?? -1);
+      hasher.addString(group.coverDecision?.threat?.source ?? "");
       for (const member of group.members) {
         hasher.addString(member.id);
         hasher.addString(member.health);
@@ -420,6 +446,8 @@ class StageOneBattleSimulation implements BattleSimulation {
             objective.center,
             preferredRadius,
             assigned,
+            this.coverSlotsByCell.get(cellIndex(this.setup.map, b)),
+            activeMemberCount(group),
           ) -
           defenseSlotScore(
             this.setup.map,
@@ -427,12 +455,32 @@ class StageOneBattleSimulation implements BattleSimulation {
             objective.center,
             preferredRadius,
             assigned,
+            this.coverSlotsByCell.get(cellIndex(this.setup.map, a)),
+            activeMemberCount(group),
           );
         return scoreDifference || cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b);
       });
       const slot = reachable[0] ?? objective.center;
       group.defenseSlot = { ...slot };
       assigned.push({ ...slot });
+      const coverSlot = this.coverSlotsByCell.get(cellIndex(this.setup.map, slot));
+      group.coverDecision = coverSlot
+        ? {
+            reason: "defend-objective-cover",
+            selectedSlotId: coverSlot.id,
+            score: coverTacticalScore(
+              undirectedCoverEffect(coverSlot, activeMemberCount(group)),
+              0,
+              false,
+              false,
+            ),
+            evaluatedAt: this.state.tick,
+          }
+        : {
+            reason: "no-cover-available",
+            score: 0,
+            evaluatedAt: this.state.tick,
+          };
     });
   }
 
@@ -604,12 +652,14 @@ class StageOneBattleSimulation implements BattleSimulation {
       group.goal = undefined;
       group.path = [];
       group.currentTargetId = undefined;
+      group.coverDecision = undefined;
       return;
     }
     if (group.moraleState === "routing") {
       group.action = "routing";
       group.decisionReason = "low-morale";
       group.currentTargetId = undefined;
+      group.coverDecision = undefined;
       this.assignGoal(group, group.evacuation);
       return;
     }
@@ -618,19 +668,93 @@ class StageOneBattleSimulation implements BattleSimulation {
     const isDefender = objective?.defenderFactionId === group.factionId;
     const isAttacker = objective?.attackerFactionId === group.factionId;
     const directTarget = this.chooseDirectTarget(group);
+    const directContact = directTarget
+      ? group.localContacts.get(directTarget.id)
+      : undefined;
+    const bestContact = directContact ?? this.chooseBestKnownContact(group);
+    const coverThreat = bestContact
+      ? this.createCoverThreat(group, bestContact)
+      : undefined;
+    const defenseConstraint =
+      isDefender && objective
+        ? { center: objective.center, radiusCells: objective.radiusCells + 5 }
+        : undefined;
+    let holdingSuppressionCover = false;
+
+    if (
+      group.suppressionBps >= HIGH_SUPPRESSION_COVER_THRESHOLD_BPS &&
+      coverThreat
+    ) {
+      const coverOption = this.findBestCoverOption(
+        group,
+        coverThreat,
+        defenseConstraint,
+        COVER_SEARCH_RADIUS_CELLS,
+        false,
+      );
+      if (coverOption) {
+        if (this.isCurrentCoverOption(group, coverOption)) {
+          this.recordCoverDecision(group, "hold-cover", coverOption, coverThreat);
+          holdingSuppressionCover = true;
+        } else {
+          this.moveToCover(
+            group,
+            coverOption,
+            "seek-cover-high-suppression",
+            coverThreat,
+          );
+          return;
+        }
+      } else {
+        this.recordCoverDecision(group, "no-cover-available", undefined, coverThreat);
+      }
+    }
+
     if (directTarget) {
       const distanceSquared = squaredGridDistance(group.cell, directTarget.cell);
-      if (group.suppressionBps >= 7_200) {
+      if (
+        group.suppressionBps < HIGH_SUPPRESSION_COVER_THRESHOLD_BPS &&
+        isDefender &&
+        coverThreat
+      ) {
+        const currentCover = this.getDirectionalCover(group, coverThreat.lastKnown);
+        if (!currentCover || currentCover.effect.protectionBps < 1_000) {
+          const coverOption = this.findBestCoverOption(
+            group,
+            coverThreat,
+            defenseConstraint,
+            COVER_SEARCH_RADIUS_CELLS,
+            true,
+          );
+          if (coverOption) {
+            if (this.isCurrentCoverOption(group, coverOption)) {
+              this.recordCoverDecision(group, "hold-cover", coverOption, coverThreat);
+            } else {
+              this.moveToCover(group, coverOption, "seek-cover-defense", coverThreat);
+              return;
+            }
+          } else {
+            this.recordCoverDecision(group, "no-cover-available", undefined, coverThreat);
+          }
+        } else {
+          const currentOption = this.coverOptionAtCurrentCell(group, coverThreat);
+          if (currentOption) {
+            this.recordCoverDecision(group, "hold-cover", currentOption, coverThreat);
+          }
+        }
+      }
+      if (
+        group.suppressionBps >= HIGH_SUPPRESSION_COVER_THRESHOLD_BPS &&
+        !holdingSuppressionCover
+      ) {
         const saferCell = this.findSaferAdjacentCell(
           group,
-          directTarget.cell,
-          isDefender && objective
-            ? { center: objective.center, radiusCells: objective.radiusCells + 5 }
-            : undefined,
+          coverThreat?.lastKnown ?? directTarget.cell,
+          defenseConstraint,
         );
         if (saferCell) {
           group.action = "moving-to-contact";
-          group.decisionReason = "preferred-range";
+          group.decisionReason = "avoid-threat-high-suppression";
           group.currentTargetId = directTarget.id;
           this.assignGoal(group, saferCell);
           return;
@@ -674,7 +798,6 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
 
-    const bestContact = this.chooseBestKnownContact(group);
     const contactSupportsObjective =
       !bestContact ||
       !isAttacker ||
@@ -727,7 +850,11 @@ class StageOneBattleSimulation implements BattleSimulation {
   ): void {
     const slot = group.defenseSlot ?? objective.center;
     group.currentTargetId = undefined;
-    if (squaredGridDistance(group.cell, slot) <= 1) {
+    const assignedCover = this.coverSlotsByCell.get(cellIndex(this.setup.map, slot));
+    const reachedSlot = assignedCover
+      ? sameCoord(group.cell, slot)
+      : squaredGridDistance(group.cell, slot) <= 1;
+    if (reachedSlot) {
       group.action = "searching";
       group.decisionReason = "defend-objective";
       group.goal = undefined;
@@ -1551,6 +1678,188 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
   }
 
+  private createCoverThreat(
+    group: GroupState,
+    contact: ContactState,
+  ): CoverThreatState {
+    return {
+      targetGroupId: contact.targetGroupId,
+      lastKnown: { ...contact.lastKnown },
+      observedAt: contact.observedAt,
+      source:
+        this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS
+          ? "direct-contact"
+          : contact.sourceGroupId === group.id
+            ? "local-contact"
+            : "shared-contact",
+    };
+  }
+
+  private findBestCoverOption(
+    group: GroupState,
+    threat: CoverThreatState,
+    constraint: { readonly center: GridCoord; readonly radiusCells: number } | undefined,
+    maximumRadius: number,
+    requireWeaponRange: boolean,
+  ): CoverOption | undefined {
+    const pathStart = group.movingTo ?? group.cell;
+    const blocked = this.getStationaryFriendlyBlockedCellIndices(group);
+    const options: CoverOption[] = [];
+
+    for (const slot of this.coverSlots) {
+      if (
+        squaredGridDistance(group.cell, slot.cell) > maximumRadius ** 2 ||
+        (constraint &&
+          squaredGridDistance(slot.cell, constraint.center) > constraint.radiusCells ** 2)
+      ) {
+        continue;
+      }
+      const slotIndex = cellIndex(this.setup.map, slot.cell);
+      const occupyingGroupId = this.state.occupancy.get(slotIndex);
+      const reservingGroupId = this.state.reservations.get(slotIndex);
+      const coverOccupantId = this.state.coverOccupancy.get(slot.id);
+      if (
+        sameCoord(slot.cell, threat.lastKnown) ||
+        this.isFriendlyGroupOccupant(group, occupyingGroupId) ||
+        this.isFriendlyGroupOccupant(group, reservingGroupId) ||
+        this.isFriendlyGroupOccupant(group, coverOccupantId)
+      ) {
+        continue;
+      }
+
+      const effect = resolveDirectionalCoverEffect(
+        slot,
+        activeMemberCount(group),
+        threat.lastKnown,
+      );
+      if (effect.protectionBps === 0 && effect.concealmentBps === 0) {
+        continue;
+      }
+      if (
+        requireWeaponRange &&
+        (squaredGridDistance(slot.cell, threat.lastKnown) >
+          this.setup.rules.weaponRangeCells ** 2 ||
+          !hasLineOfSight(this.setup.map, slot.cell, threat.lastKnown, {
+            ignoredStaticObjectCells: [slot.objectCell],
+          }))
+      ) {
+        continue;
+      }
+
+      const path = sameCoord(pathStart, slot.cell)
+        ? [{ ...slot.cell }]
+        : this.pathfinder.findPath(pathStart, slot.cell, blocked);
+      if (path.length === 0) {
+        continue;
+      }
+      const pathCost = path.length === 1 ? 0 : pathMovementCost(this.setup.map, path);
+      options.push({
+        slot,
+        path,
+        pathCost,
+        effect,
+        score: coverTacticalScore(
+          effect,
+          pathCost,
+          this.getCurrentCoverSlot(group)?.id === slot.id,
+          group.coverDecision?.selectedSlotId === slot.id,
+        ),
+      });
+    }
+
+    return options.sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.pathCost - b.pathCost ||
+        compareStrings(a.slot.id, b.slot.id),
+    )[0];
+  }
+
+  private coverOptionAtCurrentCell(
+    group: GroupState,
+    threat: CoverThreatState,
+  ): CoverOption | undefined {
+    const slot = this.getCurrentCoverSlot(group);
+    if (!slot) {
+      return undefined;
+    }
+    const effect = resolveDirectionalCoverEffect(
+      slot,
+      activeMemberCount(group),
+      threat.lastKnown,
+    );
+    return {
+      slot,
+      path: [{ ...group.cell }],
+      pathCost: 0,
+      effect,
+      score: coverTacticalScore(
+        effect,
+        0,
+        true,
+        group.coverDecision?.selectedSlotId === slot.id,
+      ),
+    };
+  }
+
+  private isFriendlyGroupOccupant(
+    group: GroupState,
+    occupantGroupId: GroupId | undefined,
+  ): boolean {
+    return Boolean(
+      occupantGroupId &&
+        occupantGroupId !== group.id &&
+        this.state.groupsById.get(occupantGroupId)?.factionId === group.factionId,
+    );
+  }
+
+  private isCurrentCoverOption(group: GroupState, option: CoverOption): boolean {
+    return (
+      sameCoord(group.cell, option.slot.cell) &&
+      this.getCurrentCoverSlot(group)?.id === option.slot.id
+    );
+  }
+
+  private moveToCover(
+    group: GroupState,
+    option: CoverOption,
+    reason: Extract<
+      CoverEvaluationReason,
+      "seek-cover-high-suppression" | "seek-cover-defense"
+    >,
+    threat: CoverThreatState,
+  ): void {
+    this.recordCoverDecision(group, reason, option, threat);
+    group.action = "moving-to-contact";
+    group.decisionReason = reason;
+    group.currentTargetId = threat.targetGroupId;
+    group.goal = { ...option.slot.cell };
+    group.pathGoal = { ...option.slot.cell };
+    group.path = option.path.map((coord) => ({ ...coord }));
+    group.waitAge = 0;
+  }
+
+  private recordCoverDecision(
+    group: GroupState,
+    reason: CoverEvaluationReason,
+    option?: CoverOption,
+    threat?: CoverThreatState,
+  ): void {
+    const decision: CoverDecisionState = {
+      reason,
+      selectedSlotId: option?.slot.id,
+      score: option?.score ?? 0,
+      evaluatedAt: this.state.tick,
+      threat: threat
+        ? {
+            ...threat,
+            lastKnown: { ...threat.lastKnown },
+          }
+        : undefined,
+    };
+    group.coverDecision = decision;
+  }
+
   private getCurrentCoverSlot(group: GroupState): CoverSlot | undefined {
     const slot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
     return slot && this.state.coverOccupancy.get(slot.id) === group.id ? slot : undefined;
@@ -1697,6 +2006,20 @@ class StageOneBattleSimulation implements BattleSimulation {
             facing: currentCover.facing,
             capacity: currentCover.capacity,
             coveredMembers: Math.min(currentCover.capacity, activeMemberCount(group)),
+          }
+        : undefined,
+      coverEvaluation: group.coverDecision
+        ? {
+            reason: group.coverDecision.reason,
+            selectedSlotId: group.coverDecision.selectedSlotId,
+            score: group.coverDecision.score,
+            evaluatedAt: group.coverDecision.evaluatedAt,
+            threat: group.coverDecision.threat
+              ? {
+                  ...group.coverDecision.threat,
+                  lastKnown: { ...group.coverDecision.threat.lastKnown },
+                }
+              : undefined,
           }
         : undefined,
     };
@@ -2084,6 +2407,8 @@ function defenseSlotScore(
   objectiveCenter: GridCoord,
   preferredRadius: number,
   assignedSlots: readonly GridCoord[],
+  coverSlot: CoverSlot | undefined,
+  activeMembers: number,
 ): number {
   const index = cellIndex(map, candidate);
   const elevationScore = (map.layers.heightUnits[index] ?? 0) * 180;
@@ -2098,5 +2423,44 @@ function defenseSlotScore(
       : Math.min(
           ...assignedSlots.map((slot) => squaredGridDistance(candidate, slot)),
         ) * 55;
-  return elevationScore + movementScore + formationScore + dispersionScore;
+  const coverScore = coverSlot
+    ? coverTacticalScore(
+        undirectedCoverEffect(coverSlot, activeMembers),
+        0,
+        false,
+        false,
+      )
+    : 0;
+  return elevationScore + movementScore + formationScore + dispersionScore + coverScore;
+}
+
+function undirectedCoverEffect(
+  slot: CoverSlot,
+  activeMembers: number,
+): DirectionalCoverEffect {
+  const coveredMembers = Math.min(slot.capacity, Math.max(0, activeMembers));
+  const capacityScaleBps =
+    activeMembers > 0 ? Math.round((coveredMembers * 10_000) / activeMembers) : 0;
+  return {
+    aspect: "front",
+    coveredMembers,
+    protectionBps: Math.round((slot.protectionBps * capacityScaleBps) / 10_000),
+    concealmentBps: Math.round((slot.concealmentBps * capacityScaleBps) / 10_000),
+  };
+}
+
+function coverTacticalScore(
+  effect: DirectionalCoverEffect,
+  pathCost: number,
+  currentSlot: boolean,
+  previouslySelected: boolean,
+): number {
+  return (
+    effect.protectionBps * 2 +
+    effect.concealmentBps +
+    effect.coveredMembers * 180 -
+    Math.floor(pathCost / 3) +
+    (currentSlot ? COVER_CURRENT_SLOT_BONUS : 0) +
+    (previouslySelected ? COVER_SELECTED_SLOT_BONUS : 0)
+  );
 }

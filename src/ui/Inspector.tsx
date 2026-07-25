@@ -1,4 +1,4 @@
-import { Activity, Radio, Route, ShieldAlert, Target } from "lucide-react";
+import { Activity, Radio, Route, ShieldAlert, ShieldCheck, Target } from "lucide-react";
 import type { GroupInspection, RenderFrame } from "../sim/types";
 
 interface InspectorProps {
@@ -22,6 +22,9 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "direct-contact": "直接发现敌方",
   "shared-contact": "响应共享情报",
   "preferred-range": "保持有效射程",
+  "seek-cover-high-suppression": "高压制下转移至掩体",
+  "seek-cover-defense": "调整防守掩体",
+  "avoid-threat-high-suppression": "无可用掩体，避开已知威胁",
   "clear-line-of-fire": "绕开友军射线",
   "low-morale": "士气低落，向出口撤离",
   "no-active-members": "无可作战成员",
@@ -30,6 +33,48 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "assault-objective": "在交火中突击目标区",
   "capture-objective": "驻留目标区并完成占领",
 };
+
+const coverReasonLabels: Readonly<Record<string, string>> = {
+  "defend-objective-cover": "目标区防守选位",
+  "seek-cover-high-suppression": "高压制换位",
+  "seek-cover-defense": "根据已知威胁调整",
+  "hold-cover": "保持当前掩体",
+  "no-cover-available": "没有合法掩体槽位",
+};
+
+const coverKindLabels: Readonly<Record<string, string>> = {
+  tree: "树木",
+  rock: "岩石",
+  wall: "墙体",
+};
+
+const threatSourceLabels: Readonly<Record<string, string>> = {
+  "direct-contact": "直接接触",
+  "local-contact": "本组最后已知",
+  "shared-contact": "共享情报",
+};
+
+function currentCoverLabel(inspection: GroupInspection): string {
+  const cover = inspection.currentCover;
+  if (!cover) {
+    return "未占用掩体";
+  }
+  const kind = coverKindLabels[cover.staticObjectKind] ?? cover.staticObjectKind;
+  return `${kind} ${cover.coveredMembers}/${cover.capacity}`;
+}
+
+function coverEvaluationSummary(inspection: GroupInspection): string | undefined {
+  const evaluation = inspection.coverEvaluation;
+  if (!evaluation) {
+    return undefined;
+  }
+  const reason = coverReasonLabels[evaluation.reason] ?? evaluation.reason;
+  if (!evaluation.threat) {
+    return reason;
+  }
+  const source = threatSourceLabels[evaluation.threat.source] ?? evaluation.threat.source;
+  return `${reason} · ${source} ${evaluation.threat.lastKnown.x},${evaluation.threat.lastKnown.z}`;
+}
 
 function Meter({ value, tone }: { readonly value: number; readonly tone: "morale" | "suppression" }) {
   return (
@@ -77,6 +122,7 @@ function Overview({ frame }: { readonly frame: RenderFrame }) {
 }
 
 export function Inspector({ inspection, frame, factionNames, factionColors }: InspectorProps) {
+  const coverSummary = inspection ? coverEvaluationSummary(inspection) : undefined;
   return (
     <aside className={`inspector-panel ${inspection ? "" : "inspector-panel--overview"}`}>
       {!inspection ? (
@@ -97,6 +143,18 @@ export function Inspector({ inspection, frame, factionNames, factionColors }: In
             <strong className="action-label">{actionLabels[inspection.action] ?? inspection.action}</strong>
             <p>{reasonLabels[inspection.decisionReason] ?? inspection.decisionReason}</p>
           </section>
+
+          {(inspection.currentCover || inspection.coverEvaluation) && (
+            <section className="inspector-section">
+              <div className="section-title">
+                <ShieldCheck size={15} />
+                <span>掩体评估</span>
+                {inspection.coverEvaluation && <b>{inspection.coverEvaluation.score} 分</b>}
+              </div>
+              <strong className="action-label">{currentCoverLabel(inspection)}</strong>
+              {coverSummary && <p>{coverSummary}</p>}
+            </section>
+          )}
 
           <section className="inspector-section">
             <div className="metric-label">
