@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BATTLE_MAP_SCHEMA_VERSION,
+  SURFACE_TYPE_IDS,
+  WATER_DEPTH_UNITS,
   createBattleSetup,
   createPathfinder,
   createSimulation,
+  isWalkable,
   resolveObjectiveTick,
   squaredGridDistance,
   type BattleMap,
@@ -31,8 +35,7 @@ describe("defense mode", () => {
       throw new Error("Expected a defense setup.");
     }
     const objective = defense.mode.objective;
-    const objectiveIndex = objective.center.z * defense.map.width + objective.center.x;
-    expect(defense.map.walkable[objectiveIndex]).toBe(1);
+    expect(isWalkable(defense.map, objective.center)).toBe(true);
     const pathfinder = createPathfinder(defense.map);
     for (const group of defense.groups.filter((group) => group.factionId === "ember")) {
       expect(pathfinder.findPath(group.spawn, objective.center).length).toBeGreaterThan(0);
@@ -54,11 +57,11 @@ describe("defense mode", () => {
   });
 
   it("chooses elevated low-cost, distinct defense slots and stays near the objective", () => {
-    const map = createFlatMap(40, 24, 20);
+    const map = createFlatMap(40, 24, SURFACE_TYPE_IDS.mud);
     const preferredSlot = { x: 20, z: 11 };
     const preferredIndex = preferredSlot.z * map.width + preferredSlot.x;
-    map.heightUnits[preferredIndex] = 20;
-    map.movementCosts[preferredIndex] = 10;
+    map.layers.heightUnits[preferredIndex] = 20;
+    map.layers.surfaceTypeIds[preferredIndex] = SURFACE_TYPE_IDS.grass;
     const setup = createDefenseSetup(
       map,
       { x: 20, z: 12 },
@@ -298,16 +301,24 @@ function createDefenseSetup(
   };
 }
 
-function createFlatMap(width: number, height: number, movementCost = 10): BattleMap {
+function createFlatMap(
+  width: number,
+  height: number,
+  surfaceTypeId: number = SURFACE_TYPE_IDS.grass,
+): BattleMap {
   const size = width * height;
   return {
+    schemaVersion: BATTLE_MAP_SCHEMA_VERSION,
     width,
     height,
     cellSizeMm: 4_000,
     heightUnitMm: 500,
-    heightUnits: new Int16Array(size),
-    walkable: new Uint8Array(size).fill(1),
-    movementCosts: new Uint8Array(size).fill(movementCost),
+    layers: {
+      heightUnits: new Int16Array(size),
+      surfaceTypeIds: new Uint16Array(size).fill(surfaceTypeId),
+      waterDepthUnits: new Uint8Array(size).fill(WATER_DEPTH_UNITS.none),
+      cellFlags: new Uint16Array(size),
+    },
   };
 }
 

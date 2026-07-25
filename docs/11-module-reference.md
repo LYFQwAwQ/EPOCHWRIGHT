@@ -52,7 +52,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/types.ts`
 
-公共领域契约。包含战斗输入、模式判别联合、渲染帧、事件、检查结果、最终结果和 `BattleSimulation` 接口。
+公共领域契约。包含版本常量、标准地图图层、战斗输入、模式判别联合、渲染帧、事件、检查结果、最终结果和 `BattleSimulation` 接口。
 
 修改时需要检查：
 
@@ -69,19 +69,19 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/setup.ts`
 
-负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。当前在这里固定两势力、八人小队和单目标防守。
+负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离和目标位置都使用步行通行规则；`hashBattleSetup` 为全部静态规则输入生成确定性摘要。当前在这里固定两势力、八人小队和单目标防守。
 
 未来外部城市系统接入后，随机演示生成器与标准输入验证应拆分，但所有来源仍必须走同一个验证器。
 
 ### `src/sim/map.ts`
 
-包含当前随机高度地图生成、网格索引、可通行查询、高度查询、视线和距离函数。地图数据使用 TypedArray，索引为 `z * width + x`。
+包含当前随机高度与基础地表生成、地图验证与哈希、网格索引、步行成本投影、可通行查询、高度查询、视线和距离函数。`map-1` 使用嵌套 TypedArray 图层，索引为 `z * width + x`。
 
-长期组合地形应增加标准化图层，而不是把沙地、沼泽等编码进高度值。
+地表类型和水深是正交权威数据；沼泽由泥地与浅水组合表达。地面阻挡标志独立于步行可通行性，深水不会因此被误当成视线障碍。
 
 ### `src/sim/pathfinder.ts`
 
-对 EasyStar.js 的内部封装，提供八方向 A*、禁止斜穿和移动成本。其他模块应依赖 `Pathfinder` 接口，不直接使用 EasyStar API。
+对 EasyStar.js 的内部封装，提供八方向 A*、禁止斜穿和移动成本。路径网格与实际移动步骤通过同一个地表×水深成本矩阵取值，A* 成本按最低正成本归一化以保持启发式可采纳。其他模块应依赖 `Pathfinder` 接口，不直接使用 EasyStar API。
 
 未来更换分层寻路或路径缓存时，公共调用方和规则测试可以保持稳定。
 
@@ -104,6 +104,8 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
 - 渲染帧、检查结果、最终结果和状态哈希。
+
+完整静态 setup 摘要在模拟初始化时计算一次并进入状态哈希，覆盖地图、部署、模式和规则参数，同时避免 Worker 每次发布帧时重新遍历全部输入。`getSetup()` 返回深拷贝快照，外部不能通过 TypedArray 修改运行时地图。
 
 该文件较大，但不能按代码长度直接拆分。拆分时先提取没有状态所有权的纯规则，再通过固定场景哈希证明行为未变。
 
@@ -161,7 +163,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | 文件 | 职责 |
 | --- | --- |
 | `render/Battlefield.tsx` | Canvas、灯光、雾、正交镜头、镜头控制和场景组合 |
-| `render/Terrain.tsx` | 高度地形网格、网格线、程序化岩石与植被 |
+| `render/Terrain.tsx` | 高度地形网格、标准地表/水深顶点色、程序化岩石与植被 |
 | `render/Units.tsx` | 成员实例、编组标记、选择反馈和位置插值 |
 | `render/Objectives.tsx` | 贴合地形的目标区域、边界、进度环和旗标 |
 | `render/ShotEffects.tsx` | 从射击事件抽样生成非权威曳光和弹着闪光 |
@@ -183,7 +185,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 ## 8. 测试设施
 
-- `src/sim/*.test.ts`：Node 环境 Vitest，覆盖纯规则、确定性和完整场景。
+- `src/sim/*.test.ts`：Node 环境 Vitest，覆盖地图图层与移动规则、确定性和完整场景。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
 - `src/test-api.d.ts`：仅声明 E2E 调试桥。
 - `scripts/run-e2e.mjs`：复用或启动 `4173` 端口 Vite，并可靠清理子进程。

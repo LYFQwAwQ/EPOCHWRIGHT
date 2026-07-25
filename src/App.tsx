@@ -176,6 +176,29 @@ export function App() {
       getStatus: () => state.status,
       getMode: () => state.setup?.mode.kind ?? battleMode,
       getBattleId: () => state.setup?.battleId ?? "",
+      getMapLayerSummary: () => {
+        const map = state.setup?.map;
+        if (!map) {
+          return undefined;
+        }
+        const { heightUnits, surfaceTypeIds, waterDepthUnits, cellFlags } = map.layers;
+        return {
+          schemaVersion: map.schemaVersion,
+          cellCount: map.width * map.height,
+          layerLengths: [
+            heightUnits.length,
+            surfaceTypeIds.length,
+            waterDepthUnits.length,
+            cellFlags.length,
+          ],
+          surfaceTypeCount: new Set(surfaceTypeIds).size,
+          layersAreTypedArrays:
+            heightUnits instanceof Int16Array &&
+            surfaceTypeIds instanceof Uint16Array &&
+            waterDepthUnits instanceof Uint8Array &&
+            cellFlags instanceof Uint16Array,
+        };
+      },
       getObjectives: () => state.frame?.objectives ?? [],
       getGroupIds: () => state.frame?.groups.map((group) => group.id) ?? [],
       getEventTypes: () => state.events.map((event) => event.type),

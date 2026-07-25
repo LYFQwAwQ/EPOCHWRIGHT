@@ -8,7 +8,12 @@ import {
   Object3D,
   Uint32BufferAttribute,
 } from "three";
-import type { BattleMap } from "../sim/types";
+import {
+  MAP_CELL_FLAGS,
+  SURFACE_TYPE_IDS,
+  WATER_DEPTH_UNITS,
+  type BattleMap,
+} from "../sim";
 
 interface TerrainProps {
   readonly map: BattleMap;
@@ -17,19 +22,36 @@ interface TerrainProps {
 const ROCK_COLOR = "#66706e";
 const SHRUB_COLOR = "#4f6b4f";
 
-function terrainColor(height: number, walkable: boolean, movementCost: number): Color {
-  if (!walkable) {
+function terrainColor(
+  height: number,
+  surfaceTypeId: number,
+  waterDepthUnits: number,
+  cellFlags: number,
+): Color {
+  if (waterDepthUnits === WATER_DEPTH_UNITS.deep) {
+    return new Color(0.12, 0.27, 0.34);
+  }
+  if (waterDepthUnits === WATER_DEPTH_UNITS.shallow) {
+    return new Color(0.2, 0.39, 0.42);
+  }
+  if ((cellFlags & MAP_CELL_FLAGS.groundBlocked) !== 0) {
     const shade = 0.32 + Math.min(0.16, height * 0.006);
     return new Color(shade * 0.92, shade, shade * 0.98);
   }
 
-  const dry = Math.min(1, Math.max(0, (movementCost - 10) / 10));
   const lift = Math.min(0.12, height * 0.004);
-  return new Color(
-    0.25 + dry * 0.16 + lift,
-    0.39 - dry * 0.05 + lift,
-    0.27 - dry * 0.08 + lift,
-  );
+  switch (surfaceTypeId) {
+    case SURFACE_TYPE_IDS.sand:
+      return new Color(0.48 + lift, 0.43 + lift, 0.27 + lift * 0.5);
+    case SURFACE_TYPE_IDS.mud:
+      return new Color(0.3 + lift, 0.29 + lift * 0.7, 0.21 + lift * 0.4);
+    case SURFACE_TYPE_IDS.rock:
+      return new Color(0.36 + lift, 0.39 + lift, 0.38 + lift);
+    case SURFACE_TYPE_IDS.paved:
+      return new Color(0.33 + lift, 0.35 + lift, 0.34 + lift);
+    default:
+      return new Color(0.25 + lift, 0.39 + lift, 0.27 + lift);
+  }
 }
 
 function buildTerrainGeometry(map: BattleMap): BufferGeometry {
@@ -44,11 +66,12 @@ function buildTerrainGeometry(map: BattleMap): BufferGeometry {
     for (let x = 0; x < map.width; x += 1) {
       const index = z * map.width + x;
       const offset = index * 3;
-      const height = map.heightUnits[index] ?? 0;
+      const height = map.layers.heightUnits[index] ?? 0;
       const color = terrainColor(
         height,
-        map.walkable[index] === 1,
-        map.movementCosts[index] ?? 10,
+        map.layers.surfaceTypeIds[index] ?? SURFACE_TYPE_IDS.grass,
+        map.layers.waterDepthUnits[index] ?? WATER_DEPTH_UNITS.none,
+        map.layers.cellFlags[index] ?? 0,
       );
 
       positions[offset] = x * cellSize;
@@ -85,10 +108,27 @@ function buildTerrainGeometry(map: BattleMap): BufferGeometry {
   return geometry;
 }
 
-function sampleDecorationCells(map: BattleMap, walkable: boolean, divisor: number): number[] {
+function sampleDecorationCells(
+  map: BattleMap,
+  kind: "rock" | "shrub",
+  divisor: number,
+): number[] {
   const cells: number[] = [];
-  for (let index = 0; index < map.walkable.length; index += 1) {
-    if ((map.walkable[index] === 1) !== walkable) {
+  const cellCount = map.width * map.height;
+  for (let index = 0; index < cellCount; index += 1) {
+    if (
+      (map.layers.waterDepthUnits[index] ?? WATER_DEPTH_UNITS.none) !==
+      WATER_DEPTH_UNITS.none
+    ) {
+      continue;
+    }
+    const cellFlags = map.layers.cellFlags[index] ?? 0;
+    const matchesKind =
+      kind === "rock"
+        ? (cellFlags & MAP_CELL_FLAGS.groundBlocked) !== 0
+        : (cellFlags & MAP_CELL_FLAGS.groundBlocked) === 0 &&
+          map.layers.surfaceTypeIds[index] === SURFACE_TYPE_IDS.grass;
+    if (!matchesKind) {
       continue;
     }
     const hash = Math.imul(index + 17, 2_654_435_761) >>> 0;
@@ -106,8 +146,8 @@ interface DecorationsProps {
 function Decorations({ map }: DecorationsProps) {
   const rocksRef = useRef<InstancedMesh>(null);
   const shrubsRef = useRef<InstancedMesh>(null);
-  const rockCells = useMemo(() => sampleDecorationCells(map, false, 3), [map]);
-  const shrubCells = useMemo(() => sampleDecorationCells(map, true, 31), [map]);
+  const rockCells = useMemo(() => sampleDecorationCells(map, "rock", 3), [map]);
+  const shrubCells = useMemo(() => sampleDecorationCells(map, "shrub", 31), [map]);
 
   useLayoutEffect(() => {
     const dummy = new Object3D();
@@ -121,7 +161,7 @@ function Decorations({ map }: DecorationsProps) {
       const scale = 1.1 + (hash % 100) / 85;
       dummy.position.set(
         x * cellSize,
-        (map.heightUnits[cellIndex] ?? 0) * heightUnit + scale * 0.55,
+        (map.layers.heightUnits[cellIndex] ?? 0) * heightUnit + scale * 0.55,
         z * cellSize,
       );
       dummy.rotation.set(0.08, (hash % 628) / 100, -0.05);
@@ -137,7 +177,7 @@ function Decorations({ map }: DecorationsProps) {
       const scale = 0.7 + (hash % 70) / 100;
       dummy.position.set(
         x * cellSize,
-        (map.heightUnits[cellIndex] ?? 0) * heightUnit + scale,
+        (map.layers.heightUnits[cellIndex] ?? 0) * heightUnit + scale,
         z * cellSize,
       );
       dummy.rotation.set(0, (hash % 628) / 100, 0);

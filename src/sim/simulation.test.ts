@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   canTraverseStep,
+  BATTLE_MAP_SCHEMA_VERSION,
+  SURFACE_TYPE_IDS,
+  WATER_DEPTH_UNITS,
   createBattleSetup,
   createPathfinder,
   createSimulation,
@@ -14,7 +17,7 @@ import {
   type GroupSpawn,
 } from "./index";
 
-describe("stage-one simulation", () => {
+describe("battle simulation", () => {
   it("generates deterministic height maps with a legal cross-map route", () => {
     const options = {
       seed: "map-determinism",
@@ -26,9 +29,11 @@ describe("stage-one simulation", () => {
     const first = generateBattleMap(options);
     const second = generateBattleMap(options);
 
-    expect([...first.heightUnits]).toEqual([...second.heightUnits]);
-    expect([...first.walkable]).toEqual([...second.walkable]);
-    expect(first.heightUnits.length).toBe(first.width * first.height);
+    expect([...first.layers.heightUnits]).toEqual([...second.layers.heightUnits]);
+    expect([...first.layers.surfaceTypeIds]).toEqual([...second.layers.surfaceTypeIds]);
+    expect([...first.layers.waterDepthUnits]).toEqual([...second.layers.waterDepthUnits]);
+    expect([...first.layers.cellFlags]).toEqual([...second.layers.cellFlags]);
+    expect(first.layers.heightUnits.length).toBe(first.width * first.height);
 
     const pathfinder = createPathfinder(first);
     const path = pathfinder.findPath(
@@ -195,13 +200,17 @@ function createFlatSetup(
 function createFlatMap(width: number, height: number): BattleMap {
   const size = width * height;
   return {
+    schemaVersion: BATTLE_MAP_SCHEMA_VERSION,
     width,
     height,
     cellSizeMm: 4_000,
     heightUnitMm: 500,
-    heightUnits: new Int16Array(size),
-    walkable: new Uint8Array(size).fill(1),
-    movementCosts: new Uint8Array(size).fill(10),
+    layers: {
+      heightUnits: new Int16Array(size),
+      surfaceTypeIds: new Uint16Array(size).fill(SURFACE_TYPE_IDS.grass),
+      waterDepthUnits: new Uint8Array(size).fill(WATER_DEPTH_UNITS.none),
+      cellFlags: new Uint16Array(size),
+    },
   };
 }
 

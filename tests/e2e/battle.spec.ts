@@ -108,6 +108,18 @@ test("desktop battle renders, pauses, and exposes squad inspection", async ({ pa
   expect(metrics.luminanceRange).toBeGreaterThan(35);
   expect(metrics.quantizedColors).toBeGreaterThan(12);
 
+  const mapLayerSummary = await page.evaluate(() => window.__battleTest?.getMapLayerSummary());
+  expect(mapLayerSummary).toBeDefined();
+  expect(mapLayerSummary?.schemaVersion).toBe("map-1");
+  expect(mapLayerSummary?.layersAreTypedArrays).toBe(true);
+  expect(mapLayerSummary?.surfaceTypeCount).toBeGreaterThan(1);
+  expect(mapLayerSummary?.layerLengths).toEqual([
+    mapLayerSummary?.cellCount,
+    mapLayerSummary?.cellCount,
+    mapLayerSummary?.cellCount,
+    mapLayerSummary?.cellCount,
+  ]);
+
   await page.getByRole("button", { name: "暂停演算" }).click();
   await page.waitForFunction(() => window.__battleTest?.getStatus() === "paused");
   const pausedTick = await page.evaluate(() => window.__battleTest?.getTick() ?? -1);

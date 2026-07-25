@@ -3,6 +3,7 @@ import {
   hasLineOfSight,
   heightAt,
   isWalkable,
+  movementCostAtIndex,
   squaredGridDistance,
 } from "./map";
 import type {
@@ -23,7 +24,7 @@ import {
 } from "./pathfinder";
 import { resolveObjectiveTick } from "./objective";
 import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
-import { validateBattleSetup } from "./setup";
+import { hashBattleSetup, validateBattleSetup } from "./setup";
 import type {
   BattleEvent,
   BattleResult,
@@ -88,13 +89,15 @@ export function createSimulation(setup: BattleSetup): BattleSimulation {
 export const createBattleSimulation = createSimulation;
 
 class StageOneBattleSimulation implements BattleSimulation {
-  readonly setup: BattleSetup;
+  private readonly setup: BattleSetup;
   private readonly state: RuntimeState;
   private readonly pathfinder: Pathfinder;
+  private readonly setupHash: string;
 
   constructor(inputSetup: BattleSetup) {
     validateBattleSetup(inputSetup);
     this.setup = cloneSetup(inputSetup);
+    this.setupHash = hashBattleSetup(this.setup);
     this.state = createRuntimeState(this.setup);
     this.pathfinder = createPathfinder(this.setup.map);
     this.assignDefenseSlots();
@@ -107,6 +110,10 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   get status(): SimulationStatus {
     return this.state.result ? "finished" : "active";
+  }
+
+  getSetup(): BattleSetup {
+    return cloneSetup(this.setup);
   }
 
   step(count = 1): void {
@@ -217,17 +224,7 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   getStateHash(): string {
     const hasher = new StateHasher();
-    hasher.addString(this.setup.battleId);
-    hasher.addString(this.setup.seed);
-    hasher.addString(this.setup.mode.kind);
-    if (this.setup.mode.kind === "defense") {
-      hasher.addString(this.setup.mode.attackerFactionId);
-      hasher.addString(this.setup.mode.defenderFactionId);
-      hasher.addString(this.setup.mode.objective.id);
-      hasher.addNumber(this.setup.mode.objective.center.x);
-      hasher.addNumber(this.setup.mode.objective.center.z);
-      hasher.addNumber(this.setup.mode.objective.radiusCells);
-    }
+    hasher.addString(this.setupHash);
     hasher.addNumber(this.state.tick);
 
     for (const group of this.state.groups) {
@@ -1531,9 +1528,12 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
     ...setup,
     map: {
       ...setup.map,
-      heightUnits: setup.map.heightUnits.slice(),
-      walkable: setup.map.walkable.slice(),
-      movementCosts: setup.map.movementCosts.slice(),
+      layers: {
+        heightUnits: setup.map.layers.heightUnits.slice(),
+        surfaceTypeIds: setup.map.layers.surfaceTypeIds.slice(),
+        waterDepthUnits: setup.map.layers.waterDepthUnits.slice(),
+        cellFlags: setup.map.layers.cellFlags.slice(),
+      },
     },
     factions: setup.factions.map((faction) => ({ ...faction })) as [
       (typeof setup.factions)[0],
@@ -1716,8 +1716,8 @@ function defenseSlotScore(
   assignedSlots: readonly GridCoord[],
 ): number {
   const index = cellIndex(map, candidate);
-  const elevationScore = (map.heightUnits[index] ?? 0) * 180;
-  const movementScore = -(map.movementCosts[index] ?? 20) * 65;
+  const elevationScore = (map.layers.heightUnits[index] ?? 0) * 180;
+  const movementScore = -movementCostAtIndex(map, index) * 65;
   const radiusDifference = Math.abs(
     squaredGridDistance(candidate, objectiveCenter) - preferredRadius ** 2,
   );

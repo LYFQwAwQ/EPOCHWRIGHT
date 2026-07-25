@@ -124,7 +124,7 @@ function initialize(command: Extract<WorkerCommand, { type: "initialize" }>): vo
   post({
     type: "ready",
     sessionId,
-    setup: simulation.setup,
+    setup: simulation.getSetup(),
     frame: simulation.getRenderFrame(),
     stateHash: simulation.getStateHash(),
     paused: !command.autostart,

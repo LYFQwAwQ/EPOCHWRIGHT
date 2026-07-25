@@ -2,16 +2,21 @@ export {
   createBattleSimulation,
   createSimulation,
 } from "./simulation";
-export { createBattleSetup, validateBattleSetup } from "./setup";
+export { createBattleSetup, hashBattleSetup, validateBattleSetup } from "./setup";
 export {
   cellIndex,
   coordFromIndex,
+  FOOT_MOVEMENT_COST_MATRIX,
   generateBattleMap,
   hasLineOfSight,
+  hashBattleMap,
   heightAt,
   isInsideMap,
   isWalkable,
+  movementCostAt,
+  movementCostAtIndex,
   squaredGridDistance,
+  validateBattleMap,
 } from "./map";
 export { canTraverseStep, createPathfinder, movementStepCost } from "./pathfinder";
 export {
@@ -21,5 +26,14 @@ export {
   resolveObjectiveTick,
 } from "./objective";
 export type { ObjectiveTickInput, ObjectiveTickResult } from "./objective";
-export { SIMULATION_HZ, TICK_DURATION_MS } from "./types";
+export {
+  BATTLE_MAP_SCHEMA_VERSION,
+  BATTLE_RULES_VERSION,
+  BATTLE_SETUP_SCHEMA_VERSION,
+  MAP_CELL_FLAGS,
+  SIMULATION_HZ,
+  SURFACE_TYPE_IDS,
+  TICK_DURATION_MS,
+  WATER_DEPTH_UNITS,
+} from "./types";
 export type * from "./types";

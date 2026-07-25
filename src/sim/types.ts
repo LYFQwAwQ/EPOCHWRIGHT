@@ -1,5 +1,26 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
+export const BATTLE_RULES_VERSION = "stage-2" as const;
+export const BATTLE_MAP_SCHEMA_VERSION = "map-1" as const;
+
+export const SURFACE_TYPE_IDS = {
+  grass: 0,
+  sand: 1,
+  mud: 2,
+  rock: 3,
+  paved: 4,
+} as const;
+
+export const WATER_DEPTH_UNITS = {
+  none: 0,
+  shallow: 1,
+  deep: 2,
+} as const;
+
+export const MAP_CELL_FLAGS = {
+  groundBlocked: 1 << 0,
+} as const;
 
 export type Tick = number;
 export type FactionId = string;
@@ -12,14 +33,24 @@ export interface GridCoord {
   readonly z: number;
 }
 
+export type SurfaceTypeId = (typeof SURFACE_TYPE_IDS)[keyof typeof SURFACE_TYPE_IDS];
+export type WaterDepthUnits = (typeof WATER_DEPTH_UNITS)[keyof typeof WATER_DEPTH_UNITS];
+export type MovementType = "foot";
+
+export interface BattleMapLayers {
+  readonly heightUnits: Int16Array;
+  readonly surfaceTypeIds: Uint16Array;
+  readonly waterDepthUnits: Uint8Array;
+  readonly cellFlags: Uint16Array;
+}
+
 export interface BattleMap {
+  readonly schemaVersion: typeof BATTLE_MAP_SCHEMA_VERSION;
   readonly width: number;
   readonly height: number;
   readonly cellSizeMm: number;
   readonly heightUnitMm: number;
-  readonly heightUnits: Int16Array;
-  readonly walkable: Uint8Array;
-  readonly movementCosts: Uint8Array;
+  readonly layers: BattleMapLayers;
 }
 
 export interface FactionSetup {
@@ -76,8 +107,8 @@ export interface DefenseModeSetup {
 export type BattleModeSetup = ConflictModeSetup | DefenseModeSetup;
 
 export interface BattleSetup {
-  readonly schemaVersion: "stage-1";
-  readonly rulesVersion: "stage-1";
+  readonly schemaVersion: typeof BATTLE_SETUP_SCHEMA_VERSION;
+  readonly rulesVersion: typeof BATTLE_RULES_VERSION;
   readonly battleId: string;
   readonly seed: string;
   readonly map: BattleMap;
@@ -327,9 +358,9 @@ export interface BattleResult {
 export type SimulationStatus = "active" | "finished";
 
 export interface BattleSimulation {
-  readonly setup: BattleSetup;
   readonly tick: Tick;
   readonly status: SimulationStatus;
+  getSetup(): BattleSetup;
   step(count?: number): void;
   getRenderFrame(): RenderFrame;
   inspect(entityId: GroupId | MemberId | ObjectiveId): EntityInspection | undefined;

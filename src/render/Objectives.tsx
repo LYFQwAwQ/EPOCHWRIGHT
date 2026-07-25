@@ -27,7 +27,7 @@ function sampleTerrainHeight(map: BattleMap, worldX: number, worldZ: number): nu
   const tx = gridX - x0;
   const tz = gridZ - z0;
   const heightAt = (x: number, z: number) =>
-    (map.heightUnits[z * map.width + x] ?? 0) * heightUnit;
+    (map.layers.heightUnits[z * map.width + x] ?? 0) * heightUnit;
   const top = heightAt(x0, z0) * (1 - tx) + heightAt(x1, z0) * tx;
   const bottom = heightAt(x0, z1) * (1 - tx) + heightAt(x1, z1) * tx;
   return top * (1 - tz) + bottom * tz;

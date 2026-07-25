@@ -1,5 +1,15 @@
-import { generateBattleMap } from "./map";
-import { SIMULATION_HZ } from "./types";
+import {
+  generateBattleMap,
+  hashBattleMap,
+  isWalkable,
+  validateBattleMap,
+} from "./map";
+import { StateHasher } from "./rng";
+import {
+  BATTLE_RULES_VERSION,
+  BATTLE_SETUP_SCHEMA_VERSION,
+  SIMULATION_HZ,
+} from "./types";
 import type {
   BattleMap,
   BattleRules,
@@ -17,7 +27,7 @@ const DEFAULT_FACTIONS: readonly [FactionSetup, FactionSetup] = [
 ];
 
 export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup {
-  const seed = options.seed ?? "stage-1-default";
+  const seed = options.seed ?? "epochwright-default";
   const width = options.width ?? 48;
   const height = options.height ?? 36;
   const groupsPerFaction = options.groupsPerFaction ?? 3;
@@ -58,8 +68,8 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
   };
 
   const setup: BattleSetup = {
-    schemaVersion: "stage-1",
-    rulesVersion: "stage-1",
+    schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
+    rulesVersion: BATTLE_RULES_VERSION,
     battleId: options.battleId ?? `battle-${seed}`,
     seed,
     map,
@@ -73,17 +83,20 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
 }
 
 export function validateBattleSetup(setup: BattleSetup): void {
-  if (setup.schemaVersion !== "stage-1" || setup.rulesVersion !== "stage-1") {
+  if (
+    setup.schemaVersion !== BATTLE_SETUP_SCHEMA_VERSION ||
+    setup.rulesVersion !== BATTLE_RULES_VERSION
+  ) {
     throw new Error("Unsupported battle setup version.");
   }
   if (setup.rules.ticksPerSecond !== SIMULATION_HZ) {
-    throw new Error(`The stage-1 simulation must run at ${SIMULATION_HZ} Hz.`);
+    throw new Error(`The simulation must run at ${SIMULATION_HZ} Hz.`);
   }
-  validateMap(setup.map);
+  validateBattleMap(setup.map);
 
   const factionIds = new Set(setup.factions.map((faction) => faction.id));
   if (factionIds.size !== 2 || setup.factions.some((faction) => !faction.id)) {
-    throw new Error("Stage-1 requires exactly two factions with unique IDs.");
+    throw new Error("The current rules require exactly two factions with unique IDs.");
   }
 
   const entityIds = new Set<string>();
@@ -96,7 +109,7 @@ export function validateBattleSetup(setup: BattleSetup): void {
       !factionIds.has(setup.mode.attackerFactionId) ||
       !factionIds.has(setup.mode.defenderFactionId)
     ) {
-      throw new Error("Stage-2 defense mode requires ember attacking azure.");
+      throw new Error("Defense mode currently requires ember attacking azure.");
     }
     if (
       !Number.isInteger(setup.mode.objective.radiusCells) ||
@@ -154,7 +167,7 @@ export function validateBattleSetup(setup: BattleSetup): void {
     throw new Error("Both factions must deploy at least one group.");
   }
   if (setup.rules.sameFactionIntelDelayTicks !== 15) {
-    throw new Error("Stage-1 same-faction intelligence delay must be 15 ticks.");
+    throw new Error("The current same-faction intelligence delay must be 15 ticks.");
   }
   if (
     setup.rules.maximumDurationTicks <= 0 ||
@@ -163,6 +176,53 @@ export function validateBattleSetup(setup: BattleSetup): void {
   ) {
     throw new Error("Battle duration and stability windows must be positive.");
   }
+}
+
+export function hashBattleSetup(setup: BattleSetup): string {
+  const hasher = new StateHasher();
+  hasher.addString(setup.schemaVersion);
+  hasher.addString(setup.rulesVersion);
+  hasher.addString(setup.battleId);
+  hasher.addString(setup.seed);
+  hasher.addString(hashBattleMap(setup.map));
+
+  for (const faction of setup.factions) {
+    hasher.addString(faction.id);
+  }
+  for (const group of setup.groups) {
+    hasher.addString(group.id);
+    hasher.addString(group.factionId);
+    hasher.addNumber(group.spawn.x);
+    hasher.addNumber(group.spawn.z);
+    hasher.addNumber(group.evacuation.x);
+    hasher.addNumber(group.evacuation.z);
+    for (const member of group.members) {
+      hasher.addString(member.id);
+      hasher.addString(member.initialHealth ?? "healthy");
+    }
+  }
+
+  hasher.addString(setup.mode.kind);
+  if (setup.mode.kind === "defense") {
+    hasher.addString(setup.mode.attackerFactionId);
+    hasher.addString(setup.mode.defenderFactionId);
+    hasher.addString(setup.mode.objective.id);
+    hasher.addNumber(setup.mode.objective.center.x);
+    hasher.addNumber(setup.mode.objective.center.z);
+    hasher.addNumber(setup.mode.objective.radiusCells);
+  }
+
+  hasher.addNumber(setup.rules.ticksPerSecond);
+  hasher.addNumber(setup.rules.sightRangeCells);
+  hasher.addNumber(setup.rules.weaponRangeCells);
+  hasher.addNumber(setup.rules.preferredRangeCells);
+  hasher.addNumber(setup.rules.sameFactionIntelDelayTicks);
+  hasher.addNumber(setup.rules.intelUpdateIntervalTicks);
+  hasher.addNumber(setup.rules.contactForgetTicks);
+  hasher.addNumber(setup.rules.resolutionStableTicks);
+  hasher.addNumber(setup.rules.stalemateTicks);
+  hasher.addNumber(setup.rules.maximumDurationTicks);
+  return hasher.digest();
 }
 
 function countWalkableObjectiveCells(
@@ -263,23 +323,6 @@ function createGroupSpawns(
   return groups;
 }
 
-function validateMap(map: BattleMap): void {
-  if (!Number.isInteger(map.width) || !Number.isInteger(map.height)) {
-    throw new Error("Map dimensions must be integers.");
-  }
-  const expectedLength = map.width * map.height;
-  if (
-    map.heightUnits.length !== expectedLength ||
-    map.walkable.length !== expectedLength ||
-    map.movementCosts.length !== expectedLength
-  ) {
-    throw new Error("Every fixed map layer must have width * height entries.");
-  }
-  if (map.cellSizeMm <= 0 || map.heightUnitMm <= 0) {
-    throw new Error("Map scale values must be positive.");
-  }
-}
-
 function claimUniqueId(id: string, ids: Set<string>): void {
   if (!id || ids.has(id)) {
     throw new Error(`Entity ID must be non-empty and globally unique: ${id}`);
@@ -298,5 +341,5 @@ function isLegalDeployment(map: BattleMap, coord: GridCoord): boolean {
   ) {
     return false;
   }
-  return map.walkable[coord.z * map.width + coord.x] === 1;
+  return isWalkable(map, coord);
 }

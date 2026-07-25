@@ -4,6 +4,15 @@ interface BattleTestApi {
   getStatus(): string;
   getMode(): "conflict" | "defense";
   getBattleId(): string;
+  getMapLayerSummary():
+    | {
+        schemaVersion: string;
+        cellCount: number;
+        layerLengths: readonly number[];
+        surfaceTypeCount: number;
+        layersAreTypedArrays: boolean;
+      }
+    | undefined;
   getObjectives(): readonly {
     id: string;
     state: string;
