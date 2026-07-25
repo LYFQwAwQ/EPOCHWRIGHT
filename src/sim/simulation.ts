@@ -1714,7 +1714,12 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
         surfaceTypeIds: setup.map.layers.surfaceTypeIds.slice(),
         waterDepthUnits: setup.map.layers.waterDepthUnits.slice(),
         cellFlags: setup.map.layers.cellFlags.slice(),
+        staticOccupancy: setup.map.layers.staticOccupancy.slice(),
       },
+      staticObjects: setup.map.staticObjects.map((object) => ({
+        ...object,
+        cell: { ...object.cell },
+      })),
     },
     factions: setup.factions.map((faction) => ({ ...faction })) as [
       (typeof setup.factions)[0],

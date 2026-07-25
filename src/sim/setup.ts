@@ -46,6 +46,9 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     roughness: options.roughness ?? 0.45,
     waterCoverage: options.waterCoverage ?? 0.1,
     wetlandCoverage: options.wetlandCoverage ?? 0.08,
+    treeCoverage: options.treeCoverage ?? 0.02,
+    rockCoverage: options.rockCoverage ?? 0.006,
+    wallCoverage: options.wallCoverage ?? 0.003,
   });
   const factions = DEFAULT_FACTIONS.map((faction) => ({ ...faction })) as [
     FactionSetup,
@@ -104,6 +107,9 @@ export function validateBattleSetup(setup: BattleSetup): void {
   }
 
   const entityIds = new Set<string>();
+  for (const staticObject of setup.map.staticObjects) {
+    claimUniqueId(staticObject.id, entityIds);
+  }
   const occupiedSpawnCells = new Set<number>();
   const factionGroupCounts = new Map(setup.factions.map((faction) => [faction.id, 0]));
   if (setup.mode.kind === "defense") {

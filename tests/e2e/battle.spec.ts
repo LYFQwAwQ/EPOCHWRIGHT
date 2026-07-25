@@ -54,7 +54,7 @@ async function readCanvasMetrics(page: Page): Promise<CanvasMetrics> {
 async function expectMixedTerrainMap(page: Page): Promise<void> {
   const summary = await page.evaluate(() => window.__battleTest?.getMapLayerSummary());
   expect(summary).toBeDefined();
-  expect(summary?.schemaVersion).toBe("map-1");
+  expect(summary?.schemaVersion).toBe("map-2");
   expect(summary?.width).toBeGreaterThan(0);
   expect(summary?.height).toBeGreaterThan(0);
   expect(summary?.layersAreTypedArrays).toBe(true);
@@ -64,7 +64,27 @@ async function expectMixedTerrainMap(page: Page): Promise<void> {
   expect(summary?.shallowWaterCellCount).toBeGreaterThan(0);
   expect(summary?.deepWaterCellCount).toBeGreaterThan(0);
   expect(summary?.wetlandCellCount).toBeGreaterThan(0);
+  expect(summary?.staticObjects.length).toBeGreaterThan(0);
+  expect(new Set(summary?.staticObjects.map((object) => object.id)).size).toBe(
+    summary?.staticObjects.length,
+  );
+  for (const kind of ["tree", "rock", "wall"] as const) {
+    expect(summary?.staticObjects.some((object) => object.kind === kind)).toBe(true);
+  }
+  expect(
+    summary?.staticObjects.every(
+      (object) =>
+        object.x >= 0 &&
+        object.x < summary.width &&
+        object.z >= 0 &&
+        object.z < summary.height &&
+        Number.isInteger(object.facing) &&
+        object.facing >= 0 &&
+        object.facing <= 7,
+    ),
+  ).toBe(true);
   expect(summary?.layerLengths).toEqual([
+    summary?.cellCount,
     summary?.cellCount,
     summary?.cellCount,
     summary?.cellCount,
@@ -96,6 +116,28 @@ async function countWaterPixels(page: Page): Promise<number> {
       blue > green - 25 &&
       blue < green + 50;
     if (alpha > 0 && isTealOrCyan) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function countTreeCanopyPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    const alpha = image.data[offset + 3] ?? 0;
+    if (
+      alpha > 0 &&
+      red < 90 &&
+      green > red + 24 &&
+      green > blue + 12 &&
+      blue < 110
+    ) {
       count += 1;
     }
   }
@@ -151,6 +193,7 @@ test("desktop battle renders, pauses, and exposes squad inspection", async ({ pa
   expect(metrics.quantizedColors).toBeGreaterThan(12);
   await expectMixedTerrainMap(page);
   expect(await countWaterPixels(page)).toBeGreaterThan(1_000);
+  expect(await countTreeCanopyPixels(page)).toBeGreaterThan(100);
 
   await page.getByRole("button", { name: "暂停演算" }).click();
   await page.waitForFunction(() => window.__battleTest?.getStatus() === "paused");
@@ -199,6 +242,7 @@ test("narrow viewport keeps a nonblank battlefield and stable controls", async (
   expect(metrics.quantizedColors).toBeGreaterThan(8);
   await expectMixedTerrainMap(page);
   expect(await countWaterPixels(page)).toBeGreaterThan(200);
+  expect(await countTreeCanopyPixels(page)).toBeGreaterThan(20);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.screenshot({ path: testInfo.outputPath("battle-mobile.png"), fullPage: true });

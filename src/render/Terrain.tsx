@@ -13,13 +13,12 @@ import {
   WATER_DEPTH_UNITS,
   type BattleMap,
 } from "../sim";
+import { StaticObjects } from "./StaticObjects";
 
 interface TerrainProps {
   readonly map: BattleMap;
 }
 
-const ROCK_COLOR = "#66706e";
-const SHRUB_COLOR = "#4f6b4f";
 const DEEP_WATER_GROUND = new Color(0.1, 0.24, 0.3);
 const SHALLOW_WATER_GROUND = new Color(0.3, 0.47, 0.43);
 const WETLAND_WATER_GROUND = new Color(0.32, 0.4, 0.31);
@@ -120,41 +119,6 @@ function buildTerrainGeometry(map: BattleMap): BufferGeometry {
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;
-}
-
-function sampleDecorationCells(
-  map: BattleMap,
-  kind: "rock" | "shrub",
-  divisor: number,
-): number[] {
-  const cells: number[] = [];
-  const cellCount = map.width * map.height;
-  for (let index = 0; index < cellCount; index += 1) {
-    if (
-      (map.layers.waterDepthUnits[index] ?? WATER_DEPTH_UNITS.none) !==
-      WATER_DEPTH_UNITS.none
-    ) {
-      continue;
-    }
-    const cellFlags = map.layers.cellFlags[index] ?? 0;
-    const matchesKind =
-      kind === "rock"
-        ? (cellFlags & MAP_CELL_FLAGS.groundBlocked) !== 0
-        : (cellFlags & MAP_CELL_FLAGS.groundBlocked) === 0 &&
-          map.layers.surfaceTypeIds[index] === SURFACE_TYPE_IDS.grass;
-    if (!matchesKind) {
-      continue;
-    }
-    const hash = Math.imul(index + 17, 2_654_435_761) >>> 0;
-    if (hash % divisor === 0) {
-      cells.push(index);
-    }
-  }
-  return cells;
-}
-
-interface DecorationsProps {
-  readonly map: BattleMap;
 }
 
 interface WaterCellGroups {
@@ -268,73 +232,6 @@ function WaterSurfaces({ map }: TerrainProps) {
   );
 }
 
-function Decorations({ map }: DecorationsProps) {
-  const rocksRef = useRef<InstancedMesh>(null);
-  const shrubsRef = useRef<InstancedMesh>(null);
-  const rockCells = useMemo(() => sampleDecorationCells(map, "rock", 3), [map]);
-  const shrubCells = useMemo(() => sampleDecorationCells(map, "shrub", 31), [map]);
-
-  useLayoutEffect(() => {
-    const dummy = new Object3D();
-    const cellSize = map.cellSizeMm / 1_000;
-    const heightUnit = map.heightUnitMm / 1_000;
-
-    rockCells.forEach((cellIndex, instanceIndex) => {
-      const x = cellIndex % map.width;
-      const z = Math.floor(cellIndex / map.width);
-      const hash = Math.imul(cellIndex + 31, 1_597_334_677) >>> 0;
-      const scale = 1.1 + (hash % 100) / 85;
-      dummy.position.set(
-        x * cellSize,
-        (map.layers.heightUnits[cellIndex] ?? 0) * heightUnit + scale * 0.55,
-        z * cellSize,
-      );
-      dummy.rotation.set(0.08, (hash % 628) / 100, -0.05);
-      dummy.scale.set(scale * 1.2, scale, scale);
-      dummy.updateMatrix();
-      rocksRef.current?.setMatrixAt(instanceIndex, dummy.matrix);
-    });
-
-    shrubCells.forEach((cellIndex, instanceIndex) => {
-      const x = cellIndex % map.width;
-      const z = Math.floor(cellIndex / map.width);
-      const hash = Math.imul(cellIndex + 53, 1_103_515_245) >>> 0;
-      const scale = 0.7 + (hash % 70) / 100;
-      dummy.position.set(
-        x * cellSize,
-        (map.layers.heightUnits[cellIndex] ?? 0) * heightUnit + scale,
-        z * cellSize,
-      );
-      dummy.rotation.set(0, (hash % 628) / 100, 0);
-      dummy.scale.set(scale, scale * 1.4, scale);
-      dummy.updateMatrix();
-      shrubsRef.current?.setMatrixAt(instanceIndex, dummy.matrix);
-    });
-
-    if (rocksRef.current) {
-      rocksRef.current.instanceMatrix.needsUpdate = true;
-      rocksRef.current.computeBoundingSphere();
-    }
-    if (shrubsRef.current) {
-      shrubsRef.current.instanceMatrix.needsUpdate = true;
-      shrubsRef.current.computeBoundingSphere();
-    }
-  }, [map, rockCells, shrubCells]);
-
-  return (
-    <>
-      <instancedMesh ref={rocksRef} args={[undefined, undefined, rockCells.length]} castShadow>
-        <dodecahedronGeometry args={[0.9, 0]} />
-        <meshStandardMaterial color={ROCK_COLOR} roughness={0.96} />
-      </instancedMesh>
-      <instancedMesh ref={shrubsRef} args={[undefined, undefined, shrubCells.length]} castShadow>
-        <coneGeometry args={[0.7, 1.8, 6]} />
-        <meshStandardMaterial color={SHRUB_COLOR} roughness={1} />
-      </instancedMesh>
-    </>
-  );
-}
-
 export function Terrain({ map }: TerrainProps) {
   const geometry = useMemo(() => buildTerrainGeometry(map), [map]);
   const worldWidth = (map.width - 1) * (map.cellSizeMm / 1_000);
@@ -350,7 +247,7 @@ export function Terrain({ map }: TerrainProps) {
         <meshStandardMaterial color="#343b3a" roughness={1} />
       </mesh>
       <WaterSurfaces map={map} />
-      <Decorations map={map} />
+      <StaticObjects map={map} />
     </group>
   );
 }

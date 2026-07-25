@@ -16,6 +16,13 @@ interface BattleTestApi {
         deepWaterCellCount: number;
         wetlandCellCount: number;
         layerLengths: readonly number[];
+        staticObjects: readonly {
+          id: string;
+          kind: "tree" | "rock" | "wall";
+          x: number;
+          z: number;
+          facing: number;
+        }[];
         surfaceTypeCount: number;
         layersAreTypedArrays: boolean;
       }

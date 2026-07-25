@@ -451,7 +451,9 @@ function createFlatMap(
       surfaceTypeIds: new Uint16Array(size).fill(surfaceTypeId),
       waterDepthUnits: new Uint8Array(size).fill(WATER_DEPTH_UNITS.none),
       cellFlags: new Uint16Array(size),
+      staticOccupancy: new Uint8Array(size),
     },
+    staticObjects: [],
   };
 }
 

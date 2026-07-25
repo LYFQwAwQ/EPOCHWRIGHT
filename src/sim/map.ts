@@ -1,13 +1,17 @@
 import { createNoise2D } from "simplex-noise";
-import { createSeededRandom, StateHasher } from "./rng";
+import { createSeededRandom, deterministicUint32, StateHasher } from "./rng";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   MAP_CELL_FLAGS,
+  STATIC_OBJECT_DEFINITIONS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   type BattleMap,
   type GridCoord,
   type MovementType,
+  type StaticMapObject,
+  type StaticObjectFacing,
+  type StaticObjectKind,
 } from "./types";
 
 export interface MapGenerationOptions {
@@ -21,11 +25,30 @@ export interface MapGenerationOptions {
   readonly waterCoverage?: number;
   /** Additional mud-and-shallow-water share of all cells. */
   readonly wetlandCoverage?: number;
+  /** Movement-blocking tree objects as a share of all cells. */
+  readonly treeCoverage?: number;
+  /** Movement-blocking rock objects as a share of all cells. */
+  readonly rockCoverage?: number;
+  /** Movement-blocking wall objects as a share of all cells. */
+  readonly wallCoverage?: number;
 }
 
 interface RankedCell {
   readonly index: number;
   readonly score: number;
+}
+
+interface StaticObjectPlacement {
+  readonly seed: string;
+  readonly width: number;
+  readonly height: number;
+  readonly kind: StaticObjectKind;
+  readonly coverage: number;
+  readonly surfaceTypeIds: Uint16Array;
+  readonly waterDepthUnits: Uint8Array;
+  readonly cellFlags: Uint16Array;
+  readonly staticOccupancy: Uint8Array;
+  readonly staticObjects: StaticMapObject[];
 }
 
 const CELL_SIZE_MM = 4_000;
@@ -35,6 +58,12 @@ const DEPLOYMENT_BAND_WIDTH = 5;
 const PRIMARY_ROUTE_HALF_WIDTH = 2.5;
 const MAX_MAP_CELL_COUNT = 65_536;
 const MAX_MAP_ASPECT_RATIO = 4;
+const STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID = [
+  undefined,
+  STATIC_OBJECT_DEFINITIONS.tree,
+  STATIC_OBJECT_DEFINITIONS.rock,
+  STATIC_OBJECT_DEFINITIONS.wall,
+] as const;
 
 export const FOOT_MOVEMENT_COST_MATRIX = [
   // Rows use SURFACE_TYPE_IDS; columns use WATER_DEPTH_UNITS. Zero is impassable.
@@ -90,11 +119,14 @@ export function movementCostAtIndex(
   index: number,
   movementType: MovementType = "foot",
 ): number {
+  if (!Number.isInteger(index) || index < 0 || index >= map.width * map.height) {
+    return 0;
+  }
+  const staticObjectDefinition =
+    STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[map.layers.staticOccupancy[index] ?? 0];
   if (
-    !Number.isInteger(index) ||
-    index < 0 ||
-    index >= map.width * map.height ||
-    ((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0
+    ((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0 ||
+    staticObjectDefinition?.blocksMovement
   ) {
     return 0;
   }
@@ -147,6 +179,9 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
   const roughness = validateRatio("roughness", options.roughness);
   const waterCoverage = validateRatio("waterCoverage", options.waterCoverage ?? 0);
   const wetlandCoverage = validateRatio("wetlandCoverage", options.wetlandCoverage ?? 0);
+  const treeCoverage = validateRatio("treeCoverage", options.treeCoverage ?? 0);
+  const rockCoverage = validateRatio("rockCoverage", options.rockCoverage ?? 0);
+  const wallCoverage = validateRatio("wallCoverage", options.wallCoverage ?? 0);
   const primary = createNoise2D(createSeededRandom(`${options.seed}:height:primary`));
   const detail = createNoise2D(createSeededRandom(`${options.seed}:height:detail`));
   const ridge = createNoise2D(createSeededRandom(`${options.seed}:height:ridge`));
@@ -159,6 +194,7 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
   const surfaceTypeIds = new Uint16Array(cellCount);
   const waterDepthUnits = new Uint8Array(cellCount);
   const cellFlags = new Uint16Array(cellCount);
+  const staticOccupancy = new Uint8Array(cellCount);
   const mountainCandidates: RankedCell[] = [];
 
   for (let z = 0; z < height; z += 1) {
@@ -263,6 +299,45 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
     waterDepthUnits[index] = WATER_DEPTH_UNITS.shallow;
   }
 
+  const staticObjects: StaticMapObject[] = [];
+  placeStaticObjects({
+    seed: options.seed,
+    width,
+    height,
+    kind: "tree",
+    coverage: treeCoverage,
+    surfaceTypeIds,
+    waterDepthUnits,
+    cellFlags,
+    staticOccupancy,
+    staticObjects,
+  });
+  placeStaticObjects({
+    seed: options.seed,
+    width,
+    height,
+    kind: "rock",
+    coverage: rockCoverage,
+    surfaceTypeIds,
+    waterDepthUnits,
+    cellFlags,
+    staticOccupancy,
+    staticObjects,
+  });
+  placeStaticObjects({
+    seed: options.seed,
+    width,
+    height,
+    kind: "wall",
+    coverage: wallCoverage,
+    surfaceTypeIds,
+    waterDepthUnits,
+    cellFlags,
+    staticOccupancy,
+    staticObjects,
+  });
+  staticObjects.sort((a, b) => compareStrings(a.id, b.id));
+
   const map: BattleMap = {
     schemaVersion: BATTLE_MAP_SCHEMA_VERSION,
     width,
@@ -274,7 +349,9 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
       surfaceTypeIds,
       waterDepthUnits,
       cellFlags,
+      staticOccupancy,
     },
+    staticObjects,
   };
   validateBattleMap(map);
   return map;
@@ -304,12 +381,19 @@ export function validateBattleMap(map: BattleMap): void {
   if (!map.layers) {
     throw new Error("Battle maps must define standard terrain layers.");
   }
-  const { heightUnits, surfaceTypeIds, waterDepthUnits, cellFlags } = map.layers;
+  const {
+    heightUnits,
+    surfaceTypeIds,
+    waterDepthUnits,
+    cellFlags,
+    staticOccupancy,
+  } = map.layers;
   if (
     !(heightUnits instanceof Int16Array) ||
     !(surfaceTypeIds instanceof Uint16Array) ||
     !(waterDepthUnits instanceof Uint8Array) ||
-    !(cellFlags instanceof Uint16Array)
+    !(cellFlags instanceof Uint16Array) ||
+    !(staticOccupancy instanceof Uint8Array)
   ) {
     throw new Error("Map layers must use their declared TypedArray types.");
   }
@@ -318,7 +402,8 @@ export function validateBattleMap(map: BattleMap): void {
     heightUnits.length !== expectedLength ||
     surfaceTypeIds.length !== expectedLength ||
     waterDepthUnits.length !== expectedLength ||
-    cellFlags.length !== expectedLength
+    cellFlags.length !== expectedLength ||
+    staticOccupancy.length !== expectedLength
   ) {
     throw new Error("Every fixed map layer must have width * height entries.");
   }
@@ -336,6 +421,65 @@ export function validateBattleMap(map: BattleMap): void {
     if ((flags & ~KNOWN_CELL_FLAGS) !== 0) {
       throw new Error(`Map cell ${index} has unsupported cell flags.`);
     }
+    const staticTypeId = staticOccupancy[index] ?? 0;
+    if (
+      staticTypeId !== 0 &&
+      STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[staticTypeId] === undefined
+    ) {
+      throw new Error(`Map cell ${index} has an unsupported static occupancy type.`);
+    }
+  }
+
+  if (!Array.isArray(map.staticObjects)) {
+    throw new Error("Battle maps must define a static object list.");
+  }
+  const objectIds = new Set<string>();
+  const objectCells = new Set<number>();
+  for (const rawObject of map.staticObjects as readonly unknown[]) {
+    if (!rawObject || typeof rawObject !== "object") {
+      throw new Error("Static objects must be structured object records.");
+    }
+    const object = rawObject as StaticMapObject;
+    if (typeof object.id !== "string" || !object.id || objectIds.has(object.id)) {
+      throw new Error(`Static object ID must be non-empty and unique: ${object.id}.`);
+    }
+    objectIds.add(object.id);
+    if (
+      typeof object.kind !== "string" ||
+      !Object.prototype.hasOwnProperty.call(STATIC_OBJECT_DEFINITIONS, object.kind)
+    ) {
+      throw new Error(`Static object ${object.id} has an unsupported kind.`);
+    }
+    const definition = STATIC_OBJECT_DEFINITIONS[object.kind as StaticObjectKind];
+    if (
+      !Number.isInteger(object.facing) ||
+      object.facing < 0 ||
+      object.facing > 7
+    ) {
+      throw new Error(`Static object ${object.id} has an invalid facing.`);
+    }
+    if (!object.cell || !isInsideMap(map, object.cell)) {
+      throw new Error(`Static object ${object.id} has an out-of-bounds cell.`);
+    }
+    const index = cellIndex(map, object.cell);
+    if (objectCells.has(index)) {
+      throw new Error(`Multiple static objects cannot occupy map cell ${index}.`);
+    }
+    objectCells.add(index);
+    if (staticOccupancy[index] !== definition.typeId) {
+      throw new Error(`Static object type does not match occupancy at map cell ${index}.`);
+    }
+    if (waterDepthUnits[index] !== WATER_DEPTH_UNITS.none) {
+      throw new Error(`Static object ${object.id} cannot overlap water.`);
+    }
+    if (((cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0) {
+      throw new Error(`Static object ${object.id} cannot overlap blocked ground.`);
+    }
+  }
+  for (let index = 0; index < expectedLength; index += 1) {
+    if ((staticOccupancy[index] ?? 0) !== 0 && !objectCells.has(index)) {
+      throw new Error(`Static occupancy at map cell ${index} has no static object.`);
+    }
   }
 }
 
@@ -350,6 +494,14 @@ export function hashBattleMap(map: BattleMap): string {
   addLayerToHash(hasher, "surface", map.layers.surfaceTypeIds);
   addLayerToHash(hasher, "water", map.layers.waterDepthUnits);
   addLayerToHash(hasher, "flags", map.layers.cellFlags);
+  addLayerToHash(hasher, "static-occupancy", map.layers.staticOccupancy);
+  for (const object of [...map.staticObjects].sort((a, b) => compareStrings(a.id, b.id))) {
+    hasher.addString(object.id);
+    hasher.addString(object.kind);
+    hasher.addNumber(object.cell.x);
+    hasher.addNumber(object.cell.z);
+    hasher.addNumber(object.facing);
+  }
   return hasher.digest();
 }
 
@@ -383,9 +535,16 @@ export function hasLineOfSight(
     }
     previousIndex = index;
 
+    const staticObjectDefinition =
+      STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[map.layers.staticOccupancy[index] ?? 0];
     const terrainHeight =
       heightAt(map, coord) +
-      (((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0 ? 2 : 0);
+      Math.max(
+        ((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0
+          ? 2
+          : 0,
+        staticObjectDefinition?.blocksSight ? staticObjectDefinition.heightUnits : 0,
+      );
     const sightHeightNumerator =
       observerHeight * (steps - step) + targetHeight * step;
     if (terrainHeight * steps > sightHeightNumerator) {
@@ -459,6 +618,67 @@ function countAdjacentWater(
     }
   }
   return count;
+}
+
+function placeStaticObjects(placement: StaticObjectPlacement): void {
+  const {
+    seed,
+    width,
+    height,
+    kind,
+    coverage,
+    surfaceTypeIds,
+    waterDepthUnits,
+    cellFlags,
+    staticOccupancy,
+    staticObjects,
+  } = placement;
+  const candidates: RankedCell[] = [];
+  for (let index = 0; index < width * height; index += 1) {
+    const x = index % width;
+    const z = Math.floor(index / width);
+    if (
+      isProtectedRouteCell(width, height, x, z) ||
+      waterDepthUnits[index] !== WATER_DEPTH_UNITS.none ||
+      ((cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0 ||
+      staticOccupancy[index] !== 0 ||
+      (kind === "tree" && surfaceTypeIds[index] !== SURFACE_TYPE_IDS.grass)
+    ) {
+      continue;
+    }
+    candidates.push({
+      index,
+      score: deterministicUint32(seed, `map-static-${kind}`, 0, String(index), 0),
+    });
+  }
+  candidates.sort((a, b) => a.score - b.score || a.index - b.index);
+
+  const requestedCells = Math.round(width * height * coverage);
+  assertCoverageAvailable(`${kind}Coverage`, requestedCells, candidates.length);
+  const definition = STATIC_OBJECT_DEFINITIONS[kind];
+  for (let rank = 0; rank < requestedCells; rank += 1) {
+    const index = candidates[rank]?.index;
+    if (index === undefined) {
+      break;
+    }
+    staticOccupancy[index] = definition.typeId;
+    staticObjects.push({
+      id: `static-${kind}-${index.toString().padStart(6, "0")}`,
+      kind,
+      cell: { x: index % width, z: Math.floor(index / width) },
+      facing: (deterministicUint32(
+        seed,
+        `map-static-${kind}-facing`,
+        0,
+        String(index),
+        0,
+      ) % 8) as StaticObjectFacing,
+    });
+  }
+}
+
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function validateRatio(name: string, value: number): number {

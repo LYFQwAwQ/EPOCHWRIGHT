@@ -1,8 +1,8 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
-export const BATTLE_RULES_VERSION = "stage-2.1" as const;
-export const BATTLE_MAP_SCHEMA_VERSION = "map-1" as const;
+export const BATTLE_RULES_VERSION = "stage-2.2" as const;
+export const BATTLE_MAP_SCHEMA_VERSION = "map-2" as const;
 
 export const SURFACE_TYPE_IDS = {
   grass: 0,
@@ -22,6 +22,27 @@ export const MAP_CELL_FLAGS = {
   groundBlocked: 1 << 0,
 } as const;
 
+export const STATIC_OBJECT_DEFINITIONS = {
+  tree: {
+    typeId: 1,
+    heightUnits: 12,
+    blocksMovement: true,
+    blocksSight: true,
+  },
+  rock: {
+    typeId: 2,
+    heightUnits: 6,
+    blocksMovement: true,
+    blocksSight: true,
+  },
+  wall: {
+    typeId: 3,
+    heightUnits: 5,
+    blocksMovement: true,
+    blocksSight: true,
+  },
+} as const;
+
 export type Tick = number;
 export type FactionId = string;
 export type GroupId = string;
@@ -36,12 +57,24 @@ export interface GridCoord {
 export type SurfaceTypeId = (typeof SURFACE_TYPE_IDS)[keyof typeof SURFACE_TYPE_IDS];
 export type WaterDepthUnits = (typeof WATER_DEPTH_UNITS)[keyof typeof WATER_DEPTH_UNITS];
 export type MovementType = "foot";
+export type StaticObjectKind = keyof typeof STATIC_OBJECT_DEFINITIONS;
+export type StaticObjectFacing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export interface StaticMapObject {
+  readonly id: string;
+  readonly kind: StaticObjectKind;
+  readonly cell: GridCoord;
+  /** Eight clockwise steps: 0=+z, 2=+x, 4=-z, 6=-x. */
+  readonly facing: StaticObjectFacing;
+}
 
 export interface BattleMapLayers {
   readonly heightUnits: Int16Array;
   readonly surfaceTypeIds: Uint16Array;
   readonly waterDepthUnits: Uint8Array;
   readonly cellFlags: Uint16Array;
+  /** Zero for open cells; otherwise a STATIC_OBJECT_DEFINITIONS typeId. */
+  readonly staticOccupancy: Uint8Array;
 }
 
 export interface BattleMap {
@@ -51,6 +84,7 @@ export interface BattleMap {
   readonly cellSizeMm: number;
   readonly heightUnitMm: number;
   readonly layers: BattleMapLayers;
+  readonly staticObjects: readonly StaticMapObject[];
 }
 
 export interface FactionSetup {
@@ -128,6 +162,9 @@ export interface BattleSetupOptions {
   readonly roughness?: number;
   readonly waterCoverage?: number;
   readonly wetlandCoverage?: number;
+  readonly treeCoverage?: number;
+  readonly rockCoverage?: number;
+  readonly wallCoverage?: number;
   readonly maximumDurationSeconds?: number;
   readonly stalemateSeconds?: number;
   readonly mode?: BattleModeKind;

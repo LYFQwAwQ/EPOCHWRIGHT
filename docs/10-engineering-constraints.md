@@ -166,7 +166,7 @@
 - 单个防守目标；
 - 只有步行移动配置，尚无轮式、履带式和两栖移动矩阵；
 - 生成器尚未生成道路；
-- setup schema 为 `stage-2`、rules 为 `stage-2.1`、地图为 `map-1`，但尚无旧输入迁移器；
+- setup schema 为 `stage-2`、rules 为 `stage-2.2`、地图为 `map-2`，但尚无旧输入迁移器；
 - `simulation.ts` 仍承担较多调度职责；
 - 主前端包存在超过 500KB 的构建提示。
 

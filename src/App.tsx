@@ -190,7 +190,13 @@ export function App() {
         if (!map) {
           return undefined;
         }
-        const { heightUnits, surfaceTypeIds, waterDepthUnits, cellFlags } = map.layers;
+        const {
+          heightUnits,
+          surfaceTypeIds,
+          waterDepthUnits,
+          cellFlags,
+          staticOccupancy,
+        } = map.layers;
         let minimumHeightUnits = heightUnits[0] ?? 0;
         let maximumHeightUnits = minimumHeightUnits;
         let mountainCellCount = 0;
@@ -236,13 +242,22 @@ export function App() {
             surfaceTypeIds.length,
             waterDepthUnits.length,
             cellFlags.length,
+            staticOccupancy.length,
           ],
+          staticObjects: map.staticObjects.map((object) => ({
+            id: object.id,
+            kind: object.kind,
+            x: object.cell.x,
+            z: object.cell.z,
+            facing: object.facing,
+          })),
           surfaceTypeCount: new Set(surfaceTypeIds).size,
           layersAreTypedArrays:
             heightUnits instanceof Int16Array &&
             surfaceTypeIds instanceof Uint16Array &&
             waterDepthUnits instanceof Uint8Array &&
-            cellFlags instanceof Uint16Array,
+            cellFlags instanceof Uint16Array &&
+            staticOccupancy instanceof Uint8Array,
         };
       },
       getObjectives: () => state.frame?.objectives ?? [],

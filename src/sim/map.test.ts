@@ -5,6 +5,7 @@ import {
   BATTLE_SETUP_SCHEMA_VERSION,
   FOOT_MOVEMENT_COST_MATRIX,
   MAP_CELL_FLAGS,
+  STATIC_OBJECT_DEFINITIONS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   canTraverseStep,
@@ -21,6 +22,7 @@ import {
   validateBattleSetup,
   type BattleMap,
   type BattleSetup,
+  type StaticMapObject,
 } from "./index";
 
 describe("standard terrain layers", () => {
@@ -149,6 +151,56 @@ describe("standard terrain layers", () => {
     ).toThrow(/aspect ratio/i);
   });
 
+  it("generates deterministic authoritative trees, rocks, and walls", () => {
+    const options = {
+      seed: "authoritative-static-objects",
+      width: 56,
+      height: 42,
+      mountainDensity: 0.08,
+      roughness: 0.52,
+      waterCoverage: 0.02,
+      wetlandCoverage: 0.01,
+      treeCoverage: 0.03,
+      rockCoverage: 0.01,
+      wallCoverage: 0.005,
+    };
+    const first = generateBattleMap(options);
+    const second = generateBattleMap(options);
+
+    expect(first.layers.staticOccupancy).toEqual(second.layers.staticOccupancy);
+    expect(first.staticObjects).toEqual(second.staticObjects);
+    const counts = countStaticObjectKinds(first.staticObjects);
+    const cellCount = options.width * options.height;
+    expect(counts).toEqual({
+      tree: Math.round(cellCount * options.treeCoverage),
+      rock: Math.round(cellCount * options.rockCoverage),
+      wall: Math.round(cellCount * options.wallCoverage),
+    });
+    expect(new Set(first.staticObjects.map((object) => object.id)).size).toBe(
+      first.staticObjects.length,
+    );
+
+    for (const object of first.staticObjects) {
+      const index = cellIndex(first, object.cell);
+      expect(first.layers.staticOccupancy[index]).toBe(
+        STATIC_OBJECT_DEFINITIONS[object.kind].typeId,
+      );
+      expect(first.layers.waterDepthUnits[index]).toBe(WATER_DEPTH_UNITS.none);
+      expect((first.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked).toBe(0);
+      expect(isWalkable(first, object.cell)).toBe(false);
+    }
+
+    expect(() =>
+      generateBattleMap({ ...options, treeCoverage: Number.NaN }),
+    ).toThrow(/treeCoverage/);
+    expect(() =>
+      generateBattleMap({ ...options, rockCoverage: Number.POSITIVE_INFINITY }),
+    ).toThrow(/rockCoverage/);
+    expect(() =>
+      generateBattleMap({ ...options, wallCoverage: 1.01 }),
+    ).toThrow(/wallCoverage/);
+  });
+
   it("keeps deployments and a defense attack route legal on composite terrain", () => {
     const setup = createBattleSetup({
       seed: "composite-defense-route",
@@ -188,6 +240,9 @@ describe("standard terrain layers", () => {
       roughness: 0,
       waterCoverage: 0,
       wetlandCoverage: 0,
+      treeCoverage: 0,
+      rockCoverage: 0,
+      wallCoverage: 0,
     });
     for (let z = 0; z < disconnected.map.height; z += 1) {
       disconnected.map.layers.waterDepthUnits[z * disconnected.map.width + 20] =
@@ -205,6 +260,9 @@ describe("standard terrain layers", () => {
       roughness: 0,
       waterCoverage: 0,
       wetlandCoverage: 0,
+      treeCoverage: 0,
+      rockCoverage: 0,
+      wallCoverage: 0,
     });
     for (let z = 0; z < disconnectedDefender.map.height; z += 1) {
       disconnectedDefender.map.layers.waterDepthUnits[
@@ -222,6 +280,9 @@ describe("standard terrain layers", () => {
       roughness: 0,
       waterCoverage: 0,
       wetlandCoverage: 0,
+      treeCoverage: 0,
+      rockCoverage: 0,
+      wallCoverage: 0,
     });
     const isolatedEvacuation = { x: 10, z: 10 };
     const evacuationDisconnected: BattleSetup = {
@@ -253,6 +314,9 @@ describe("standard terrain layers", () => {
       roughness: 0,
       waterCoverage: 0,
       wetlandCoverage: 0,
+      treeCoverage: 0,
+      rockCoverage: 0,
+      wallCoverage: 0,
     });
     for (let z = 0; z < disconnectedConflict.map.height; z += 1) {
       disconnectedConflict.map.layers.waterDepthUnits[
@@ -370,6 +434,26 @@ describe("standard terrain layers", () => {
     expect(hasLineOfSight(waterLine, { x: 0, z: 0 }, { x: 4, z: 0 })).toBe(true);
   });
 
+  it("uses authoritative static objects for movement, pathfinding, and sight", () => {
+    for (const kind of ["tree", "rock", "wall"] as const) {
+      const map = withStaticObjects(createFlatMap(5, 3), [
+        {
+          id: `${kind}-center`,
+          kind,
+          cell: { x: 2, z: 1 },
+          facing: 0,
+        },
+      ]);
+      expect(() => validateBattleMap(map)).not.toThrow();
+      expect(isWalkable(map, { x: 2, z: 1 })).toBe(false);
+      expect(hasLineOfSight(map, { x: 0, z: 1 }, { x: 4, z: 1 })).toBe(false);
+
+      const path = createPathfinder(map).findPath({ x: 0, z: 1 }, { x: 4, z: 1 });
+      expect(path.length).toBeGreaterThan(0);
+      expect(path.some((coord) => coord.x === 2 && coord.z === 1)).toBe(false);
+    }
+  });
+
   it("rejects unsupported versions, malformed layers, and illegal terrain values", () => {
     const wrongVersion = createFlatMap(3, 3);
     expect(() =>
@@ -398,6 +482,59 @@ describe("standard terrain layers", () => {
     const invalidFlags = createFlatMap(3, 3);
     invalidFlags.layers.cellFlags[0] = 1 << 8;
     expect(() => validateBattleMap(invalidFlags)).toThrow(/cell flags/i);
+
+    const missingObject = createFlatMap(3, 3);
+    missingObject.layers.staticOccupancy[4] = STATIC_OBJECT_DEFINITIONS.tree.typeId;
+    expect(() => validateBattleMap(missingObject)).toThrow(/static occupancy/i);
+
+    const mismatchedObject = withStaticObjects(createFlatMap(3, 3), [
+      {
+        id: "mismatched-tree",
+        kind: "tree",
+        cell: { x: 1, z: 1 },
+        facing: 0,
+      },
+    ]);
+    mismatchedObject.layers.staticOccupancy[4] = STATIC_OBJECT_DEFINITIONS.rock.typeId;
+    expect(() => validateBattleMap(mismatchedObject)).toThrow(/static object type/i);
+
+    const floodedObject = withStaticObjects(createFlatMap(3, 3), [
+      {
+        id: "flooded-wall",
+        kind: "wall",
+        cell: { x: 1, z: 1 },
+        facing: 2,
+      },
+    ]);
+    floodedObject.layers.waterDepthUnits[4] = WATER_DEPTH_UNITS.shallow;
+    expect(() => validateBattleMap(floodedObject)).toThrow(/static object.*water/i);
+
+    const invalidFacing = withStaticObjects(createFlatMap(3, 3), [
+      {
+        id: "bad-facing-rock",
+        kind: "rock",
+        cell: { x: 1, z: 1 },
+        facing: 0,
+      },
+    ]);
+    (invalidFacing.staticObjects[0] as { facing: number }).facing = 8;
+    expect(() => validateBattleMap(invalidFacing)).toThrow(/invalid facing/i);
+
+    const duplicateIds = withStaticObjects(createFlatMap(3, 3), [
+      {
+        id: "duplicate-static-id",
+        kind: "tree",
+        cell: { x: 0, z: 0 },
+        facing: 0,
+      },
+      {
+        id: "duplicate-static-id",
+        kind: "wall",
+        cell: { x: 2, z: 2 },
+        facing: 2,
+      },
+    ]);
+    expect(() => validateBattleMap(duplicateIds)).toThrow(/static object ID/i);
   });
 
   it("rejects spawns and defense objectives placed in deep water", () => {
@@ -470,7 +607,7 @@ describe("standard terrain layers", () => {
     expect(() =>
       validateBattleSetup({
         ...firstSetup,
-        rulesVersion: "stage-2",
+        rulesVersion: "stage-2.1",
       } as unknown as BattleSetup),
     ).toThrow(/setup version/i);
 
@@ -498,6 +635,49 @@ describe("standard terrain layers", () => {
       },
     });
     expect(first.getStateHash()).not.toBe(changedRules.getStateHash());
+
+    const staticObject = firstSetup.map.staticObjects[0];
+    if (!staticObject) {
+      throw new Error("Expected a generated static object.");
+    }
+    const originalFacing = staticObject.facing;
+    const reorderedStaticObjects = createSimulation({
+      ...firstSetup,
+      map: {
+        ...firstSetup.map,
+        staticObjects: [...firstSetup.map.staticObjects].reverse(),
+      },
+    });
+    expect(reorderedStaticObjects.getStateHash()).toBe(first.getStateHash());
+    const changedFacing = staticObject.facing === 0 ? 1 : 0;
+    const changedStaticObject = createSimulation({
+      ...firstSetup,
+      map: {
+        ...firstSetup.map,
+        staticObjects: firstSetup.map.staticObjects.map((object) =>
+          object.id === staticObject.id ? { ...object, facing: changedFacing } : object,
+        ),
+      },
+    });
+    expect(first.getStateHash()).not.toBe(changedStaticObject.getStateHash());
+
+    (staticObject as { facing: StaticMapObject["facing"] }).facing = changedFacing;
+    expect(
+      first.getSetup().map.staticObjects.find((object) => object.id === staticObject.id)
+        ?.facing,
+    ).toBe(originalFacing);
+    const exposedStaticSetup = first.getSetup();
+    const exposedStaticObject = exposedStaticSetup.map.staticObjects.find(
+      (object) => object.id === staticObject.id,
+    );
+    if (!exposedStaticObject) {
+      throw new Error("Expected a cloned static object.");
+    }
+    (exposedStaticObject as { facing: StaticMapObject["facing"] }).facing = changedFacing;
+    expect(
+      first.getSetup().map.staticObjects.find((object) => object.id === staticObject.id)
+        ?.facing,
+    ).toBe(originalFacing);
   });
 });
 
@@ -514,8 +694,39 @@ function createFlatMap(width: number, height: number): BattleMap {
       surfaceTypeIds: new Uint16Array(size).fill(SURFACE_TYPE_IDS.grass),
       waterDepthUnits: new Uint8Array(size).fill(WATER_DEPTH_UNITS.none),
       cellFlags: new Uint16Array(size),
+      staticOccupancy: new Uint8Array(size),
     },
+    staticObjects: [],
   };
+}
+
+function withStaticObjects(
+  map: BattleMap,
+  staticObjects: readonly StaticMapObject[],
+): BattleMap {
+  const staticOccupancy = new Uint8Array(map.width * map.height);
+  for (const object of staticObjects) {
+    staticOccupancy[cellIndex(map, object.cell)] =
+      STATIC_OBJECT_DEFINITIONS[object.kind].typeId;
+  }
+  return {
+    ...map,
+    layers: { ...map.layers, staticOccupancy },
+    staticObjects: staticObjects.map((object) => ({
+      ...object,
+      cell: { ...object.cell },
+    })),
+  };
+}
+
+function countStaticObjectKinds(
+  staticObjects: readonly StaticMapObject[],
+): Readonly<Record<StaticMapObject["kind"], number>> {
+  const counts = { tree: 0, rock: 0, wall: 0 };
+  for (const object of staticObjects) {
+    counts[object.kind] += 1;
+  }
+  return counts;
 }
 
 function setTerrain(

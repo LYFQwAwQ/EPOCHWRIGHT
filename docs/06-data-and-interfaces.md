@@ -125,6 +125,22 @@ interface BattleMapLayers {
 }
 ```
 
+当前权威静态对象的最小契约为：
+
+```ts
+type StaticObjectKind = "tree" | "rock" | "wall";
+type StaticObjectFacing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+interface StaticMapObject {
+  readonly id: string;
+  readonly kind: StaticObjectKind;
+  readonly cell: GridCoord;
+  readonly facing: StaticObjectFacing;
+}
+```
+
+`staticObjects` 保存身份、类型、单格锚点和方向，`staticOccupancy` 保存每格的对象类型 ID 并在验证时与对象列表逐格核对。方向约定为 `0=+z`、`2=+x`、`4=-z`、`6=-x`，中间整数表示对角方向。当前对象不可摧毁；可站立的掩体槽位与对象格分离，后续作为独立规则扩展。
+
 索引统一为 `index = z * width + x`。地图创建后视为只读，动态占用、接触和临时效果放在模拟状态中。
 
 ### 5.2 区域

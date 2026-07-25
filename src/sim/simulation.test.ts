@@ -292,7 +292,9 @@ function createFlatMap(width: number, height: number): BattleMap {
       surfaceTypeIds: new Uint16Array(size).fill(SURFACE_TYPE_IDS.grass),
       waterDepthUnits: new Uint8Array(size).fill(WATER_DEPTH_UNITS.none),
       cellFlags: new Uint16Array(size),
+      staticOccupancy: new Uint8Array(size),
     },
+    staticObjects: [],
   };
 }
 
