@@ -2,6 +2,7 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
+  CoverSlotId,
   FactionId,
   GridCoord,
   GroupAction,
@@ -109,6 +110,7 @@ export interface RuntimeState {
   readonly events: BattleEvent[];
   readonly occupancy: Map<number, GroupId>;
   readonly reservations: Map<number, GroupId>;
+  readonly coverOccupancy: Map<CoverSlotId, GroupId>;
   readonly objective?: ObjectiveRuntimeState;
   tick: Tick;
   eventSequence: number;

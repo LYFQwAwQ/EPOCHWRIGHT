@@ -1,7 +1,7 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
-export const BATTLE_RULES_VERSION = "stage-2.2" as const;
+export const BATTLE_RULES_VERSION = "stage-2.3" as const;
 export const BATTLE_MAP_SCHEMA_VERSION = "map-2" as const;
 
 export const SURFACE_TYPE_IDS = {
@@ -28,18 +28,33 @@ export const STATIC_OBJECT_DEFINITIONS = {
     heightUnits: 12,
     blocksMovement: true,
     blocksSight: true,
+    cover: {
+      capacity: 2,
+      protectionBps: 1_000,
+      concealmentBps: 3_000,
+    },
   },
   rock: {
     typeId: 2,
     heightUnits: 6,
     blocksMovement: true,
     blocksSight: true,
+    cover: {
+      capacity: 4,
+      protectionBps: 3_200,
+      concealmentBps: 1_800,
+    },
   },
   wall: {
     typeId: 3,
     heightUnits: 5,
     blocksMovement: true,
     blocksSight: true,
+    cover: {
+      capacity: 6,
+      protectionBps: 4_800,
+      concealmentBps: 2_600,
+    },
   },
 } as const;
 
@@ -59,6 +74,8 @@ export type WaterDepthUnits = (typeof WATER_DEPTH_UNITS)[keyof typeof WATER_DEPT
 export type MovementType = "foot";
 export type StaticObjectKind = keyof typeof STATIC_OBJECT_DEFINITIONS;
 export type StaticObjectFacing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type CoverSlotId = string;
+export type CoverAspect = "front" | "flank" | "rear";
 
 export interface StaticMapObject {
   readonly id: string;
@@ -66,6 +83,36 @@ export interface StaticMapObject {
   readonly cell: GridCoord;
   /** Eight clockwise steps: 0=+z, 2=+x, 4=-z, 6=-x. */
   readonly facing: StaticObjectFacing;
+}
+
+export interface CoverSlot {
+  readonly id: CoverSlotId;
+  readonly staticObjectId: string;
+  readonly staticObjectKind: StaticObjectKind;
+  readonly objectCell: GridCoord;
+  readonly cell: GridCoord;
+  /** Direction from the occupant toward the approach protected by the object. */
+  readonly facing: StaticObjectFacing;
+  /** Maximum active members receiving this slot's effect. */
+  readonly capacity: number;
+  readonly protectionBps: number;
+  readonly concealmentBps: number;
+}
+
+export interface DirectionalCoverEffect {
+  readonly aspect: CoverAspect;
+  readonly coveredMembers: number;
+  readonly protectionBps: number;
+  readonly concealmentBps: number;
+}
+
+export interface CoverInspection {
+  readonly slotId: CoverSlotId;
+  readonly staticObjectId: string;
+  readonly staticObjectKind: StaticObjectKind;
+  readonly facing: StaticObjectFacing;
+  readonly capacity: number;
+  readonly coveredMembers: number;
 }
 
 export interface BattleMapLayers {
@@ -267,6 +314,7 @@ export interface GroupInspection {
   readonly contacts: readonly ContactInspection[];
   readonly path: readonly GridCoord[];
   readonly defenseSlot?: GridCoord;
+  readonly currentCover?: CoverInspection;
 }
 
 export interface MemberInspection {

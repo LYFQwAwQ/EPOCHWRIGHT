@@ -7,6 +7,13 @@ import {
   movementCostAtIndex,
   squaredGridDistance,
 } from "./map";
+import {
+  applyBasisPointReduction,
+  buildCoverSlots,
+  claimCoverSlot,
+  releaseCoverSlot,
+  resolveDirectionalCoverEffect,
+} from "./cover";
 import type {
   ContactState,
   GroupState,
@@ -32,6 +39,8 @@ import type {
   BattleSetup,
   BattleSimulation,
   BattleTerminationReason,
+  CoverSlot,
+  DirectionalCoverEffect,
   EntityInspection,
   FactionId,
   GridCoord,
@@ -110,6 +119,7 @@ export const createBattleSimulation = createSimulation;
 class StageOneBattleSimulation implements BattleSimulation {
   private readonly setup: BattleSetup;
   private readonly state: RuntimeState;
+  private readonly coverSlotsByCell: ReadonlyMap<number, CoverSlot>;
   private readonly pathfinder: Pathfinder;
   private readonly walkableComponentIds: Int32Array;
   private readonly setupHash: string;
@@ -118,7 +128,10 @@ class StageOneBattleSimulation implements BattleSimulation {
     validateBattleSetup(inputSetup);
     this.setup = cloneSetup(inputSetup);
     this.setupHash = hashBattleSetup(this.setup);
-    this.state = createRuntimeState(this.setup);
+    this.coverSlotsByCell = new Map(
+      buildCoverSlots(this.setup.map).map((slot) => [cellIndex(this.setup.map, slot.cell), slot]),
+    );
+    this.state = createRuntimeState(this.setup, this.coverSlotsByCell);
     this.pathfinder = createPathfinder(this.setup.map);
     this.walkableComponentIds = buildWalkableComponentIds(this.setup.map);
     this.assignDefenseSlots();
@@ -304,6 +317,13 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
     }
 
+    for (const [slotId, groupId] of [...this.state.coverOccupancy].sort(([a], [b]) =>
+      compareStrings(a, b),
+    )) {
+      hasher.addString(slotId);
+      hasher.addString(groupId);
+    }
+
     for (const faction of [...this.state.factionKnowledge.values()].sort(compareByFactionId)) {
       hasher.addString(faction.factionId);
       for (const contact of sortedContacts(faction.contacts)) {
@@ -466,9 +486,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         }
 
         const distanceSquared = squaredGridDistance(observer.cell, target.cell);
+        const cover = this.getDirectionalCover(target, observer.cell);
+        const observerCover = this.getDirectionalCover(observer, target.cell);
         const candidate =
           distanceSquared <= sightRangeSquared &&
-          hasLineOfSight(this.setup.map, observer.cell, target.cell);
+          hasLineOfSight(this.setup.map, observer.cell, target.cell, {
+            ignoredStaticObjectCells: this.activeCoverObjectCells(observerCover, cover),
+          });
         const detection = observer.localDetections.get(target.id) ?? {
           progressBps: 0,
           lastCandidateTick: -1,
@@ -480,9 +504,13 @@ class StageOneBattleSimulation implements BattleSimulation {
           const exposureBonus =
             this.state.tick - target.lastFiredTick <= this.setup.rules.ticksPerSecond ? 1_100 : 0;
           const distanceBonus = Math.max(0, sightRangeSquared - distanceSquared) * 7;
+          const detectionGain = applyBasisPointReduction(
+            480 + distanceBonus + exposureBonus,
+            cover?.effect.concealmentBps ?? 0,
+          );
           detection.progressBps = Math.min(
             DETECTION_THRESHOLD_BPS,
-            detection.progressBps + 480 + distanceBonus + exposureBonus,
+            detection.progressBps + Math.max(1, detectionGain),
           );
           detection.lastCandidateTick = this.state.tick;
           if (detection.progressBps >= DETECTION_THRESHOLD_BPS) {
@@ -569,6 +597,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private decideForGroup(group: GroupState): void {
     if (activeMemberCount(group) === 0) {
       this.cancelMovement(group);
+      this.releaseCover(group);
       this.state.occupancy.delete(cellIndex(this.setup.map, group.cell));
       group.action = hasEvacuatedMembers(group) ? "evacuated" : "combat-ineffective";
       group.decisionReason = "no-active-members";
@@ -1001,6 +1030,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
       const oldIndex = cellIndex(this.setup.map, group.cell);
       const destinationIndex = cellIndex(this.setup.map, group.movingTo);
+      this.releaseCover(group);
       this.state.occupancy.delete(oldIndex);
       this.state.reservations.delete(destinationIndex);
       group.headingRadians = Math.atan2(
@@ -1012,6 +1042,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       group.moveProgress = 0;
       group.moveCost = 0;
       this.state.occupancy.set(destinationIndex, group.id);
+      this.claimCover(group);
       if (group.path.length > 0 && sameCoord(group.path[0] ?? group.cell, group.cell)) {
         group.path.shift();
       }
@@ -1093,9 +1124,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
       const distanceSquared = squaredGridDistance(group.cell, target.cell);
+      const cover = this.getDirectionalCover(target, group.cell);
+      const shooterCover = this.getDirectionalCover(group, target.cell);
       if (
         distanceSquared > this.setup.rules.weaponRangeCells ** 2 ||
-        !hasLineOfSight(this.setup.map, group.cell, target.cell) ||
+        !hasLineOfSight(this.setup.map, group.cell, target.cell, {
+          ignoredStaticObjectCells: this.activeCoverObjectCells(shooterCover, cover),
+        }) ||
         this.hasFriendlyBlocker(group, target)
       ) {
         continue;
@@ -1122,7 +1157,10 @@ class StageOneBattleSimulation implements BattleSimulation {
           shooterMemberId: member.id,
           targetGroupId: target.id,
           shotOrdinal,
-          hitChanceBps: calculateHitChance(group, member, target, this.setup.rules.preferredRangeCells),
+          hitChanceBps: applyBasisPointReduction(
+            calculateHitChance(group, member, target, this.setup.rules.preferredRangeCells),
+            cover?.effect.protectionBps ?? 0,
+          ),
         });
         shotOrdinal += 1;
       }
@@ -1225,6 +1263,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
     member.health = next;
+    if (activeMemberCount(targetGroup) === 0) {
+      this.releaseCover(targetGroup);
+    }
     targetGroup.moraleBps = Math.max(
       0,
       targetGroup.moraleBps - (next === "dead" ? 900 : next === "incapacitated" ? 650 : 220),
@@ -1299,6 +1340,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       group.decisionReason = "low-morale";
       group.path = [];
       group.goal = undefined;
+      this.releaseCover(group);
       this.state.occupancy.delete(cellIndex(this.setup.map, group.cell));
       if (group.movingTo) {
         this.state.reservations.delete(cellIndex(this.setup.map, group.movingTo));
@@ -1509,6 +1551,61 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
   }
 
+  private getCurrentCoverSlot(group: GroupState): CoverSlot | undefined {
+    const slot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
+    return slot && this.state.coverOccupancy.get(slot.id) === group.id ? slot : undefined;
+  }
+
+  private getDirectionalCover(
+    target: GroupState,
+    threat: GridCoord,
+  ): { readonly slot: CoverSlot; readonly effect: DirectionalCoverEffect } | undefined {
+    const slot = this.getCurrentCoverSlot(target);
+    if (!slot) {
+      return undefined;
+    }
+    return {
+      slot,
+      effect: resolveDirectionalCoverEffect(slot, activeMemberCount(target), threat),
+    };
+  }
+
+  private activeCoverObjectCells(
+    ...coverContexts: readonly (
+      | { readonly slot: CoverSlot; readonly effect: DirectionalCoverEffect }
+      | undefined
+    )[]
+  ): readonly GridCoord[] {
+    const cells = new Map<number, GridCoord>();
+    for (const cover of coverContexts) {
+      if (
+        !cover ||
+        (cover.effect.protectionBps === 0 && cover.effect.concealmentBps === 0)
+      ) {
+        continue;
+      }
+      cells.set(cellIndex(this.setup.map, cover.slot.objectCell), cover.slot.objectCell);
+    }
+    return [...cells.values()];
+  }
+
+  private claimCover(group: GroupState): void {
+    if (activeMemberCount(group) === 0) {
+      return;
+    }
+    const slot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
+    if (slot) {
+      claimCoverSlot(this.state.coverOccupancy, slot, group.id);
+    }
+  }
+
+  private releaseCover(group: GroupState): void {
+    const slot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
+    if (slot) {
+      releaseCoverSlot(this.state.coverOccupancy, slot.id, group.id);
+    }
+  }
+
   private cancelMovement(group: GroupState): void {
     if (group.movingTo) {
       this.state.reservations.delete(cellIndex(this.setup.map, group.movingTo));
@@ -1557,6 +1654,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         contacts.set(contact.targetGroupId, contact);
       }
     }
+    const currentCover = this.getCurrentCoverSlot(group);
     return {
       kind: "group",
       id: group.id,
@@ -1591,6 +1689,16 @@ class StageOneBattleSimulation implements BattleSimulation {
       ),
       path: group.path.map((coord) => ({ ...coord })),
       defenseSlot: group.defenseSlot ? { ...group.defenseSlot } : undefined,
+      currentCover: currentCover
+        ? {
+            slotId: currentCover.id,
+            staticObjectId: currentCover.staticObjectId,
+            staticObjectKind: currentCover.staticObjectKind,
+            facing: currentCover.facing,
+            capacity: currentCover.capacity,
+            coveredMembers: Math.min(currentCover.capacity, activeMemberCount(group)),
+          }
+        : undefined,
     };
   }
 
@@ -1625,7 +1733,10 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 }
 
-function createRuntimeState(setup: BattleSetup): RuntimeState {
+function createRuntimeState(
+  setup: BattleSetup,
+  coverSlotsByCell: ReadonlyMap<number, CoverSlot>,
+): RuntimeState {
   const groups = [...setup.groups]
     .sort(compareById)
     .map<GroupState>((spawn) => ({
@@ -1666,6 +1777,13 @@ function createRuntimeState(setup: BattleSetup): RuntimeState {
   const membersById = new Map(
     groups.flatMap((group) => group.members.map((member) => [member.id, member] as const)),
   );
+  const coverOccupancy = new Map<string, GroupId>();
+  for (const group of groups) {
+    const slot = coverSlotsByCell.get(cellIndex(setup.map, group.cell));
+    if (slot && activeMemberCount(group) > 0) {
+      claimCoverSlot(coverOccupancy, slot, group.id);
+    }
+  }
   return {
     setup,
     groups,
@@ -1683,6 +1801,7 @@ function createRuntimeState(setup: BattleSetup): RuntimeState {
       groups.map((group) => [cellIndex(setup.map, group.cell), group.id]),
     ),
     reservations: new Map(),
+    coverOccupancy,
     objective:
       setup.mode.kind === "defense"
         ? {

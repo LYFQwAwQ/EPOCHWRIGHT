@@ -509,6 +509,7 @@ export function hasLineOfSight(
   map: BattleMap,
   from: GridCoord,
   to: GridCoord,
+  options: { readonly ignoredStaticObjectCells?: readonly GridCoord[] } = {},
 ): boolean {
   if (!isInsideMap(map, from) || !isInsideMap(map, to)) {
     return false;
@@ -523,6 +524,9 @@ export function hasLineOfSight(
 
   const observerHeight = heightAt(map, from) + 4;
   const targetHeight = heightAt(map, to) + 3;
+  const ignoredStaticObjectIndices = (options.ignoredStaticObjectCells ?? [])
+    .filter((coord) => isInsideMap(map, coord))
+    .map((coord) => cellIndex(map, coord));
   let previousIndex = cellIndex(map, from);
 
   for (let step = 1; step < steps; step += 1) {
@@ -536,7 +540,9 @@ export function hasLineOfSight(
     previousIndex = index;
 
     const staticObjectDefinition =
-      STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[map.layers.staticOccupancy[index] ?? 0];
+      ignoredStaticObjectIndices.includes(index)
+        ? undefined
+        : STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[map.layers.staticOccupancy[index] ?? 0];
     const terrainHeight =
       heightAt(map, coord) +
       Math.max(

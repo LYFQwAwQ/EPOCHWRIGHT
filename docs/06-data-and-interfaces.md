@@ -139,7 +139,23 @@ interface StaticMapObject {
 }
 ```
 
-`staticObjects` 保存身份、类型、单格锚点和方向，`staticOccupancy` 保存每格的对象类型 ID 并在验证时与对象列表逐格核对。方向约定为 `0=+z`、`2=+x`、`4=-z`、`6=-x`，中间整数表示对角方向。当前对象不可摧毁；可站立的掩体槽位与对象格分离，后续作为独立规则扩展。
+`staticObjects` 保存身份、类型、单格锚点和方向，`staticOccupancy` 保存每格的对象类型 ID 并在验证时与对象列表逐格核对。方向约定为 `0=+z`、`2=+x`、`4=-z`、`6=-x`，中间整数表示对角方向。当前对象不可摧毁；可站立的掩体槽位与对象格分离，并从对象的稳定字段与规则版本确定性派生：
+
+```ts
+interface CoverSlot {
+  readonly id: string;
+  readonly staticObjectId: string;
+  readonly staticObjectKind: StaticObjectKind;
+  readonly objectCell: GridCoord;
+  readonly cell: GridCoord;
+  readonly facing: StaticObjectFacing;
+  readonly capacity: number;
+  readonly protectionBps: number;
+  readonly concealmentBps: number;
+}
+```
+
+槽位不是新的地图序列化字段，因此地图仍为 `map-2`。动态 `coverOccupancy` 只保存在模拟状态并进入状态哈希；按需 `GroupInspection.currentCover` 投影槽位稳定 ID、对象、方向、容量和当前覆盖人数，不扩大全量 `RenderFrame`。
 
 索引统一为 `index = z * width + x`。地图创建后视为只读，动态占用、接触和临时效果放在模拟状态中。
 
@@ -482,3 +498,5 @@ interface BattleResult {
 - 地图另存 `generatorVersion`。
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
+
+当前 `BattleSetup` schema 为 `stage-2`，规则为 `stage-2.3`，地图为 `map-2`。`stage-2.3` 在不改变地图结构的前提下加入静态对象掩体槽位、权威占用以及方向性发现/命中语义；旧 rules 输入仍明确拒绝。

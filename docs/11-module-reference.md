@@ -63,7 +63,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/internal.ts`
 
-模拟私有运行时状态，包括成员、小队、感知、接触、情报队列、占用与目标状态。此文件不是公共 API。
+模拟私有运行时状态，包括成员、小队、感知、接触、情报队列、网格/掩体占用与目标状态。此文件不是公共 API。
 
 新增字段通常还需要更新 `createRuntimeState`、`getStateHash`、结果或检查投影，以及测试。
 
@@ -77,7 +77,11 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 包含参数化随机高度、山地、开阔水体、湿地和静态对象生成，以及地图验证与哈希、网格索引、步行成本投影、可通行查询、高度查询、视线和距离函数。生成器使用独立 seed 流和稳定候选排序，按全图格数分配可满足的精确配额，并保留两侧部署带与跨图主通道；输入在分配数组前受总格数和长宽比限制。`map-2` 使用嵌套 TypedArray 图层，索引为 `z * width + x`。
 
-地表类型、水深和静态对象是正交权威数据；沼泽由泥地与浅水组合表达。静态对象列表保存稳定 ID、类型、锚格和 8 向朝向，`staticOccupancy` 是按类型 ID 编码并强制逐格核对的稠密投影。树、岩石和墙段当前阻挡步行与视线，但尚未提供可占用槽位或伤害减免。
+地表类型、水深和静态对象是正交权威数据；沼泽由泥地与浅水组合表达。静态对象列表保存稳定 ID、类型、锚格和 8 向朝向，`staticOccupancy` 是按类型 ID 编码并强制逐格核对的稠密投影。树、岩石和墙段阻挡步行与视线；占用者使用掩体时，视线查询只忽略提供该槽位的对象，再由统一掩体效果处理部分暴露。
+
+### `src/sim/cover.ts`
+
+从只读静态对象确定性派生可站立槽位，负责容量与正面/侧面/后方方向效果、基点缩放，以及所有者约束的占用声明和释放。槽位冲突按稳定对象 ID 解决；模块不选择 AI 目标，也不拥有 tick。运行时 `coverOccupancy` 由 `simulation.ts` 维护并进入状态哈希。
 
 ### `src/sim/pathfinder.ts`
 
@@ -100,6 +104,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 - 固定顺序的 tick 管线；
 - 有限感知与延迟情报；
 - 小队 AI、路径和占用；
+- 掩体占用生命周期，以及发现/命中的统一方向效果；
 - 弹匣、射击意图、伤情与压制；
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
