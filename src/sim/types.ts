@@ -1,7 +1,7 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
-export const BATTLE_RULES_VERSION = "stage-2" as const;
+export const BATTLE_RULES_VERSION = "stage-2.1" as const;
 export const BATTLE_MAP_SCHEMA_VERSION = "map-1" as const;
 
 export const SURFACE_TYPE_IDS = {
@@ -126,6 +126,8 @@ export interface BattleSetupOptions {
   readonly groupsPerFaction?: number;
   readonly mountainDensity?: number;
   readonly roughness?: number;
+  readonly waterCoverage?: number;
+  readonly wetlandCoverage?: number;
   readonly maximumDurationSeconds?: number;
   readonly stalemateSeconds?: number;
   readonly mode?: BattleModeKind;

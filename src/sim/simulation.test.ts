@@ -23,7 +23,7 @@ describe("battle simulation", () => {
       seed: "map-determinism",
       width: 42,
       height: 30,
-      mountainDensity: 0.48,
+      mountainDensity: 0.18,
       roughness: 0.65,
     };
     const first = generateBattleMap(options);
@@ -44,6 +44,88 @@ describe("battle simulation", () => {
     for (let index = 1; index < path.length; index += 1) {
       expect(canTraverseStep(first, path[index - 1]!, path[index]!)).toBe(true);
     }
+  });
+
+  it("keeps patrol goals on the group's reachable terrain component", () => {
+    const groups = [
+      createGroup("ember-patrol", "ember", 2, 3),
+      createGroup("azure-patrol", "azure", 37, 3),
+    ];
+    const base = createFlatSetup(groups);
+    const map = createFlatMap(40, 24);
+    map.layers.waterDepthUnits.fill(WATER_DEPTH_UNITS.deep);
+    for (let x = 0; x < map.width; x += 1) {
+      map.layers.waterDepthUnits[3 * map.width + x] = WATER_DEPTH_UNITS.none;
+    }
+    for (const x of [15, 24]) {
+      for (const z of [7, 12, 17]) {
+        map.layers.waterDepthUnits[z * map.width + x] = WATER_DEPTH_UNITS.none;
+      }
+    }
+
+    const simulation = createSimulation({ ...base, map });
+    for (const group of groups) {
+      const inspection = simulation.inspect(group.id);
+      if (inspection?.kind !== "group") {
+        throw new Error(`Expected group inspection for ${group.id}.`);
+      }
+      expect(inspection.path.length).toBeGreaterThan(1);
+      expect(inspection.path.every((coord) => coord.z === 3)).toBe(true);
+    }
+  });
+
+  it("finishes an atomic movement step while known-contact goals update", () => {
+    const simulation = createSimulation(
+      createBattleSetup({
+        seed: "audit-2",
+        width: 40,
+        height: 28,
+        groupsPerFaction: 3,
+        mode: "conflict",
+      }),
+    );
+    simulation.step(330);
+    const before = simulation.inspect("ember-squad-3") as GroupInspection;
+
+    simulation.step(70);
+    const after = simulation.inspect("ember-squad-3") as GroupInspection;
+    expect(after.cell).not.toEqual(before.cell);
+  });
+
+  it("moves around a friendly fire-line blocker before engaging", () => {
+    const setup = createFlatSetup(
+      [
+        createGroup("ember-front-4", "ember", 14, 12),
+        createGroup("ember-rear-0", "ember", 13, 12),
+        createGroup("azure-target", "azure", 15, 12),
+      ],
+      {
+        sightRangeCells: 40,
+        weaponRangeCells: 2,
+        preferredRangeCells: 1,
+        maximumDurationTicks: 1_000,
+      },
+    );
+    const simulation = createSimulation(setup);
+    const replay = createSimulation(setup);
+    let movedOffLine = false;
+    let rearFired = false;
+
+    for (let tick = 0; tick < 100 && simulation.status === "active"; tick += 1) {
+      simulation.step();
+      replay.step();
+      expect(replay.getStateHash()).toBe(simulation.getStateHash());
+      const rear = simulation.inspect("ember-rear-0") as GroupInspection;
+      movedOffLine ||= rear.cell.z !== 12;
+      rearFired ||= simulation
+        .drainEvents()
+        .some(
+          (event) => event.type === "weapon-fired" && event.groupId === "ember-rear-0",
+        );
+    }
+
+    expect(movedOffLine).toBe(true);
+    expect(rearFired).toBe(true);
   });
 
   it("keeps direct observation local until the 15-tick faction delay expires", () => {

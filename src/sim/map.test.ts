@@ -8,9 +8,11 @@ import {
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   canTraverseStep,
+  cellIndex,
   createBattleSetup,
   createPathfinder,
   createSimulation,
+  generateBattleMap,
   hasLineOfSight,
   isWalkable,
   movementCostAt,
@@ -22,6 +24,244 @@ import {
 } from "./index";
 
 describe("standard terrain layers", () => {
+  it("generates deterministic, configurable mountains, water, and wetlands", () => {
+    const common = {
+      seed: "composite-terrain",
+      width: 56,
+      height: 42,
+      roughness: 0.52,
+    };
+    const sparse = generateBattleMap({
+      ...common,
+      mountainDensity: 0.08,
+      waterCoverage: 0.02,
+      wetlandCoverage: 0.01,
+    });
+    const mountainDense = generateBattleMap({
+      ...common,
+      mountainDensity: 0.28,
+      waterCoverage: 0.02,
+      wetlandCoverage: 0.01,
+    });
+    const waterDense = generateBattleMap({
+      ...common,
+      mountainDensity: 0.08,
+      waterCoverage: 0.16,
+      wetlandCoverage: 0.01,
+    });
+    const wetlandDense = generateBattleMap({
+      ...common,
+      mountainDensity: 0.08,
+      waterCoverage: 0.02,
+      wetlandCoverage: 0.12,
+    });
+    const repeated = generateBattleMap({
+      ...common,
+      mountainDensity: 0.08,
+      waterCoverage: 0.02,
+      wetlandCoverage: 0.12,
+    });
+
+    expect(wetlandDense.layers.heightUnits).toEqual(repeated.layers.heightUnits);
+    expect(wetlandDense.layers.surfaceTypeIds).toEqual(repeated.layers.surfaceTypeIds);
+    expect(wetlandDense.layers.waterDepthUnits).toEqual(repeated.layers.waterDepthUnits);
+    expect(wetlandDense.layers.cellFlags).toEqual(repeated.layers.cellFlags);
+
+    const sparseSummary = summarizeTerrain(sparse);
+    const mountainSummary = summarizeTerrain(mountainDense);
+    const waterSummary = summarizeTerrain(waterDense);
+    const wetlandSummary = summarizeTerrain(wetlandDense);
+    const cellCount = common.width * common.height;
+    expect(sparseSummary.mountainCells).toBe(Math.round(cellCount * 0.08));
+    expect(mountainSummary.mountainCells).toBe(Math.round(cellCount * 0.28));
+    expect(waterSummary.openWaterCells).toBe(Math.round(cellCount * 0.16));
+    expect(wetlandSummary.wetlandCells).toBe(Math.round(cellCount * 0.12));
+    expect(waterSummary.deepWaterCells).toBeGreaterThan(0);
+    expect(wetlandSummary.shallowWaterCells).toBeGreaterThan(0);
+
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: Number.NaN,
+        waterCoverage: 0.1,
+        wetlandCoverage: 0.1,
+      }),
+    ).toThrow(/mountainDensity/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: 0.2,
+        waterCoverage: Number.POSITIVE_INFINITY,
+        wetlandCoverage: 0.1,
+      }),
+    ).toThrow(/waterCoverage/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: 0.2,
+        waterCoverage: 0.1,
+        wetlandCoverage: 1.01,
+      }),
+    ).toThrow(/wetlandCoverage/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: 1,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+      }),
+    ).toThrow(/mountainDensity cannot be satisfied/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: 0,
+        waterCoverage: 1,
+        wetlandCoverage: 0,
+      }),
+    ).toThrow(/waterCoverage cannot be satisfied/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        mountainDensity: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 1,
+      }),
+    ).toThrow(/wetlandCoverage cannot be satisfied/);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        width: 300,
+        height: 300,
+        mountainDensity: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+      }),
+    ).toThrow(/cannot exceed 65536 cells/i);
+    expect(() =>
+      generateBattleMap({
+        ...common,
+        width: 100,
+        height: 20,
+        mountainDensity: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+      }),
+    ).toThrow(/aspect ratio/i);
+  });
+
+  it("keeps deployments and a defense attack route legal on composite terrain", () => {
+    const setup = createBattleSetup({
+      seed: "composite-defense-route",
+      width: 56,
+      height: 42,
+      groupsPerFaction: 4,
+      mode: "defense",
+      mountainDensity: 0.22,
+      roughness: 0.62,
+      waterCoverage: 0.18,
+      wetlandCoverage: 0.14,
+    });
+    if (setup.mode.kind !== "defense") {
+      throw new Error("Expected defense mode.");
+    }
+    const mode = setup.mode;
+
+    for (const group of setup.groups) {
+      expect(isWalkable(setup.map, group.spawn)).toBe(true);
+      expect(isWalkable(setup.map, group.evacuation)).toBe(true);
+    }
+    expect(isWalkable(setup.map, mode.objective.center)).toBe(true);
+
+    const pathfinder = createPathfinder(setup.map);
+    const attackPaths = setup.groups
+      .filter((group) => group.factionId === mode.attackerFactionId)
+      .map((group) => pathfinder.findPath(group.spawn, mode.objective.center));
+    expect(attackPaths.every((path) => path.length > 1)).toBe(true);
+
+    const disconnected = createBattleSetup({
+      seed: "disconnected-defense-route",
+      width: 40,
+      height: 24,
+      groupsPerFaction: 1,
+      mode: "defense",
+      mountainDensity: 0,
+      roughness: 0,
+      waterCoverage: 0,
+      wetlandCoverage: 0,
+    });
+    for (let z = 0; z < disconnected.map.height; z += 1) {
+      disconnected.map.layers.waterDepthUnits[z * disconnected.map.width + 20] =
+        WATER_DEPTH_UNITS.deep;
+    }
+    expect(() => validateBattleSetup(disconnected)).toThrow(/attack route/i);
+
+    const disconnectedDefender = createBattleSetup({
+      seed: "disconnected-defense-position",
+      width: 40,
+      height: 24,
+      groupsPerFaction: 1,
+      mode: "defense",
+      mountainDensity: 0,
+      roughness: 0,
+      waterCoverage: 0,
+      wetlandCoverage: 0,
+    });
+    for (let z = 0; z < disconnectedDefender.map.height; z += 1) {
+      disconnectedDefender.map.layers.waterDepthUnits[
+        z * disconnectedDefender.map.width + 32
+      ] = WATER_DEPTH_UNITS.deep;
+    }
+    expect(() => validateBattleSetup(disconnectedDefender)).toThrow(/defense route/i);
+
+    const evacuationBase = createBattleSetup({
+      seed: "disconnected-evacuation-route",
+      width: 40,
+      height: 24,
+      groupsPerFaction: 1,
+      mountainDensity: 0,
+      roughness: 0,
+      waterCoverage: 0,
+      wetlandCoverage: 0,
+    });
+    const isolatedEvacuation = { x: 10, z: 10 };
+    const evacuationDisconnected: BattleSetup = {
+      ...evacuationBase,
+      groups: evacuationBase.groups.map((group, index) =>
+        index === 0 ? { ...group, evacuation: isolatedEvacuation } : group,
+      ),
+    };
+    for (let dz = -1; dz <= 1; dz += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dz === 0) {
+          continue;
+        }
+        evacuationDisconnected.map.layers.waterDepthUnits[
+          (isolatedEvacuation.z + dz) * evacuationDisconnected.map.width +
+            isolatedEvacuation.x +
+            dx
+        ] = WATER_DEPTH_UNITS.deep;
+      }
+    }
+    expect(() => validateBattleSetup(evacuationDisconnected)).toThrow(/evacuation cell/i);
+
+    const disconnectedConflict = createBattleSetup({
+      seed: "disconnected-conflict-route",
+      width: 40,
+      height: 24,
+      groupsPerFaction: 1,
+      mountainDensity: 0,
+      roughness: 0,
+      waterCoverage: 0,
+      wetlandCoverage: 0,
+    });
+    for (let z = 0; z < disconnectedConflict.map.height; z += 1) {
+      disconnectedConflict.map.layers.waterDepthUnits[
+        z * disconnectedConflict.map.width + 20
+      ] = WATER_DEPTH_UNITS.deep;
+    }
+    expect(() => validateBattleSetup(disconnectedConflict)).toThrow(/cross-map attack route/i);
+  });
+
   it("combines surface and water layers through the foot movement matrix", () => {
     const map = createFlatMap(6, 2);
     setTerrain(map, { x: 1, z: 0 }, SURFACE_TYPE_IDS.sand, WATER_DEPTH_UNITS.none);
@@ -96,6 +336,28 @@ describe("standard terrain layers", () => {
     expect(canTraverseStep(map, { x: 1, z: 0 }, { x: 1, z: 1 })).toBe(false);
     expect(() => movementStepCost(map, { x: 1, z: 0 }, { x: 1, z: 1 })).toThrow(
       /illegal movement step/i,
+    );
+
+    const dynamicMap = createFlatMap(3, 3);
+    const dynamicallyBlocked = new Set([1, dynamicMap.width]);
+    expect(
+      createPathfinder(dynamicMap).findPath(
+        { x: 0, z: 0 },
+        { x: 1, z: 1 },
+        dynamicallyBlocked,
+      ),
+    ).toEqual([]);
+
+    const detourMap = createFlatMap(5, 3);
+    const occupiedCenter = 1 * detourMap.width + 2;
+    const detour = createPathfinder(detourMap).findPath(
+      { x: 0, z: 1 },
+      { x: 4, z: 1 },
+      new Set([occupiedCenter]),
+    );
+    expect(detour.length).toBeGreaterThan(0);
+    expect(detour.some((coord) => cellIndex(detourMap, coord) === occupiedCenter)).toBe(
+      false,
     );
 
     const waterLine = createFlatMap(5, 1);
@@ -205,6 +467,12 @@ describe("standard terrain layers", () => {
         schemaVersion: "stage-1",
       } as unknown as BattleSetup),
     ).toThrow(/setup version/i);
+    expect(() =>
+      validateBattleSetup({
+        ...firstSetup,
+        rulesVersion: "stage-2",
+      } as unknown as BattleSetup),
+    ).toThrow(/setup version/i);
 
     const changedIndex = 10 * secondSetup.map.width + 10;
     secondSetup.map.layers.surfaceTypeIds[changedIndex] = SURFACE_TYPE_IDS.sand;
@@ -259,4 +527,45 @@ function setTerrain(
   const index = coord.z * map.width + coord.x;
   map.layers.surfaceTypeIds[index] = surfaceTypeId;
   map.layers.waterDepthUnits[index] = waterDepthUnits;
+}
+
+function summarizeTerrain(map: BattleMap): {
+  readonly mountainCells: number;
+  readonly waterCells: number;
+  readonly openWaterCells: number;
+  readonly shallowWaterCells: number;
+  readonly deepWaterCells: number;
+  readonly wetlandCells: number;
+} {
+  let mountainCells = 0;
+  let waterCells = 0;
+  let shallowWaterCells = 0;
+  let deepWaterCells = 0;
+  let wetlandCells = 0;
+  for (let index = 0; index < map.width * map.height; index += 1) {
+    const waterDepth = map.layers.waterDepthUnits[index];
+    const surfaceType = map.layers.surfaceTypeIds[index];
+    if (((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0) {
+      mountainCells += 1;
+    }
+    if (waterDepth !== WATER_DEPTH_UNITS.none) {
+      waterCells += 1;
+    }
+    if (waterDepth === WATER_DEPTH_UNITS.shallow) {
+      shallowWaterCells += 1;
+      if (surfaceType === SURFACE_TYPE_IDS.mud) {
+        wetlandCells += 1;
+      }
+    } else if (waterDepth === WATER_DEPTH_UNITS.deep) {
+      deepWaterCells += 1;
+    }
+  }
+  return {
+    mountainCells,
+    waterCells,
+    openWaterCells: waterCells - wetlandCells,
+    shallowWaterCells,
+    deepWaterCells,
+    wetlandCells,
+  };
 }

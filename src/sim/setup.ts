@@ -2,8 +2,10 @@ import {
   generateBattleMap,
   hashBattleMap,
   isWalkable,
+  primaryAttackRouteCenterZ,
   validateBattleMap,
 } from "./map";
+import { createPathfinder } from "./pathfinder";
 import { StateHasher } from "./rng";
 import {
   BATTLE_RULES_VERSION,
@@ -40,8 +42,10 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     seed,
     width,
     height,
-    mountainDensity: options.mountainDensity ?? 0.34,
+    mountainDensity: options.mountainDensity ?? 0.12,
     roughness: options.roughness ?? 0.45,
+    waterCoverage: options.waterCoverage ?? 0.1,
+    wetlandCoverage: options.wetlandCoverage ?? 0.08,
   });
   const factions = DEFAULT_FACTIONS.map((faction) => ({ ...faction })) as [
     FactionSetup,
@@ -176,6 +180,7 @@ export function validateBattleSetup(setup: BattleSetup): void {
   ) {
     throw new Error("Battle duration and stability windows must be positive.");
   }
+  validateRequiredRoutes(setup);
 }
 
 export function hashBattleSetup(setup: BattleSetup): string {
@@ -258,8 +263,7 @@ function createDefenseMode(
 ): DefenseModeSetup {
   const targetX = Math.round((map.width - 1) * 0.7);
   const corridorZ = Math.round(
-    map.height / 2 +
-      Math.sin((targetX / Math.max(1, map.width - 1)) * Math.PI * 2) * map.height * 0.08,
+    primaryAttackRouteCenterZ(map.width, map.height, targetX),
   );
   return {
     kind: "defense",
@@ -342,4 +346,44 @@ function isLegalDeployment(map: BattleMap, coord: GridCoord): boolean {
     return false;
   }
   return isWalkable(map, coord);
+}
+
+function validateRequiredRoutes(setup: BattleSetup): void {
+  const pathfinder = createPathfinder(setup.map);
+  const hasRoute = (from: GridCoord, to: GridCoord): boolean =>
+    (from.x === to.x && from.z === to.z) || pathfinder.findPath(from, to).length > 0;
+  const evacuationBlocked = setup.groups.find(
+    (group) => !hasRoute(group.spawn, group.evacuation),
+  );
+  if (evacuationBlocked) {
+    throw new Error(`Group ${evacuationBlocked.id} has no legal route to its evacuation cell.`);
+  }
+
+  if (setup.mode.kind === "defense") {
+    const mode = setup.mode;
+    const missionBlocked = setup.groups.find(
+      (group) => !hasRoute(group.spawn, mode.objective.center),
+    );
+    if (missionBlocked) {
+      const routeKind =
+        missionBlocked.factionId === mode.attackerFactionId ? "attack" : "defense";
+      throw new Error(
+        `Group ${missionBlocked.id} has no legal ${routeKind} route to the objective.`,
+      );
+    }
+    return;
+  }
+
+  const firstFactionGroups = setup.groups.filter(
+    (group) => group.factionId === setup.factions[0].id,
+  );
+  const secondFactionGroups = setup.groups.filter(
+    (group) => group.factionId === setup.factions[1].id,
+  );
+  const hasCrossMapRoute = firstFactionGroups.some((first) =>
+    secondFactionGroups.some((second) => hasRoute(first.spawn, second.spawn)),
+  );
+  if (!hasCrossMapRoute) {
+    throw new Error("Conflict mode requires at least one legal cross-map attack route.");
+  }
 }

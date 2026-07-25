@@ -7,7 +7,14 @@ interface BattleTestApi {
   getMapLayerSummary():
     | {
         schemaVersion: string;
+        width: number;
+        height: number;
         cellCount: number;
+        heightRangeUnits: number;
+        mountainCellCount: number;
+        shallowWaterCellCount: number;
+        deepWaterCellCount: number;
+        wetlandCellCount: number;
         layerLengths: readonly number[];
         surfaceTypeCount: number;
         layersAreTypedArrays: boolean;

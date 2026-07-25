@@ -95,6 +95,139 @@ describe("defense mode", () => {
     }
   });
 
+  it("reroutes a rear assault group around a friendly group holding the route", () => {
+    const setup = createDefenseSetup(
+      createFlatMap(40, 24),
+      { x: 20, z: 12 },
+      [
+        createGroup("ember-front", "ember", 18, 12),
+        createGroup("ember-rear", "ember", 17, 12),
+        createGroup("azure-defender", "azure", 20, 12),
+      ],
+      { sightRangeCells: 40, maximumDurationTicks: 1_000 },
+    );
+    const simulation = createSimulation(setup);
+    const replay = createSimulation(setup);
+    let receivedDetour = false;
+    let movedOffLine = false;
+    let rearFired = false;
+
+    for (let tick = 0; tick < 100 && simulation.status === "active"; tick += 1) {
+      simulation.step();
+      replay.step();
+      expect(replay.getStateHash()).toBe(simulation.getStateHash());
+      const rear = simulation.inspect("ember-rear") as GroupInspection;
+      if (rear.destination && (rear.destination.x !== 18 || rear.destination.z !== 12)) {
+        receivedDetour = true;
+      }
+      movedOffLine ||= rear.cell.z !== 12;
+      rearFired ||= simulation
+        .drainEvents()
+        .some((event) => event.type === "weapon-fired" && event.groupId === "ember-rear");
+    }
+
+    expect(receivedDetour).toBe(true);
+    expect(movedOffLine).toBe(true);
+    expect(rearFired).toBe(true);
+  });
+
+  it("finishes a fire-line side step after the friendly blocker disappears", () => {
+    const map = createFlatMap(40, 24);
+    const slowStepIndex = 13 * map.width + 20;
+    map.layers.surfaceTypeIds[slowStepIndex] = SURFACE_TYPE_IDS.mud;
+    map.layers.waterDepthUnits[slowStepIndex] = WATER_DEPTH_UNITS.shallow;
+    const setup = createDefenseSetup(
+      map,
+      { x: 20, z: 12 },
+      [
+        createGroup("ember-target", "ember", 10, 12),
+        createGroup("azure-blocker", "azure", 19, 12),
+        createGroup("azure-shooter", "azure", 20, 12),
+      ],
+      { sightRangeCells: 40, maximumDurationTicks: 1_000 },
+    );
+    const simulation = createSimulation(setup);
+
+    simulation.step(10);
+    const before = simulation.inspect("azure-shooter") as GroupInspection;
+    expect(before).toMatchObject({
+      cell: { x: 20, z: 12 },
+      destination: { x: 20, z: 13 },
+      action: "moving-to-contact",
+      decisionReason: "clear-line-of-fire",
+    });
+
+    setGroupHealthForTest(simulation, "azure-blocker", "incapacitated");
+    simulation.step(5);
+    const after = simulation.inspect("azure-shooter") as GroupInspection;
+    expect(after.destination).toEqual(before.destination);
+
+    for (
+      let tick = 0;
+      tick < 60 && (simulation.inspect("azure-shooter") as GroupInspection).destination;
+      tick += 1
+    ) {
+      simulation.step();
+    }
+    expect((simulation.inspect("azure-shooter") as GroupInspection).cell).toEqual(
+      before.destination,
+    );
+  });
+
+  it("backs off failed congestion repaths and resumes when the route clears", () => {
+    const map = createFlatMap(40, 24);
+    map.layers.waterDepthUnits.fill(WATER_DEPTH_UNITS.deep);
+    for (let x = 0; x < map.width; x += 1) {
+      map.layers.waterDepthUnits[12 * map.width + x] = WATER_DEPTH_UNITS.none;
+    }
+    const setup = createDefenseSetup(
+      map,
+      { x: 20, z: 12 },
+      [
+        createGroup("ember-front", "ember", 18, 12),
+        createGroup("ember-rear", "ember", 17, 12),
+        createGroup("azure-defender", "azure", 20, 12),
+      ],
+      {
+        sightRangeCells: 0,
+        weaponRangeCells: 0,
+        preferredRangeCells: 0,
+        maximumDurationTicks: 1_000,
+      },
+    );
+    const simulation = createSimulation(setup);
+    const pathfinder = (
+      simulation as unknown as {
+        pathfinder: {
+          findPath(
+            start: GridCoord,
+            goal: GridCoord,
+            blockedCellIndices?: ReadonlySet<number>,
+          ): readonly GridCoord[];
+        };
+      }
+    ).pathfinder;
+    const findPath = pathfinder.findPath.bind(pathfinder);
+    let dynamicPathQueries = 0;
+    pathfinder.findPath = (start, goal, blockedCellIndices) => {
+      if (blockedCellIndices) {
+        dynamicPathQueries += 1;
+      }
+      return findPath(start, goal, blockedCellIndices);
+    };
+
+    simulation.step(20);
+    expect(dynamicPathQueries).toBe(1);
+    expect((simulation.inspect("ember-rear") as GroupInspection).cell).toEqual({
+      x: 17,
+      z: 12,
+    });
+
+    setGroupHealthForTest(simulation, "ember-front", "incapacitated");
+    simulation.step(30);
+    expect((simulation.inspect("ember-rear") as GroupInspection).cell.x).toBeGreaterThan(17);
+  });
+
   it("resolves capture, contest, and recovery from effective member power", () => {
     expect(
       resolveObjectiveTick({ progressBps: 1_000, attackerPower: 8, defenderPower: 0 }),
@@ -339,4 +472,23 @@ function createGroup(
       initialHealth,
     })),
   };
+}
+
+function setGroupHealthForTest(
+  simulation: ReturnType<typeof createSimulation>,
+  groupId: string,
+  health: HealthState,
+): void {
+  const runtime = simulation as unknown as {
+    state: {
+      groupsById: Map<string, { members: { health: HealthState }[] }>;
+    };
+  };
+  const group = runtime.state.groupsById.get(groupId);
+  if (!group) {
+    throw new Error(`Expected runtime group ${groupId}.`);
+  }
+  for (const member of group.members) {
+    member.health = health;
+  }
 }

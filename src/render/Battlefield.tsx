@@ -1,5 +1,5 @@
 import { CameraControls, OrthographicCamera } from "@react-three/drei";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
 import type CameraControlsImpl from "camera-controls";
 import { Vector3 } from "three";
@@ -21,12 +21,19 @@ interface CameraRigProps {
 
 function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRigProps) {
   const controlsRef = useRef<CameraControlsImpl>(null);
+  const canvasWidth = useThree((state) => state.size.width);
   const cellSize = map.cellSizeMm / 1_000;
+  const worldWidth = (map.width - 1) * cellSize;
+  const worldHeight = (map.height - 1) * cellSize;
   const center = useMemo(
     () => new Vector3(((map.width - 1) * cellSize) / 2, 0, ((map.height - 1) * cellSize) / 2),
     [cellSize, map.height, map.width],
   );
   const span = Math.max(map.width, map.height) * cellSize;
+  const fitZoom = Math.min(
+    3.2,
+    Math.max(1, canvasWidth / (Math.hypot(worldWidth, worldHeight) * 1.08)),
+  );
   const initialPosition = useMemo(
     () => [center.x + span * 0.56, span * 0.67, center.z + span * 0.62] as const,
     [center, span],
@@ -36,6 +43,7 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
     (controls: CameraControlsImpl | null) => {
       controlsRef.current = controls;
       if (controls) {
+        void controls.zoomTo(fitZoom, false);
         void controls.setLookAt(
           initialPosition[0],
           initialPosition[1],
@@ -47,10 +55,11 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
         );
       }
     },
-    [center, initialPosition],
+    [center, fitZoom, initialPosition],
   );
 
   useEffect(() => {
+    void controlsRef.current?.zoomTo(fitZoom, false);
     void controlsRef.current?.setLookAt(
       initialPosition[0],
       initialPosition[1],
@@ -60,7 +69,7 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
       center.z,
       false,
     );
-  }, [center, initialPosition, resetSignal]);
+  }, [center, fitZoom, initialPosition, resetSignal]);
 
   useFrame(() => {
     if (mode !== "follow" || !selectedGroupId) {
@@ -78,7 +87,7 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
         makeDefault
         near={0.1}
         far={2_000}
-        zoom={3.2}
+        zoom={fitZoom}
         position={initialPosition}
         onUpdate={(camera) => {
           camera.lookAt(center);
@@ -89,7 +98,7 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
         ref={connectControls}
         makeDefault
         dollyToCursor
-        minZoom={1.3}
+        minZoom={0.9}
         maxZoom={12}
         maxPolarAngle={Math.PI / 2.25}
         minPolarAngle={Math.PI / 7}

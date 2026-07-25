@@ -22,6 +22,7 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "direct-contact": "直接发现敌方",
   "shared-contact": "响应共享情报",
   "preferred-range": "保持有效射程",
+  "clear-line-of-fire": "绕开友军射线",
   "low-morale": "士气低落，向出口撤离",
   "no-active-members": "无可作战成员",
   "defend-objective": "守住分配的防御阵位",

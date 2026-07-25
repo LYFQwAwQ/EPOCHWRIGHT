@@ -14,13 +14,27 @@ export interface MapGenerationOptions {
   readonly seed: string;
   readonly width: number;
   readonly height: number;
+  /** Mountain share of all cells. */
   readonly mountainDensity: number;
   readonly roughness: number;
+  /** Open shallow/deep water share of all cells, excluding wetlands. */
+  readonly waterCoverage?: number;
+  /** Additional mud-and-shallow-water share of all cells. */
+  readonly wetlandCoverage?: number;
+}
+
+interface RankedCell {
+  readonly index: number;
+  readonly score: number;
 }
 
 const CELL_SIZE_MM = 4_000;
 const HEIGHT_UNIT_MM = 500;
 const KNOWN_CELL_FLAGS = MAP_CELL_FLAGS.groundBlocked;
+const DEPLOYMENT_BAND_WIDTH = 5;
+const PRIMARY_ROUTE_HALF_WIDTH = 2.5;
+const MAX_MAP_CELL_COUNT = 65_536;
+const MAX_MAP_ASPECT_RATIO = 4;
 
 export const FOOT_MOVEMENT_COST_MATRIX = [
   // Rows use SURFACE_TYPE_IDS; columns use WATER_DEPTH_UNITS. Zero is impassable.
@@ -44,6 +58,17 @@ export function coordFromIndex(
   index: number,
 ): GridCoord {
   return { x: index % map.width, z: Math.floor(index / map.width) };
+}
+
+export function primaryAttackRouteCenterZ(
+  width: number,
+  height: number,
+  x: number,
+): number {
+  return (
+    height / 2 +
+    Math.sin((x / Math.max(1, width - 1)) * Math.PI * 2) * height * 0.08
+  );
 }
 
 export function isInsideMap(
@@ -111,18 +136,30 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 24 || height < 20) {
     throw new Error("Battle maps must be at least 24 x 20 cells.");
   }
+  if (width * height > MAX_MAP_CELL_COUNT) {
+    throw new Error(`Battle maps cannot exceed ${MAX_MAP_CELL_COUNT} cells.`);
+  }
+  if (Math.max(width / height, height / width) > MAX_MAP_ASPECT_RATIO) {
+    throw new Error(`Battle map aspect ratio cannot exceed ${MAX_MAP_ASPECT_RATIO}:1.`);
+  }
 
-  const density = clamp(options.mountainDensity, 0, 1);
-  const roughness = clamp(options.roughness, 0, 1);
+  const density = validateRatio("mountainDensity", options.mountainDensity);
+  const roughness = validateRatio("roughness", options.roughness);
+  const waterCoverage = validateRatio("waterCoverage", options.waterCoverage ?? 0);
+  const wetlandCoverage = validateRatio("wetlandCoverage", options.wetlandCoverage ?? 0);
   const primary = createNoise2D(createSeededRandom(`${options.seed}:height:primary`));
   const detail = createNoise2D(createSeededRandom(`${options.seed}:height:detail`));
   const ridge = createNoise2D(createSeededRandom(`${options.seed}:height:ridge`));
+  const waterPrimary = createNoise2D(createSeededRandom(`${options.seed}:water:primary`));
+  const waterDetail = createNoise2D(createSeededRandom(`${options.seed}:water:detail`));
+  const wetlandPrimary = createNoise2D(createSeededRandom(`${options.seed}:wetland:primary`));
+  const wetlandDetail = createNoise2D(createSeededRandom(`${options.seed}:wetland:detail`));
   const cellCount = width * height;
   const heightUnits = new Int16Array(cellCount);
   const surfaceTypeIds = new Uint16Array(cellCount);
   const waterDepthUnits = new Uint8Array(cellCount);
   const cellFlags = new Uint16Array(cellCount);
-  const mountainThreshold = 0.76 - density * 0.3;
+  const mountainCandidates: RankedCell[] = [];
 
   for (let z = 0; z < height; z += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -134,19 +171,18 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
       const quantizedHeight = Math.round(8 + combined * (5 + roughness * 5));
       heightUnits[index] = Math.max(0, quantizedHeight);
 
-      const edgeSafe = x < 5 || x >= width - 5;
+      const routeSafe = isProtectedRouteCell(width, height, x, z);
       const normalizedZ = z / Math.max(1, height - 1);
-      const corridorCenter =
-        height / 2 + Math.sin((x / Math.max(1, width - 1)) * Math.PI * 2) * height * 0.08;
-      const corridorSafe = Math.abs(z - corridorCenter) <= 2;
-      const mountain = combined > mountainThreshold && !edgeSafe && !corridorSafe;
       const roughCost = Math.round(Math.abs(fine) * 4 + Math.max(0, combined) * 3);
-      if (mountain) {
-        surfaceTypeIds[index] = SURFACE_TYPE_IDS.rock;
-        cellFlags[index] = MAP_CELL_FLAGS.groundBlocked;
-      } else if (roughCost >= 5) {
+      if (!routeSafe) {
+        mountainCandidates.push({ index, score: combined });
+      }
+      if (roughCost >= 5) {
         surfaceTypeIds[index] = SURFACE_TYPE_IDS.mud;
-      } else if (roughCost >= 3 || ((normalizedZ < 0.02 || normalizedZ > 0.98) && !edgeSafe)) {
+      } else if (
+        roughCost >= 3 ||
+        ((normalizedZ < 0.02 || normalizedZ > 0.98) && !routeSafe)
+      ) {
         surfaceTypeIds[index] = SURFACE_TYPE_IDS.sand;
       } else {
         surfaceTypeIds[index] = SURFACE_TYPE_IDS.grass;
@@ -154,7 +190,80 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
     }
   }
 
-  return {
+  mountainCandidates.sort((a, b) => b.score - a.score || a.index - b.index);
+  const mountainCellCount = Math.round(cellCount * density);
+  assertCoverageAvailable("mountainDensity", mountainCellCount, mountainCandidates.length);
+  for (let rank = 0; rank < mountainCellCount; rank += 1) {
+    const index = mountainCandidates[rank]?.index;
+    if (index === undefined) {
+      break;
+    }
+    surfaceTypeIds[index] = SURFACE_TYPE_IDS.rock;
+    cellFlags[index] = MAP_CELL_FLAGS.groundBlocked;
+  }
+
+  const waterCandidates: RankedCell[] = [];
+  for (let index = 0; index < cellCount; index += 1) {
+    const x = index % width;
+    const z = Math.floor(index / width);
+    if (
+      isProtectedRouteCell(width, height, x, z) ||
+      ((cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0
+    ) {
+      continue;
+    }
+    const score =
+      waterPrimary(x / 21, z / 21) * 0.68 +
+      waterDetail(x / 7, z / 7) * 0.2 +
+      (heightUnits[index] ?? 0) * 0.025;
+    waterCandidates.push({ index, score });
+  }
+  waterCandidates.sort((a, b) => a.score - b.score || a.index - b.index);
+  const waterCellCount = Math.round(cellCount * waterCoverage);
+  assertCoverageAvailable("waterCoverage", waterCellCount, waterCandidates.length);
+  const deepWaterCellCount = Math.round(waterCellCount * 0.55);
+  for (let rank = 0; rank < waterCellCount; rank += 1) {
+    const index = waterCandidates[rank]?.index;
+    if (index === undefined) {
+      break;
+    }
+    waterDepthUnits[index] =
+      rank < deepWaterCellCount ? WATER_DEPTH_UNITS.deep : WATER_DEPTH_UNITS.shallow;
+    surfaceTypeIds[index] = SURFACE_TYPE_IDS.sand;
+  }
+
+  const wetlandCandidates: RankedCell[] = [];
+  for (let index = 0; index < cellCount; index += 1) {
+    const x = index % width;
+    const z = Math.floor(index / width);
+    if (
+      isProtectedRouteCell(width, height, x, z) ||
+      waterDepthUnits[index] !== WATER_DEPTH_UNITS.none ||
+      ((cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0
+    ) {
+      continue;
+    }
+    const adjacentWater = countAdjacentWater(width, height, waterDepthUnits, x, z);
+    const score =
+      wetlandPrimary(x / 17, z / 17) * 0.62 +
+      wetlandDetail(x / 6, z / 6) * 0.18 +
+      adjacentWater * 0.22 -
+      (heightUnits[index] ?? 0) * 0.018;
+    wetlandCandidates.push({ index, score });
+  }
+  wetlandCandidates.sort((a, b) => b.score - a.score || a.index - b.index);
+  const wetlandCellCount = Math.round(cellCount * wetlandCoverage);
+  assertCoverageAvailable("wetlandCoverage", wetlandCellCount, wetlandCandidates.length);
+  for (let rank = 0; rank < wetlandCellCount; rank += 1) {
+    const index = wetlandCandidates[rank]?.index;
+    if (index === undefined) {
+      break;
+    }
+    surfaceTypeIds[index] = SURFACE_TYPE_IDS.mud;
+    waterDepthUnits[index] = WATER_DEPTH_UNITS.shallow;
+  }
+
+  const map: BattleMap = {
     schemaVersion: BATTLE_MAP_SCHEMA_VERSION,
     width,
     height,
@@ -167,6 +276,8 @@ export function generateBattleMap(options: MapGenerationOptions): BattleMap {
       cellFlags,
     },
   };
+  validateBattleMap(map);
+  return map;
 }
 
 export function validateBattleMap(map: BattleMap): void {
@@ -309,6 +420,62 @@ function addLayerToHash(
   }
 }
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value));
+function isProtectedRouteCell(
+  width: number,
+  height: number,
+  x: number,
+  z: number,
+): boolean {
+  if (x < DEPLOYMENT_BAND_WIDTH || x >= width - DEPLOYMENT_BAND_WIDTH) {
+    return true;
+  }
+  const corridorCenter = primaryAttackRouteCenterZ(width, height, x);
+  return Math.abs(z - corridorCenter) <= PRIMARY_ROUTE_HALF_WIDTH;
+}
+
+function countAdjacentWater(
+  width: number,
+  height: number,
+  waterDepthUnits: Uint8Array,
+  x: number,
+  z: number,
+): number {
+  let count = 0;
+  for (let dz = -1; dz <= 1; dz += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      if (
+        (dx === 0 && dz === 0) ||
+        x + dx < 0 ||
+        x + dx >= width ||
+        z + dz < 0 ||
+        z + dz >= height
+      ) {
+        continue;
+      }
+      const index = (z + dz) * width + x + dx;
+      if ((waterDepthUnits[index] ?? WATER_DEPTH_UNITS.none) !== WATER_DEPTH_UNITS.none) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function validateRatio(name: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${name} must be a finite number from 0 to 1.`);
+  }
+  return value;
+}
+
+function assertCoverageAvailable(
+  name: string,
+  requestedCells: number,
+  availableCells: number,
+): void {
+  if (requestedCells > availableCells) {
+    throw new Error(
+      `${name} cannot be satisfied: requested ${requestedCells} cells but only ${availableCells} are eligible.`,
+    );
+  }
 }

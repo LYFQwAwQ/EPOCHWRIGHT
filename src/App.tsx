@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
 import { Battlefield, type CameraMode } from "./render/Battlefield";
-import type { BattleModeKind, BattleSetupOptions, GroupInspection } from "./sim/types";
+import {
+  MAP_CELL_FLAGS,
+  SURFACE_TYPE_IDS,
+  WATER_DEPTH_UNITS,
+  type BattleModeKind,
+  type BattleSetupOptions,
+  type GroupInspection,
+} from "./sim/types";
 import { EventFeed } from "./ui/EventFeed";
 import { FactionSummary } from "./ui/FactionSummary";
 import { Inspector } from "./ui/Inspector";
@@ -14,8 +21,10 @@ const DEFAULT_OPTIONS: BattleSetupOptions = {
   width: 56,
   height: 42,
   groupsPerFaction: 4,
-  mountainDensity: 0.34,
+  mountainDensity: 0.12,
   roughness: 0.46,
+  waterCoverage: 0.1,
+  wetlandCoverage: 0.08,
   maximumDurationSeconds: 180,
   stalemateSeconds: 70,
 };
@@ -182,9 +191,46 @@ export function App() {
           return undefined;
         }
         const { heightUnits, surfaceTypeIds, waterDepthUnits, cellFlags } = map.layers;
+        let minimumHeightUnits = heightUnits[0] ?? 0;
+        let maximumHeightUnits = minimumHeightUnits;
+        let mountainCellCount = 0;
+        let shallowWaterCellCount = 0;
+        let deepWaterCellCount = 0;
+        let wetlandCellCount = 0;
+
+        for (let index = 0; index < map.width * map.height; index += 1) {
+          const height = heightUnits[index] ?? 0;
+          const surfaceType = surfaceTypeIds[index];
+          const waterDepth = waterDepthUnits[index];
+          minimumHeightUnits = Math.min(minimumHeightUnits, height);
+          maximumHeightUnits = Math.max(maximumHeightUnits, height);
+
+          if (
+            surfaceType === SURFACE_TYPE_IDS.rock &&
+            ((cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0
+          ) {
+            mountainCellCount += 1;
+          }
+          if (waterDepth === WATER_DEPTH_UNITS.shallow) {
+            shallowWaterCellCount += 1;
+            if (surfaceType === SURFACE_TYPE_IDS.mud) {
+              wetlandCellCount += 1;
+            }
+          } else if (waterDepth === WATER_DEPTH_UNITS.deep) {
+            deepWaterCellCount += 1;
+          }
+        }
+
         return {
           schemaVersion: map.schemaVersion,
+          width: map.width,
+          height: map.height,
           cellCount: map.width * map.height,
+          heightRangeUnits: maximumHeightUnits - minimumHeightUnits,
+          mountainCellCount,
+          shallowWaterCellCount,
+          deepWaterCellCount,
+          wetlandCellCount,
           layerLengths: [
             heightUnits.length,
             surfaceTypeIds.length,

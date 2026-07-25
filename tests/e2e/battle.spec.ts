@@ -51,6 +51,27 @@ async function readCanvasMetrics(page: Page): Promise<CanvasMetrics> {
   };
 }
 
+async function expectMixedTerrainMap(page: Page): Promise<void> {
+  const summary = await page.evaluate(() => window.__battleTest?.getMapLayerSummary());
+  expect(summary).toBeDefined();
+  expect(summary?.schemaVersion).toBe("map-1");
+  expect(summary?.width).toBeGreaterThan(0);
+  expect(summary?.height).toBeGreaterThan(0);
+  expect(summary?.layersAreTypedArrays).toBe(true);
+  expect(summary?.surfaceTypeCount).toBeGreaterThan(1);
+  expect(summary?.heightRangeUnits).toBeGreaterThan(0);
+  expect(summary?.mountainCellCount).toBeGreaterThan(0);
+  expect(summary?.shallowWaterCellCount).toBeGreaterThan(0);
+  expect(summary?.deepWaterCellCount).toBeGreaterThan(0);
+  expect(summary?.wetlandCellCount).toBeGreaterThan(0);
+  expect(summary?.layerLengths).toEqual([
+    summary?.cellCount,
+    summary?.cellCount,
+    summary?.cellCount,
+    summary?.cellCount,
+  ]);
+}
+
 function collectErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -58,6 +79,27 @@ function collectErrors(page: Page): string[] {
     if (message.type() === "error") errors.push(message.text());
   });
   return errors;
+}
+
+async function countWaterPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    const alpha = image.data[offset + 3] ?? 0;
+    const isTealOrCyan =
+      green > red + 14 &&
+      blue > red + 8 &&
+      blue > green - 25 &&
+      blue < green + 50;
+    if (alpha > 0 && isTealOrCyan) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 async function countTracerPixels(page: Page): Promise<number> {
@@ -107,18 +149,8 @@ test("desktop battle renders, pauses, and exposes squad inspection", async ({ pa
   expect(metrics.opaqueRatio).toBeGreaterThan(0.98);
   expect(metrics.luminanceRange).toBeGreaterThan(35);
   expect(metrics.quantizedColors).toBeGreaterThan(12);
-
-  const mapLayerSummary = await page.evaluate(() => window.__battleTest?.getMapLayerSummary());
-  expect(mapLayerSummary).toBeDefined();
-  expect(mapLayerSummary?.schemaVersion).toBe("map-1");
-  expect(mapLayerSummary?.layersAreTypedArrays).toBe(true);
-  expect(mapLayerSummary?.surfaceTypeCount).toBeGreaterThan(1);
-  expect(mapLayerSummary?.layerLengths).toEqual([
-    mapLayerSummary?.cellCount,
-    mapLayerSummary?.cellCount,
-    mapLayerSummary?.cellCount,
-    mapLayerSummary?.cellCount,
-  ]);
+  await expectMixedTerrainMap(page);
+  expect(await countWaterPixels(page)).toBeGreaterThan(1_000);
 
   await page.getByRole("button", { name: "暂停演算" }).click();
   await page.waitForFunction(() => window.__battleTest?.getStatus() === "paused");
@@ -165,6 +197,8 @@ test("narrow viewport keeps a nonblank battlefield and stable controls", async (
   expect(metrics.height).toBeGreaterThan(600);
   expect(metrics.luminanceRange).toBeGreaterThan(25);
   expect(metrics.quantizedColors).toBeGreaterThan(8);
+  await expectMixedTerrainMap(page);
+  expect(await countWaterPixels(page)).toBeGreaterThan(200);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.screenshot({ path: testInfo.outputPath("battle-mobile.png"), fullPage: true });

@@ -2,6 +2,7 @@ import {
   cellIndex,
   hasLineOfSight,
   heightAt,
+  isInsideMap,
   isWalkable,
   movementCostAtIndex,
   squaredGridDistance,
@@ -53,6 +54,8 @@ const SHOT_COOLDOWN_TICKS = 7;
 const MOVE_POINTS_PER_TICK = 52;
 const ROUTING_MOVE_POINTS_PER_TICK = 68;
 const AI_INTERVAL_TICKS = 5;
+const MOVEMENT_REPATH_WAIT_TICKS = 5;
+const MOVEMENT_REPATH_RETRY_TICKS = 20;
 const DETECTION_THRESHOLD_BPS = 10_000;
 const DIRECT_CONTACT_FRESH_TICKS = 0;
 const GROUP_SLOT_OFFSETS: readonly (readonly [number, number])[] = [
@@ -64,6 +67,22 @@ const GROUP_SLOT_OFFSETS: readonly (readonly [number, number])[] = [
   [-0.27, 0.25],
   [0, 0.29],
   [0.27, 0.25],
+];
+const WALKABLE_NEIGHBOR_OFFSETS: readonly (readonly [number, number])[] = [
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+  [-1, 0],
+  [1, 0],
+  [-1, 1],
+  [0, 1],
+  [1, 1],
+];
+const CARDINAL_NEIGHBOR_OFFSETS: readonly (readonly [number, number])[] = [
+  [0, -1],
+  [-1, 0],
+  [1, 0],
+  [0, 1],
 ];
 
 interface MovementProposal {
@@ -92,6 +111,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private readonly setup: BattleSetup;
   private readonly state: RuntimeState;
   private readonly pathfinder: Pathfinder;
+  private readonly walkableComponentIds: Int32Array;
   private readonly setupHash: string;
 
   constructor(inputSetup: BattleSetup) {
@@ -100,6 +120,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.setupHash = hashBattleSetup(this.setup);
     this.state = createRuntimeState(this.setup);
     this.pathfinder = createPathfinder(this.setup.map);
+    this.walkableComponentIds = buildWalkableComponentIds(this.setup.map);
     this.assignDefenseSlots();
     this.initializePaths();
   }
@@ -594,7 +615,20 @@ class StageOneBattleSimulation implements BattleSimulation {
         return;
       }
       if (distanceSquared <= this.setup.rules.weaponRangeCells ** 2) {
-        if (isDefender) {
+        if (this.hasFriendlyBlocker(group, directTarget)) {
+          const firingOption = this.findClearFiringOption(group, directTarget);
+          if (firingOption) {
+            group.action = "moving-to-contact";
+            group.decisionReason = "clear-line-of-fire";
+            group.currentTargetId = directTarget.id;
+            group.goal = { ...firingOption.goal };
+            group.pathGoal = { ...firingOption.goal };
+            group.path = firingOption.path.map((coord) => ({ ...coord }));
+            group.waitAge = 0;
+            return;
+          }
+        }
+        if (isDefender && !group.movingTo) {
           this.cancelMovement(group);
         }
         group.action = "engaging";
@@ -731,18 +765,18 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private assignGoal(group: GroupState, desiredGoal: GridCoord): void {
-    const goal = this.findNearestWalkable(desiredGoal);
-    const goalChanged = !group.pathGoal || !sameCoord(group.pathGoal, goal);
+    const goal = this.findNearestWalkable(desiredGoal, group.cell);
+    const goalChanged = !group.goal || !sameCoord(group.goal, goal);
     if (!goalChanged && group.path.length > 0) {
       group.goal = goal;
       return;
     }
-    if (goalChanged && group.movingTo) {
-      this.cancelMovement(group);
+    if (goalChanged) {
+      group.waitAge = 0;
     }
     group.goal = goal;
     group.pathGoal = goal;
-    const path = this.pathfinder.findPath(group.cell, goal);
+    const path = this.pathfinder.findPath(group.movingTo ?? group.cell, goal);
     group.path = path.map((coord) => ({ ...coord }));
   }
 
@@ -763,15 +797,23 @@ class StageOneBattleSimulation implements BattleSimulation {
     const phase = group.patrolIndex % 4;
     const fractions = factionIndex === 0 ? [0.62, 0.78, 0.48, 0.7] : [0.38, 0.22, 0.52, 0.3];
     const x = Math.round((this.setup.map.width - 1) * (fractions[phase] ?? 0.5));
-    return this.findNearestWalkable({ x, z: Math.min(this.setup.map.height - 2, z) });
+    return this.findNearestWalkable(
+      { x, z: Math.min(this.setup.map.height - 2, z) },
+      group.cell,
+    );
   }
 
-  private findNearestWalkable(origin: GridCoord): GridCoord {
+  private findNearestWalkable(origin: GridCoord, reachableFrom: GridCoord): GridCoord {
     const clamped = {
       x: Math.min(this.setup.map.width - 1, Math.max(0, Math.round(origin.x))),
       z: Math.min(this.setup.map.height - 1, Math.max(0, Math.round(origin.z))),
     };
-    if (isWalkable(this.setup.map, clamped)) {
+    const reachableComponent =
+      this.walkableComponentIds[cellIndex(this.setup.map, reachableFrom)] ?? -1;
+    const isReachable = (candidate: GridCoord): boolean =>
+      isWalkable(this.setup.map, candidate) &&
+      this.walkableComponentIds[cellIndex(this.setup.map, candidate)] === reachableComponent;
+    if (isReachable(clamped)) {
       return clamped;
     }
     for (let radius = 1; radius < Math.max(this.setup.map.width, this.setup.map.height); radius += 1) {
@@ -782,7 +824,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             continue;
           }
           const candidate = { x: clamped.x + dx, z: clamped.z + dz };
-          if (isWalkable(this.setup.map, candidate)) {
+          if (isReachable(candidate)) {
             candidates.push(candidate);
           }
         }
@@ -792,7 +834,132 @@ class StageOneBattleSimulation implements BattleSimulation {
         return candidates[0];
       }
     }
-    return clamped;
+    return { ...reachableFrom };
+  }
+
+  private isStationaryFriendlyBlocker(
+    group: GroupState,
+    blockerId: GroupId | undefined,
+  ): boolean {
+    const blocker = blockerId ? this.state.groupsById.get(blockerId) : undefined;
+    return Boolean(
+      blocker &&
+        blocker.id !== group.id &&
+        blocker.factionId === group.factionId &&
+        !blocker.movingTo,
+    );
+  }
+
+  private getStationaryFriendlyBlockedCellIndices(
+    group: GroupState,
+  ): ReadonlySet<number> {
+    const blocked = new Set<number>();
+    for (const [index, groupId] of this.state.occupancy) {
+      if (this.isStationaryFriendlyBlocker(group, groupId)) {
+        blocked.add(index);
+      }
+    }
+    return blocked;
+  }
+
+  private tryRepathAroundFriendlyGroups(group: GroupState): boolean {
+    const desiredGoal = group.goal ?? group.pathGoal;
+    if (!desiredGoal) {
+      return false;
+    }
+    const blocked = this.getStationaryFriendlyBlockedCellIndices(group);
+    const desiredIndex = cellIndex(this.setup.map, desiredGoal);
+    const candidateGoals = blocked.has(desiredIndex)
+      ? CARDINAL_NEIGHBOR_OFFSETS.map(([dx, dz]) => ({
+          x: desiredGoal.x + dx,
+          z: desiredGoal.z + dz,
+        })).filter(
+          (candidate) =>
+            isWalkable(this.setup.map, candidate) &&
+            !sameCoord(candidate, group.cell) &&
+            !this.state.occupancy.has(cellIndex(this.setup.map, candidate)) &&
+            !this.state.reservations.has(cellIndex(this.setup.map, candidate)),
+        )
+      : [desiredGoal];
+    const options = candidateGoals
+      .map((goal) => ({
+        goal,
+        path: this.pathfinder.findPath(group.cell, goal, blocked),
+      }))
+      .filter((option) => option.path.length > 1)
+      .map((option) => ({
+        ...option,
+        cost: pathMovementCost(this.setup.map, option.path),
+      }))
+      .sort(
+        (a, b) =>
+          a.cost - b.cost ||
+          cellIndex(this.setup.map, a.goal) - cellIndex(this.setup.map, b.goal),
+      );
+    const best = options[0];
+    if (!best) {
+      return false;
+    }
+    group.path = best.path.map((coord) => ({ ...coord }));
+    group.pathGoal = { ...best.goal };
+    group.waitAge = 0;
+    return true;
+  }
+
+  private findClearFiringOption(
+    group: GroupState,
+    target: GroupState,
+  ): { readonly goal: GridCoord; readonly path: readonly GridCoord[] } | undefined {
+    const blocked = this.getStationaryFriendlyBlockedCellIndices(group);
+    const pathStart = group.movingTo ?? group.cell;
+    const options: {
+      readonly goal: GridCoord;
+      readonly path: readonly GridCoord[];
+      readonly cost: number;
+    }[] = [];
+    const maximumRadius = 3;
+
+    for (let radius = 1; radius <= maximumRadius; radius += 1) {
+      for (let dz = -radius; dz <= radius; dz += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+            continue;
+          }
+          const candidate = { x: group.cell.x + dx, z: group.cell.z + dz };
+          const candidateIndex = cellIndex(this.setup.map, candidate);
+          const occupyingGroupId = this.state.occupancy.get(candidateIndex);
+          const reservingGroupId = this.state.reservations.get(candidateIndex);
+          if (
+            !isWalkable(this.setup.map, candidate) ||
+            (occupyingGroupId !== undefined && occupyingGroupId !== group.id) ||
+            (reservingGroupId !== undefined && reservingGroupId !== group.id) ||
+            squaredGridDistance(candidate, target.cell) >
+              this.setup.rules.weaponRangeCells ** 2 ||
+            !hasLineOfSight(this.setup.map, candidate, target.cell) ||
+            this.hasFriendlyBlockerFrom(group, candidate, target)
+          ) {
+            continue;
+          }
+          const path = sameCoord(pathStart, candidate)
+            ? [{ ...candidate }]
+            : this.pathfinder.findPath(pathStart, candidate, blocked);
+          if (path.length === 0) {
+            continue;
+          }
+          options.push({
+            goal: candidate,
+            path,
+            cost: path.length === 1 ? 0 : pathMovementCost(this.setup.map, path),
+          });
+        }
+      }
+    }
+
+    return options.sort(
+      (a, b) =>
+        a.cost - b.cost ||
+        cellIndex(this.setup.map, a.goal) - cellIndex(this.setup.map, b.goal),
+    )[0];
   }
 
   private findSaferAdjacentCell(
@@ -881,11 +1048,16 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
     for (const proposal of proposals) {
       const destinationIndex = cellIndex(this.setup.map, proposal.destination);
-      if (
-        this.state.occupancy.has(destinationIndex) ||
-        this.state.reservations.has(destinationIndex)
-      ) {
+      const occupyingGroupId = this.state.occupancy.get(destinationIndex);
+      const reservingGroupId = this.state.reservations.get(destinationIndex);
+      if (occupyingGroupId || reservingGroupId) {
         proposal.group.waitAge += 1;
+        if (
+          shouldRetryMovementPath(proposal.group.waitAge) &&
+          this.isStationaryFriendlyBlocker(proposal.group, occupyingGroupId)
+        ) {
+          this.tryRepathAroundFriendlyGroups(proposal.group);
+        }
         continue;
       }
       proposal.group.movingTo = { ...proposal.destination };
@@ -1344,12 +1516,21 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.movingTo = undefined;
     group.moveProgress = 0;
     group.moveCost = 0;
+    group.waitAge = 0;
     group.path = [];
     group.pathGoal = undefined;
   }
 
   private hasFriendlyBlocker(shooter: GroupState, target: GroupState): boolean {
-    const lineCells = traceIntermediateCells(shooter.cell, target.cell);
+    return this.hasFriendlyBlockerFrom(shooter, shooter.cell, target);
+  }
+
+  private hasFriendlyBlockerFrom(
+    shooter: GroupState,
+    origin: GridCoord,
+    target: GroupState,
+  ): boolean {
+    const lineCells = traceIntermediateCells(origin, target.cell);
     if (lineCells.length === 0) {
       return false;
     }
@@ -1623,6 +1804,71 @@ function confidenceAtAge(age: number, forgetTicks: number): number {
     return 10_000;
   }
   return Math.max(0, Math.round(10_000 * (1 - age / forgetTicks)));
+}
+
+function pathMovementCost(
+  map: BattleSetup["map"],
+  path: readonly GridCoord[],
+): number {
+  let cost = 0;
+  for (let index = 1; index < path.length; index += 1) {
+    cost += movementStepCost(map, path[index - 1]!, path[index]!);
+  }
+  return cost;
+}
+
+function shouldRetryMovementPath(waitAge: number): boolean {
+  return (
+    waitAge === MOVEMENT_REPATH_WAIT_TICKS ||
+    (waitAge > MOVEMENT_REPATH_WAIT_TICKS &&
+      (waitAge - MOVEMENT_REPATH_WAIT_TICKS) % MOVEMENT_REPATH_RETRY_TICKS === 0)
+  );
+}
+
+function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
+  const componentIds = new Int32Array(map.width * map.height).fill(-1);
+  let nextComponentId = 0;
+
+  for (let startIndex = 0; startIndex < componentIds.length; startIndex += 1) {
+    if (componentIds[startIndex] !== -1) {
+      continue;
+    }
+    const start = {
+      x: startIndex % map.width,
+      z: Math.floor(startIndex / map.width),
+    };
+    if (!isWalkable(map, start)) {
+      continue;
+    }
+
+    const queue = [startIndex];
+    componentIds[startIndex] = nextComponentId;
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const currentIndex = queue[cursor]!;
+      const current = {
+        x: currentIndex % map.width,
+        z: Math.floor(currentIndex / map.width),
+      };
+      for (const [dx, dz] of WALKABLE_NEIGHBOR_OFFSETS) {
+        const neighbor = { x: current.x + dx, z: current.z + dz };
+        if (!isInsideMap(map, neighbor)) {
+          continue;
+        }
+        const neighborIndex = cellIndex(map, neighbor);
+        if (
+          componentIds[neighborIndex] !== -1 ||
+          !canTraverseStep(map, current, neighbor)
+        ) {
+          continue;
+        }
+        componentIds[neighborIndex] = nextComponentId;
+        queue.push(neighborIndex);
+      }
+    }
+    nextComponentId += 1;
+  }
+
+  return componentIds;
 }
 
 function sameCoord(a: GridCoord, b: GridCoord): boolean {
