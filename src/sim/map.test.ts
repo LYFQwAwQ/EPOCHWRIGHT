@@ -132,13 +132,13 @@ describe("standard terrain layers", () => {
     expect(() =>
       generateBattleMap({
         ...common,
-        width: 300,
-        height: 300,
+        width: 513,
+        height: 512,
         mountainDensity: 0,
         waterCoverage: 0,
         wetlandCoverage: 0,
       }),
-    ).toThrow(/cannot exceed 65536 cells/i);
+    ).toThrow(/cannot exceed 262144 cells/i);
     expect(() =>
       generateBattleMap({
         ...common,
@@ -149,6 +149,12 @@ describe("standard terrain layers", () => {
         wetlandCoverage: 0,
       }),
     ).toThrow(/aspect ratio/i);
+    expect(() =>
+      createBattleSetup({
+        seed: "generated-group-budget",
+        groupsPerFaction: 251,
+      }),
+    ).toThrow(/within 500 groups/i);
   });
 
   it("generates deterministic authoritative trees, rocks, and walls", () => {

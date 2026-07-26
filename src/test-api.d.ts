@@ -43,11 +43,32 @@ interface BattleTestApi {
     contacts: boolean;
     paths: boolean;
   };
+  getPerformanceProfile(): "medium" | "large" | undefined;
+  getPerformanceMetrics(): {
+    worker?: {
+      initializationDurationMs: number;
+      tickDurationMs: PerformanceMetricSummary;
+      frameProjectionDurationMs: PerformanceMetricSummary;
+    };
+    workerMessageBytes: PerformanceMetricSummary;
+    workerMessageHandlerDurationMs: PerformanceMetricSummary;
+    totalWorkerMessageBytes: number;
+    animationFrameIntervalMs: PerformanceMetricSummary;
+  };
+  resetPerformanceMetrics(): void;
   setObservation(factionId?: string): void;
   selectGroup(groupId?: string): void;
   pause(): void;
   run(): void;
   step(count?: number): void;
+}
+
+interface PerformanceMetricSummary {
+  samples: number;
+  mean: number;
+  p95: number;
+  p99: number;
+  max: number;
 }
 
 interface Window {

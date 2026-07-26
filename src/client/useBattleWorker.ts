@@ -7,7 +7,17 @@ import type {
   EntityInspection,
   RenderFrame,
 } from "../sim/types";
-import type { WorkerCommand, WorkerMessage } from "../worker/protocol";
+import {
+  estimateMessageBytes,
+  recordMetric,
+  summarizeMetrics,
+  type MetricSummary,
+} from "../performance/metrics";
+import type {
+  WorkerCommand,
+  WorkerMessage,
+  WorkerPerformanceSnapshot,
+} from "../worker/protocol";
 
 export type ClientBattleStatus = "initializing" | "running" | "paused" | "finished" | "error";
 
@@ -46,24 +56,46 @@ function appendEvents(
 
 export interface BattleWorkerController {
   readonly state: BattleClientState;
-  readonly start: (options: BattleSetupOptions, autostart?: boolean) => void;
+  readonly start: (
+    options: BattleSetupOptions,
+    autostart?: boolean,
+    collectPerformance?: boolean,
+  ) => void;
   readonly pause: () => void;
   readonly run: () => void;
   readonly inspect: (entityId?: string) => void;
   readonly setObservation: (observerFactionId?: string) => void;
   readonly stepDebug: (count?: number) => void;
+  readonly resetPerformance: () => void;
+  readonly getPerformanceSnapshot: () => ClientPerformanceSnapshot;
+}
+
+export interface ClientPerformanceSnapshot {
+  readonly worker?: WorkerPerformanceSnapshot;
+  readonly workerMessageBytes: MetricSummary;
+  readonly workerMessageHandlerDurationMs: MetricSummary;
+  readonly totalWorkerMessageBytes: number;
 }
 
 export function useBattleWorker(): BattleWorkerController {
   const workerRef = useRef<Worker | undefined>(undefined);
   const sessionRef = useRef("");
+  const collectPerformanceRef = useRef(false);
+  const workerPerformanceRef = useRef<WorkerPerformanceSnapshot | undefined>(undefined);
+  const workerMessageBytesRef = useRef<number[]>([]);
+  const workerMessageHandlerDurationsRef = useRef<number[]>([]);
+  const totalWorkerMessageBytesRef = useRef(0);
   const [state, setState] = useState<BattleClientState>(initialState);
 
   const post = useCallback((command: WorkerCommand) => {
     workerRef.current?.postMessage(command);
   }, []);
 
-  const start = useCallback((options: BattleSetupOptions, autostart = true) => {
+  const start = useCallback((
+    options: BattleSetupOptions,
+    autostart = true,
+    collectPerformance = false,
+  ) => {
     if (workerRef.current) {
       workerRef.current.terminate();
     }
@@ -74,6 +106,11 @@ export function useBattleWorker(): BattleWorkerController {
     });
     workerRef.current = worker;
     sessionRef.current = sessionId;
+    collectPerformanceRef.current = collectPerformance;
+    workerPerformanceRef.current = undefined;
+    workerMessageBytesRef.current = [];
+    workerMessageHandlerDurationsRef.current = [];
+    totalWorkerMessageBytesRef.current = 0;
     setState(initialState);
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -81,6 +118,15 @@ export function useBattleWorker(): BattleWorkerController {
       if (message.sessionId !== sessionRef.current) {
         return;
       }
+      if (collectPerformanceRef.current) {
+        const messageBytes = estimateMessageBytes(message);
+        recordMetric(workerMessageBytesRef.current, messageBytes);
+        totalWorkerMessageBytesRef.current += messageBytes;
+        if ("performance" in message && message.performance) {
+          workerPerformanceRef.current = message.performance;
+        }
+      }
+      const handlerStartedAt = collectPerformanceRef.current ? performance.now() : 0;
       switch (message.type) {
         case "ready":
           setState((current) => ({
@@ -123,6 +169,12 @@ export function useBattleWorker(): BattleWorkerController {
           setState((current) => ({ ...current, status: "error", error: message.message }));
           break;
       }
+      if (collectPerformanceRef.current) {
+        recordMetric(
+          workerMessageHandlerDurationsRef.current,
+          performance.now() - handlerStartedAt,
+        );
+      }
     };
 
     worker.onerror = (event) => {
@@ -141,6 +193,7 @@ export function useBattleWorker(): BattleWorkerController {
       sessionId,
       options,
       autostart,
+      collectPerformance,
     } satisfies WorkerCommand);
   }, []);
 
@@ -189,5 +242,35 @@ export function useBattleWorker(): BattleWorkerController {
     [post],
   );
 
-  return { state, start, pause, run, inspect, setObservation, stepDebug };
+  const resetPerformance = useCallback(() => {
+    workerPerformanceRef.current = undefined;
+    workerMessageBytesRef.current = [];
+    workerMessageHandlerDurationsRef.current = [];
+    totalWorkerMessageBytesRef.current = 0;
+    post({ type: "reset-performance", sessionId: sessionRef.current });
+  }, [post]);
+
+  const getPerformanceSnapshot = useCallback(
+    (): ClientPerformanceSnapshot => ({
+      worker: workerPerformanceRef.current,
+      workerMessageBytes: summarizeMetrics(workerMessageBytesRef.current),
+      workerMessageHandlerDurationMs: summarizeMetrics(
+        workerMessageHandlerDurationsRef.current,
+      ),
+      totalWorkerMessageBytes: totalWorkerMessageBytesRef.current,
+    }),
+    [],
+  );
+
+  return {
+    state,
+    start,
+    pause,
+    run,
+    inspect,
+    setObservation,
+    stepDebug,
+    resetPerformance,
+    getPerformanceSnapshot,
+  };
 }

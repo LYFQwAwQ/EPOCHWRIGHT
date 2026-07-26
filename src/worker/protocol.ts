@@ -7,6 +7,13 @@ import type {
   RenderFrame,
   SimulationStatus,
 } from "../sim/types";
+import type { MetricSummary } from "../performance/metrics";
+
+export interface WorkerPerformanceSnapshot {
+  readonly initializationDurationMs: number;
+  readonly tickDurationMs: MetricSummary;
+  readonly frameProjectionDurationMs: MetricSummary;
+}
 
 export type WorkerCommand =
   | {
@@ -14,6 +21,7 @@ export type WorkerCommand =
       readonly sessionId: string;
       readonly options: BattleSetupOptions;
       readonly autostart: boolean;
+      readonly collectPerformance?: boolean;
     }
   | { readonly type: "run"; readonly sessionId: string }
   | { readonly type: "pause"; readonly sessionId: string }
@@ -28,7 +36,8 @@ export type WorkerCommand =
       readonly sessionId: string;
       readonly observerFactionId?: string;
     }
-  | { readonly type: "dispose"; readonly sessionId: string };
+  | { readonly type: "dispose"; readonly sessionId: string }
+  | { readonly type: "reset-performance"; readonly sessionId: string };
 
 interface WorkerMessageBase {
   readonly sessionId: string;
@@ -41,6 +50,7 @@ export type WorkerMessage =
       readonly frame: RenderFrame;
       readonly stateHash: string;
       readonly paused: boolean;
+      readonly performance?: WorkerPerformanceSnapshot;
     })
   | (WorkerMessageBase & {
       readonly type: "frame";
@@ -48,6 +58,7 @@ export type WorkerMessage =
       readonly events: readonly BattleEvent[];
       readonly stateHash: string;
       readonly simulationStatus: SimulationStatus;
+      readonly performance?: WorkerPerformanceSnapshot;
     })
   | (WorkerMessageBase & {
       readonly type: "pause-changed";
@@ -64,6 +75,7 @@ export type WorkerMessage =
       readonly events: readonly BattleEvent[];
       readonly result: BattleResult;
       readonly stateHash: string;
+      readonly performance?: WorkerPerformanceSnapshot;
     })
   | (WorkerMessageBase & {
       readonly type: "error";

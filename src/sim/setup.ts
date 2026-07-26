@@ -38,19 +38,28 @@ const DEFAULT_FACTIONS: readonly FactionSetup[] = [
   { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
 ];
 
+const MAX_GENERATED_GROUP_COUNT = 500;
+const MAX_GENERATED_GROUPS_PER_FACTION = 250;
+
 export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup {
   const seed = options.seed ?? "epochwright-default";
   const width = options.width ?? 48;
   const height = options.height ?? 36;
   const groupsPerFaction = options.groupsPerFaction ?? 3;
 
-  if (!Number.isInteger(groupsPerFaction) || groupsPerFaction < 1 || groupsPerFaction > 8) {
-    throw new Error("groupsPerFaction must be an integer from 1 to 8.");
-  }
-
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
   if (factions.length < 2) {
     throw new Error("A battle requires at least two factions.");
+  }
+  if (
+    !Number.isInteger(groupsPerFaction) ||
+    groupsPerFaction < 1 ||
+    groupsPerFaction > MAX_GENERATED_GROUPS_PER_FACTION ||
+    groupsPerFaction * factions.length > MAX_GENERATED_GROUP_COUNT
+  ) {
+    throw new Error(
+      `groupsPerFaction must be an integer that keeps the generated battle within ${MAX_GENERATED_GROUP_COUNT} groups and ${MAX_GENERATED_GROUPS_PER_FACTION} groups per faction.`,
+    );
   }
 
   const map = generateBattleMap({

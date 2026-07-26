@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node scripts/run-e2e.mjs",
+    "perf": "npm run build && node scripts/run-performance.mjs",
     "check": "npm run docs:check && npm run test && npm run build",
     "verify": "npm run check && npm run test:e2e",
     "preview": "vite preview"

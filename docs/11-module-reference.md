@@ -69,13 +69,13 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/setup.ts`
 
-负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离、目标和增援入口位置都使用步行通行规则；增援入口必须位于地图边缘，批次的每个撤离路线会从至少一个授权入口经过实际 A* 验证。`hashBattleSetup` 为全部静态规则输入生成确定性摘要。模拟生成器无参默认仍使用两势力，网页演示显式传入三方、八人小队和单目标防守配置；输入可表达多个势力及敌对/中立/同盟关系。
+负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离、目标和增援入口位置都使用步行通行规则；增援入口必须位于地图边缘，批次的每个撤离路线会从至少一个授权入口经过实际 A* 验证。`hashBattleSetup` 为全部静态规则输入生成确定性摘要。模拟生成器无参默认仍使用两势力，网页演示显式传入三方、八人小队和单目标防守配置；性能场景生成最多 500 个编组、单势力最多 250 个，输入可表达多个势力及敌对/中立/同盟关系。
 
 未来外部城市系统接入后，随机演示生成器与标准输入验证应拆分，但所有来源仍必须走同一个验证器。
 
 ### `src/sim/map.ts`
 
-包含参数化随机高度、山地、开阔水体、湿地和静态对象生成，以及地图验证与哈希、网格索引、步行成本投影、可通行查询、高度查询、视线和距离函数。生成器使用独立 seed 流和稳定候选排序，按全图格数分配可满足的精确配额，并保留两侧部署带与跨图主通道；输入在分配数组前受总格数和长宽比限制。`map-2` 使用嵌套 TypedArray 图层，索引为 `z * width + x`。
+包含参数化随机高度、山地、开阔水体、湿地和静态对象生成，以及地图验证与哈希、网格索引、步行成本投影、可通行查询、高度查询、视线和距离函数。生成器使用独立 seed 流和稳定候选排序，按全图格数分配可满足的精确配额，并保留两侧部署带与跨图主通道；输入在分配数组前限制为最多 `512 x 512` 总格数和 `4:1` 长宽比。`map-2` 使用嵌套 TypedArray 图层，索引为 `z * width + x`。
 
 地表类型、水深和静态对象是正交权威数据；沼泽由泥地与浅水组合表达。静态对象列表保存稳定 ID、类型、锚格和 8 向朝向，`staticOccupancy` 是按类型 ID 编码并强制逐格核对的稠密投影。树、岩石和墙段阻挡步行与视线；占用者使用掩体时，视线查询只忽略提供该槽位的对象，再由统一掩体效果处理部分暴露。
 
@@ -138,6 +138,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 | 主线程 -> Worker | `step-debug` | 暂停后显式推进测试 tick |
 | 主线程 -> Worker | `inspect` | 请求单个实体详情 |
 | 主线程 -> Worker | `set-observation` | 切换全知或指定势力视角 |
+| 主线程 -> Worker | `reset-performance` | 重置显式基准的非权威采样 |
 | 主线程 -> Worker | `dispose` | 结束会话 |
 | Worker -> 主线程 | `ready/frame` | 初始和持续渲染投影 |
 | Worker -> 主线程 | `pause-changed` | 确认运行状态 |
@@ -145,7 +146,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 | Worker -> 主线程 | `finished` | 返回最终帧、事件和结果 |
 | Worker -> 主线程 | `error` | 返回边界内错误信息 |
 
-所有消息携带 `sessionId`，用于隔离模式切换和重开战斗后的迟到消息。
+所有消息携带 `sessionId`，用于隔离模式切换和重开战斗后的迟到消息。显式性能模式下，`ready/frame/finished` 可附带初始化、tick 和渲染投影耗时摘要；普通战斗不采样。
 
 ### `src/worker/battle.worker.ts`
 
@@ -155,7 +156,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/client/useBattleWorker.ts`
 
-React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。启动新战斗会终止旧 Worker，旧会话消息会被丢弃。
+React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。启动新战斗会终止旧 Worker，旧会话消息会被丢弃。显式性能模式还在客户端边界估算 Worker 消息载荷并采样同步消息处理耗时。
 
 此处不应计算伤亡、目标进度或胜负；它只组合 Worker 已给出的事实。
 
@@ -201,9 +202,12 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 - `src/sim/*.test.ts`：Node 环境 Vitest，覆盖地图图层与移动规则、确定性和完整场景。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
+- `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
+- `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
 - `src/test-api.d.ts`：仅声明 E2E 调试桥。
 - `scripts/run-e2e.mjs`：复用或启动 `4173` 端口 Vite，并可靠清理子进程。
 - `playwright.config.ts`：本地 Edge，CI Chromium。
+- `playwright.performance.config.ts`、`scripts/run-performance.mjs`：单 Worker 性能运行器与 `4174` 预览生命周期。
 
 ## 9. 状态所有权速查
 

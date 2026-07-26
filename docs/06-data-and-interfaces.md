@@ -426,6 +426,7 @@ interface BattleSimulationFactory {
 - `RUN`：开始持续推进。
 - `PAUSE`：停止自动推进。
 - `STEP_DEBUG`：仅开发模式推进指定 tick。
+- `RESET_PERFORMANCE`：仅显式性能基准重置非权威采样窗口。
 - `INSPECT_ENTITY`：请求指定实体详细状态。
 - `DISPOSE`：释放本场战斗。
 
@@ -437,6 +438,8 @@ interface BattleSimulationFactory {
 - `ENTITY_INSPECTION`：按需返回详细状态。
 - `BATTLE_FINISHED`：返回最终结果。
 - `SIMULATION_ERROR`：结构化错误和安全诊断信息。
+
+显式性能模式允许 `READY`、`RENDER_FRAME` 和 `BATTLE_FINISHED` 附带 Worker 初始化、tick 与渲染投影耗时摘要。遥测使用真实时间但只存在于 Worker/客户端适配层，不进入 `BattleSetup`、模拟状态、事件、结果或状态哈希；普通战斗不发送该字段。
 
 不能每个渲染帧复制完整模拟对象树。可视实体使用稳定渲染索引和 TypedArray 传输位置、旋转、状态位及动画参数；详细成员数据只在选中时按需发送。
 

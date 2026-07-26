@@ -35,6 +35,7 @@ npm run dev
 npm test             # 纯模拟与确定性测试
 npm run build        # TypeScript 与生产构建
 npm run test:e2e     # 真实 Worker、WebGL 和响应式界面
+npm run perf         # 固定中型/大型生产构建性能基线
 npm run docs:check   # 文档头、索引和本地链接
 npm run check        # docs:check + test + build
 npm run verify       # check + e2e

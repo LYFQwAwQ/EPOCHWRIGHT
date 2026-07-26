@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
+import { recordMetric, summarizeMetrics } from "./performance/metrics";
+import {
+  applyPerformanceProfile,
+  parsePerformanceProfile,
+} from "./performance/profiles";
 import { Battlefield, type CameraMode } from "./render/Battlefield";
 import { defaultRelation } from "./sim";
 import {
@@ -60,6 +65,10 @@ function initialMode(): BattleModeSelection {
   return new URLSearchParams(window.location.search).get("mode") === "defense"
     ? "defense"
     : "conflict";
+}
+
+function initialPerformanceProfile() {
+  return parsePerformanceProfile(new URLSearchParams(window.location.search).get("profile"));
 }
 
 function updateBattleUrl(seed: string, mode: BattleModeSelection): void {
@@ -142,20 +151,53 @@ export function App() {
   });
   const initialSeedRef = useRef(seed);
   const initialModeRef = useRef(battleMode);
-  const { start, pause, run, inspect, setObservation, stepDebug } = controller;
+  const performanceProfileRef = useRef(initialPerformanceProfile());
+  const animationFrameDurationsRef = useRef<number[]>([]);
+  const {
+    start,
+    pause,
+    run,
+    inspect,
+    setObservation,
+    stepDebug,
+    resetPerformance,
+    getPerformanceSnapshot,
+  } = controller;
   const e2eMode = new URLSearchParams(window.location.search).get("e2e") === "1";
   const autostart = new URLSearchParams(window.location.search).get("autostart") !== "0";
 
   useEffect(() => {
+    const performanceProfile = performanceProfileRef.current;
     start(
-      {
-        ...DEFAULT_OPTIONS,
-        seed: initialSeedRef.current,
-        mode: initialModeRef.current,
-      },
+      applyPerformanceProfile(
+        {
+          ...DEFAULT_OPTIONS,
+          seed: initialSeedRef.current,
+          mode: initialModeRef.current,
+        },
+        performanceProfile,
+      ),
       autostart,
+      performanceProfile !== undefined,
     );
   }, [autostart, start]);
+
+  useEffect(() => {
+    if (!performanceProfileRef.current) {
+      return;
+    }
+    let animationFrame = 0;
+    let previousTime: number | undefined;
+    const sample = (currentTime: number) => {
+      if (previousTime !== undefined) {
+        recordMetric(animationFrameDurationsRef.current, currentTime - previousTime);
+      }
+      previousTime = currentTime;
+      animationFrame = requestAnimationFrame(sample);
+    };
+    animationFrame = requestAnimationFrame(sample);
+    return () => cancelAnimationFrame(animationFrame);
+  }, []);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -187,7 +229,14 @@ export function App() {
     setCameraMode("free");
     setCameraResetSignal((value) => value + 1);
     updateBattleUrl(nextSeed, battleMode);
-    start({ ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode }, true);
+    start(
+      applyPerformanceProfile(
+        { ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode },
+        performanceProfileRef.current,
+      ),
+      true,
+      performanceProfileRef.current !== undefined,
+    );
   }, [battleMode, setObservation, start]);
 
   const changeBattleMode = useCallback(
@@ -204,7 +253,14 @@ export function App() {
       setCameraMode("free");
       setCameraResetSignal((value) => value + 1);
       updateBattleUrl(nextSeed, nextMode);
-      start({ ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode }, true);
+      start(
+        applyPerformanceProfile(
+          { ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode },
+          performanceProfileRef.current,
+        ),
+        true,
+        performanceProfileRef.current !== undefined,
+      );
     },
     [battleMode, setObservation, start],
   );
@@ -366,6 +422,15 @@ export function App() {
       getEventTypes: () => state.events.map((event) => event.type),
       getObservation: () => observerFactionId ?? "omniscient",
       getLayerVisibility: () => ({ ...observationLayers }),
+      getPerformanceProfile: () => performanceProfileRef.current,
+      getPerformanceMetrics: () => ({
+        ...getPerformanceSnapshot(),
+        animationFrameIntervalMs: summarizeMetrics(animationFrameDurationsRef.current),
+      }),
+      resetPerformanceMetrics: () => {
+        animationFrameDurationsRef.current = [];
+        resetPerformance();
+      },
       setObservation: (factionId?: string) => {
         setSelectedGroupId(undefined);
         setCameraMode("free");
@@ -377,7 +442,7 @@ export function App() {
       run,
       step: stepDebug,
     };
-  }, [battleMode, displayFrame, e2eMode, observationLayers, observerFactionId, pause, run, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
+  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, resetPerformance, run, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
 
   if (!state.setup || !state.frame) {
     return (
