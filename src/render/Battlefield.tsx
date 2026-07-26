@@ -113,6 +113,7 @@ interface BattlefieldProps {
   readonly frame: RenderFrame;
   readonly events: readonly BattleEvent[];
   readonly factionColors: Readonly<Record<string, string>>;
+  readonly showObjectives: boolean;
   readonly selectedGroupId?: string;
   readonly cameraMode: CameraMode;
   readonly resetSignal: number;
@@ -124,6 +125,7 @@ export function Battlefield({
   frame,
   events,
   factionColors,
+  showObjectives,
   selectedGroupId,
   cameraMode,
   resetSignal,
@@ -156,11 +158,13 @@ export function Battlefield({
       />
       <Suspense fallback={null}>
         <Terrain map={map} />
-        <Objectives
-          map={map}
-          objectives={frame.objectives}
-          factionColors={factionColors}
-        />
+        {showObjectives && (
+          <Objectives
+            map={map}
+            objectives={frame.objectives}
+            factionColors={factionColors}
+          />
+        )}
         <Units
           frame={frame}
           factionColors={factionColors}

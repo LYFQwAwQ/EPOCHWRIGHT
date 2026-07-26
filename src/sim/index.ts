@@ -2,7 +2,13 @@ export {
   createBattleSimulation,
   createSimulation,
 } from "./simulation";
-export { createBattleSetup, hashBattleSetup, validateBattleSetup } from "./setup";
+export {
+  createBattleSetup,
+  defenseObjectives,
+  hashBattleSetup,
+  reinforcementEntranceIds,
+  validateBattleSetup,
+} from "./setup";
 export { migrateBattleSetup } from "./setup";
 export {
   areAllied,

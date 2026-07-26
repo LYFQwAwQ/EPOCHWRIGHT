@@ -69,7 +69,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/setup.ts`
 
-负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离和目标位置都使用步行通行规则，每个编组的撤离路线及关系矩阵中敌对势力对的任务路线还会经过实际 A* 验证；`hashBattleSetup` 为全部静态规则输入生成确定性摘要。模拟生成器无参默认仍使用两势力，网页演示显式传入三方、八人小队和单目标防守配置；输入可表达多个势力及敌对/中立/同盟关系。
+负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离、目标和增援入口位置都使用步行通行规则；增援入口必须位于地图边缘，批次的每个撤离路线会从至少一个授权入口经过实际 A* 验证。`hashBattleSetup` 为全部静态规则输入生成确定性摘要。模拟生成器无参默认仍使用两势力，网页演示显式传入三方、八人小队和单目标防守配置；输入可表达多个势力及敌对/中立/同盟关系。
 
 未来外部城市系统接入后，随机演示生成器与标准输入验证应拆分，但所有来源仍必须走同一个验证器。
 
@@ -109,6 +109,8 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 - 弹匣、射击意图、伤情与压制；
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
+- 增援批次的到达 tick、入口容量、等待/替代/取消策略，以及部署状态结果；
+- `getRenderFrame(observerFactionId)` 与 `inspect(..., observerFactionId)` 的全知/势力信息投影；
 - 渲染帧、检查结果、最终结果和状态哈希。
 
 完整静态 setup 摘要在模拟初始化时计算一次并进入状态哈希，覆盖地图、部署、模式和规则参数，同时避免 Worker 每次发布帧时重新遍历全部输入。`getSetup()` 返回深拷贝快照，外部不能通过 TypedArray 修改运行时地图。
@@ -135,6 +137,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 | 主线程 -> Worker | `run/pause` | 控制真实时间泵，不修改规则 |
 | 主线程 -> Worker | `step-debug` | 暂停后显式推进测试 tick |
 | 主线程 -> Worker | `inspect` | 请求单个实体详情 |
+| 主线程 -> Worker | `set-observation` | 切换全知或指定势力视角 |
 | 主线程 -> Worker | `dispose` | 结束会话 |
 | Worker -> 主线程 | `ready/frame` | 初始和持续渲染投影 |
 | Worker -> 主线程 | `pause-changed` | 确认运行状态 |

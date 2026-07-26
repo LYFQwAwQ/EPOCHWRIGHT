@@ -19,6 +19,7 @@ export interface BattleClientState {
   readonly inspection?: EntityInspection;
   readonly result?: BattleResult;
   readonly stateHash?: string;
+  readonly observerFactionId?: string;
   readonly error?: string;
 }
 
@@ -49,6 +50,7 @@ export interface BattleWorkerController {
   readonly pause: () => void;
   readonly run: () => void;
   readonly inspect: (entityId?: string) => void;
+  readonly setObservation: (observerFactionId?: string) => void;
   readonly stepDebug: (count?: number) => void;
 }
 
@@ -168,6 +170,18 @@ export function useBattleWorker(): BattleWorkerController {
     [post],
   );
 
+  const setObservation = useCallback(
+    (observerFactionId?: string) => {
+      setState((current) => ({ ...current, observerFactionId, inspection: undefined }));
+      post({
+        type: "set-observation",
+        sessionId: sessionRef.current,
+        observerFactionId,
+      });
+    },
+    [post],
+  );
+
   const stepDebug = useCallback(
     (count = 1) => {
       post({ type: "step-debug", sessionId: sessionRef.current, count });
@@ -175,5 +189,5 @@ export function useBattleWorker(): BattleWorkerController {
     [post],
   );
 
-  return { state, start, pause, run, inspect, stepDebug };
+  return { state, start, pause, run, inspect, setObservation, stepDebug };
 }

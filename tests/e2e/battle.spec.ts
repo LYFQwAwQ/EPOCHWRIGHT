@@ -255,6 +255,33 @@ test("narrow viewport keeps a nonblank battlefield and stable controls", async (
   expect(errors).toEqual([]);
 });
 
+test("faction observation projects only authorized groups and independent layers", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?e2e=1&mode=defense&seed=e2e-observation");
+  await waitForBattle(page);
+
+  await page.getByRole("button", { name: "暂停演算" }).click();
+  await page.waitForFunction(() => window.__battleTest?.getStatus() === "paused");
+  await page.waitForTimeout(200);
+  await page.locator('select[aria-label="观察视角"]').selectOption("ember");
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  const visibleGroups = await page.evaluate(() => window.__battleTest?.getGroupIds() ?? []);
+  expect(visibleGroups.length).toBeGreaterThan(0);
+  expect(visibleGroups.every((id) => id.startsWith("ember-"))).toBe(true);
+  const projectedHash = await page.evaluate(() => window.__battleTest?.getStateHash());
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash())).toBe(projectedHash);
+
+  const objectiveToggle = page.getByRole("checkbox", { name: "目标" });
+  await expect(objectiveToggle).toBeChecked();
+  await objectiveToggle.uncheck();
+  await expect(page.locator(".objective-summary")).toHaveCount(0);
+  await objectiveToggle.check();
+  await expect(page.locator(".objective-summary")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("weapon fire produces visible tracer pixels", async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await page.setViewportSize({ width: 1280, height: 720 });

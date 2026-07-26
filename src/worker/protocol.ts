@@ -23,6 +23,11 @@ export type WorkerCommand =
       readonly sessionId: string;
       readonly entityId?: string;
     }
+  | {
+      readonly type: "set-observation";
+      readonly sessionId: string;
+      readonly observerFactionId?: string;
+    }
   | { readonly type: "dispose"; readonly sessionId: string };
 
 interface WorkerMessageBase {

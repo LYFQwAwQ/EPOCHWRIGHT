@@ -6,7 +6,9 @@ import {
   MAP_CELL_FLAGS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
+  type BattleEvent,
   type BattleModeKind,
+  type BattleSetup,
   type BattleSetupOptions,
   type FactionSetup,
   type GroupInspection,
@@ -15,6 +17,7 @@ import { EventFeed } from "./ui/EventFeed";
 import { FactionSummary } from "./ui/FactionSummary";
 import { Inspector } from "./ui/Inspector";
 import { ObjectiveSummary } from "./ui/ObjectiveSummary";
+import { ObservationControls, type ObservationLayers } from "./ui/ObservationControls";
 import { Toolbar } from "./ui/Toolbar";
 
 type BattleModeSelection = BattleModeKind;
@@ -79,6 +82,49 @@ function terminationLabel(reason: string): string {
   return labels[reason] ?? reason;
 }
 
+function filterObservationEvents(
+  events: readonly BattleEvent[],
+  visibleGroupIds: ReadonlySet<string>,
+  observerFactionId: string | undefined,
+  setup: BattleSetup,
+  layers: ObservationLayers,
+): readonly BattleEvent[] {
+  return events.filter((event) => {
+    switch (event.type) {
+      case "contact-spotted":
+        return (
+          layers.contacts &&
+          visibleGroupIds.has(event.observerGroupId) &&
+          visibleGroupIds.has(event.targetGroupId)
+        );
+      case "intel-delivered":
+        return layers.contacts && (observerFactionId === undefined || event.factionId === observerFactionId);
+      case "member-health-changed":
+      case "morale-changed":
+      case "group-evacuated":
+        return visibleGroupIds.has(event.groupId);
+      case "weapon-fired":
+        return visibleGroupIds.has(event.groupId) && visibleGroupIds.has(event.targetGroupId);
+      case "reinforcement-triggered":
+        return observerFactionId === undefined || event.factionId === observerFactionId;
+      case "reinforcement-waiting": {
+        const wave = setup.reinforcements.find((candidate) => candidate.id === event.waveId);
+        return observerFactionId === undefined || wave?.factionId === observerFactionId;
+      }
+      case "reinforcement-deployed":
+        return observerFactionId === undefined || event.groupIds.some((id) => visibleGroupIds.has(id));
+      case "reinforcement-cancelled": {
+        const wave = setup.reinforcements.find((candidate) => candidate.id === event.waveId);
+        return observerFactionId === undefined || wave?.factionId === observerFactionId;
+      }
+      case "objective-state-changed":
+        return layers.objectives;
+      case "battle-ended":
+        return true;
+    }
+  });
+}
+
 export function App() {
   const controller = useBattleWorker();
   const { state } = controller;
@@ -88,9 +134,15 @@ export function App() {
   const [cleanView, setCleanView] = useState(false);
   const [cameraMode, setCameraMode] = useState<CameraMode>("free");
   const [cameraResetSignal, setCameraResetSignal] = useState(0);
+  const [observerFactionId, setObserverFactionId] = useState<string>();
+  const [observationLayers, setObservationLayers] = useState<ObservationLayers>({
+    objectives: true,
+    contacts: true,
+    paths: true,
+  });
   const initialSeedRef = useRef(seed);
   const initialModeRef = useRef(battleMode);
-  const { start, pause, run, inspect, stepDebug } = controller;
+  const { start, pause, run, inspect, setObservation, stepDebug } = controller;
   const e2eMode = new URLSearchParams(window.location.search).get("e2e") === "1";
   const autostart = new URLSearchParams(window.location.search).get("autostart") !== "0";
 
@@ -130,11 +182,13 @@ export function App() {
     const nextSeed = randomSeed();
     setSeed(nextSeed);
     setSelectedGroupId(undefined);
+    setObserverFactionId(undefined);
+    setObservation(undefined);
     setCameraMode("free");
     setCameraResetSignal((value) => value + 1);
     updateBattleUrl(nextSeed, battleMode);
     start({ ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode }, true);
-  }, [battleMode, start]);
+  }, [battleMode, setObservation, start]);
 
   const changeBattleMode = useCallback(
     (nextMode: BattleModeSelection) => {
@@ -145,12 +199,14 @@ export function App() {
       setBattleMode(nextMode);
       setSeed(nextSeed);
       setSelectedGroupId(undefined);
+      setObserverFactionId(undefined);
+      setObservation(undefined);
       setCameraMode("free");
       setCameraResetSignal((value) => value + 1);
       updateBattleUrl(nextSeed, nextMode);
       start({ ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode }, true);
     },
-    [battleMode, start],
+    [battleMode, setObservation, start],
   );
 
   const factionColors = useMemo(
@@ -169,6 +225,36 @@ export function App() {
   );
   const groupInspection =
     state.inspection?.kind === "group" ? (state.inspection as GroupInspection) : undefined;
+  const displayFrame = useMemo(() => {
+    if (!state.frame || observationLayers.contacts || observerFactionId === undefined) {
+      return state.frame;
+    }
+    return {
+      ...state.frame,
+      groups: state.frame.groups.filter((group) => group.visibility !== "known"),
+    };
+  }, [observationLayers.contacts, observerFactionId, state.frame]);
+  const displayedInspection =
+    groupInspection?.visibility === "known" && !observationLayers.contacts
+      ? undefined
+      : groupInspection;
+  const visibleGroupIds = useMemo(
+    () => new Set(displayFrame?.groups.map((group) => group.id) ?? []),
+    [displayFrame],
+  );
+  const visibleEvents = useMemo(
+    () =>
+      state.setup
+        ? filterObservationEvents(
+            state.events,
+            visibleGroupIds,
+            observerFactionId,
+            state.setup,
+            observationLayers,
+          )
+        : [],
+    [observerFactionId, observationLayers, state.events, state.setup, visibleGroupIds],
+  );
   const tick = state.frame?.tick ?? 0;
   const anyEngagement = state.frame?.groups.some((group) => group.action === "engaging") ?? false;
   const objectiveState = state.frame?.objectives[0]?.state;
@@ -274,16 +360,24 @@ export function App() {
             staticOccupancy instanceof Uint8Array,
         };
       },
-      getObjectives: () => state.frame?.objectives ?? [],
+      getObjectives: () => displayFrame?.objectives ?? [],
       getFactionIds: () => state.setup?.factions.map((faction) => faction.id) ?? [],
-      getGroupIds: () => state.frame?.groups.map((group) => group.id) ?? [],
+      getGroupIds: () => displayFrame?.groups.map((group) => group.id) ?? [],
       getEventTypes: () => state.events.map((event) => event.type),
+      getObservation: () => observerFactionId ?? "omniscient",
+      getLayerVisibility: () => ({ ...observationLayers }),
+      setObservation: (factionId?: string) => {
+        setSelectedGroupId(undefined);
+        setCameraMode("free");
+        setObserverFactionId(factionId);
+        setObservation(factionId);
+      },
       selectGroup,
       pause,
       run,
       step: stepDebug,
     };
-  }, [battleMode, e2eMode, pause, run, selectGroup, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
+  }, [battleMode, displayFrame, e2eMode, observationLayers, observerFactionId, pause, run, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -293,6 +387,7 @@ export function App() {
     );
   }
 
+  const frameForUi = displayFrame ?? state.frame;
   const winnerNames =
     state.result?.winnerFactionIds.map((id) => factionNames[id] ?? id).join("、") ?? "";
 
@@ -302,9 +397,10 @@ export function App() {
         <Battlefield
           key={state.setup.battleId}
           map={state.setup.map}
-          frame={state.frame}
-          events={state.events}
+          frame={frameForUi}
+          events={visibleEvents}
           factionColors={factionColors}
+          showObjectives={observationLayers.objectives}
           selectedGroupId={selectedGroupId}
           cameraMode={cameraMode}
           resetSignal={cameraResetSignal}
@@ -333,20 +429,43 @@ export function App() {
 
       {!cleanView && (
         <>
-          <FactionSummary factions={state.setup.factions} frame={state.frame} />
-          <ObjectiveSummary
-            objectives={state.frame.objectives}
-            factionNames={factionNames}
-            factionColors={factionColors}
+          <ObservationControls
+            factions={state.setup.factions}
+            observerFactionId={observerFactionId}
+            layers={observationLayers}
+            onObserverChange={(factionId) => {
+              setSelectedGroupId(undefined);
+              setCameraMode("free");
+              setObserverFactionId(factionId);
+              setObservation(factionId);
+            }}
+            onLayerChange={(layer, visible) => {
+              if (layer === "contacts" && !visible && groupInspection?.visibility === "known") {
+                setSelectedGroupId(undefined);
+                setCameraMode("free");
+                inspect(undefined);
+              }
+              setObservationLayers((current) => ({ ...current, [layer]: visible }));
+            }}
           />
+          <FactionSummary factions={state.setup.factions} frame={frameForUi} />
+          {observationLayers.objectives && (
+            <ObjectiveSummary
+              objectives={frameForUi.objectives}
+              factionNames={factionNames}
+              factionColors={factionColors}
+            />
+          )}
           <Inspector
-            inspection={groupInspection}
-            frame={state.frame}
+            inspection={displayedInspection}
+            frame={frameForUi}
             factionNames={factionNames}
             factionColors={factionColors}
+            showContacts={observationLayers.contacts}
+            showPaths={observationLayers.paths}
           />
-          <EventFeed events={state.events} />
-          {state.frame.objectives.length === 0 && (
+          <EventFeed events={visibleEvents} />
+          {frameForUi.objectives.length === 0 && (
             <span className="mobile-status">桌面观察模式</span>
           )}
         </>

@@ -403,6 +403,78 @@ describe("defense mode", () => {
     expect(simulation.getResult()?.terminationReason).not.toBe("stalemate");
     expect(simulation.getResult()?.terminationReason).not.toBe("defense-time-expired");
   });
+
+  it("supports objective combinations, sequence unlocks, and a deterministic reserve line", () => {
+    const map = createFlatMap(50, 24);
+    const first = { id: "objective-alpha", center: { x: 15, z: 12 }, radiusCells: 2 };
+    const second = { id: "objective-bravo", center: { x: 30, z: 12 }, radiusCells: 2 };
+    const setup = createDefenseSetup(
+      map,
+      first.center,
+      [
+        createGroup("ember-alpha", "ember", 15, 12),
+        createGroup("ember-bravo", "ember", 30, 12),
+        createGroup("azure-front", "azure", 45, 8, "incapacitated"),
+        createGroup("azure-reserve", "azure", 45, 16, "incapacitated"),
+      ],
+      { maximumDurationTicks: 2_000 },
+    );
+    const multiSetup: BattleSetup = {
+      ...setup,
+      mode: {
+        kind: "defense",
+        attackerFactionId: "ember",
+        defenderFactionId: "azure",
+        objective: first,
+        objectives: [first, second],
+        objectiveRule: "all",
+        reserveRatioBps: 5_000,
+      },
+    };
+    const simulation = createSimulation(multiSetup);
+    expect(simulation.getRenderFrame().objectives).toHaveLength(2);
+    expect((simulation.inspect("azure-reserve") as GroupInspection).defenseRole).toBe("reserve");
+    expect((simulation.inspect("azure-front") as GroupInspection).defenseRole).toBe("frontline");
+
+    simulation.step(400);
+    expect(simulation.getResult()).toMatchObject({
+      terminationReason: "objective-captured",
+      winnerFactionIds: ["ember"],
+      objectives: [
+        { id: "objective-alpha", state: "attacker-controlled" },
+        { id: "objective-bravo", state: "attacker-controlled" },
+      ],
+    });
+
+    if (multiSetup.mode.kind !== "defense") {
+      throw new Error("Expected a defense setup.");
+    }
+
+    const countSetup: BattleSetup = {
+      ...multiSetup,
+      battleId: "multi-objective-count",
+      mode: { ...multiSetup.mode, objectiveRule: "count", requiredCount: 1 },
+    };
+    const countSimulation = createSimulation(countSetup);
+    countSimulation.step(250);
+    expect(countSimulation.getResult()?.terminationReason).toBe("objective-captured");
+    expect(countSimulation.getResult()?.objectives).toHaveLength(2);
+
+    const sequenceSetup: BattleSetup = {
+      ...multiSetup,
+      battleId: "multi-objective-sequence",
+      mode: { ...multiSetup.mode, objectiveRule: "sequence" },
+    };
+    const sequenceSimulation = createSimulation(sequenceSetup);
+    expect((sequenceSimulation.inspect("objective-bravo") as ObjectiveInspection).unlocked).toBe(false);
+    sequenceSimulation.step(220);
+    expect((sequenceSimulation.inspect("objective-alpha") as ObjectiveInspection).state).toBe(
+      "attacker-controlled",
+    );
+    expect((sequenceSimulation.inspect("objective-bravo") as ObjectiveInspection).unlocked).toBe(
+      true,
+    );
+  });
 });
 
 function createDefenseSetup(

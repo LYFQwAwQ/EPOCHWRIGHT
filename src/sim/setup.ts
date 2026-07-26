@@ -17,15 +17,20 @@ import {
 } from "./types";
 import type {
   BattleMap,
+  BattleModeSetup,
   BattleRules,
   BattleSetup,
   BattleSetupInput,
   BattleSetupOptions,
   DefenseModeSetup,
+  DefenseModeSetupInput,
+  DefenseObjectiveSetup,
   FactionSetup,
   GridCoord,
   GroupSpawn,
   RelationSetup,
+  ReinforcementEntranceSetup,
+  ReinforcementWaveSetup,
 } from "./types";
 
 const DEFAULT_FACTIONS: readonly FactionSetup[] = [
@@ -64,10 +69,12 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
   const relations = (options.relations ?? createDefaultRelations(factions)).map((relation) => ({
     ...relation,
   }));
-  const mode =
-    options.mode === "defense"
-      ? createDefenseMode(map, factions)
-      : ({ kind: "conflict" } as const);
+  const mode: BattleModeSetup =
+    typeof options.mode === "object"
+      ? cloneMode(options.mode)
+      : options.mode === "defense"
+        ? createDefenseMode(map, factions)
+        : ({ kind: "conflict" } as const);
   const rules: BattleRules = {
     ticksPerSecond: SIMULATION_HZ,
     sightRangeCells: 13,
@@ -92,6 +99,8 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     factions,
     relations,
     groups,
+    reinforcementEntrances: (options.reinforcementEntrances ?? []).map(cloneEntrance),
+    reinforcements: (options.reinforcements ?? []).map(cloneWave),
     mode,
     rules,
   };
@@ -113,9 +122,16 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       factions: inputSetup.factions.map((faction) => ({ ...faction })),
       relations: inputSetup.relations?.map((relation) => ({ ...relation })) ??
         createDefaultRelations(inputSetup.factions),
+      reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
+      reinforcements: (inputSetup.reinforcements ?? []).map(cloneWave),
     } as BattleSetup;
   }
-  return inputSetup as BattleSetup;
+  return {
+    ...inputSetup,
+    relations: inputSetup.relations?.map((relation) => ({ ...relation })) ?? [],
+    reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
+    reinforcements: (inputSetup.reinforcements ?? []).map(cloneWave),
+  } as BattleSetup;
 }
 
 export function validateBattleSetup(inputSetup: BattleSetupInput): void {
@@ -145,9 +161,11 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
   for (const staticObject of setup.map.staticObjects) {
     claimUniqueId(staticObject.id, entityIds);
   }
+  validateReinforcements(setup, factionIds, entityIds);
   const occupiedSpawnCells = new Set<number>();
   const factionGroupCounts = new Map(setup.factions.map((faction) => [faction.id, 0]));
   if (setup.mode.kind === "defense") {
+    const objectives = defenseObjectives(setup.mode);
     if (
       setup.mode.attackerFactionId === setup.mode.defenderFactionId ||
       !factionIds.has(setup.mode.attackerFactionId) ||
@@ -160,21 +178,52 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     ) {
       throw new Error("Defense mode requires two distinct hostile factions.");
     }
+    if (objectives.length === 0) {
+      throw new Error("Defense mode requires at least one objective.");
+    }
+    const objectiveIds = new Set<string>();
+    for (const objective of objectives) {
+      if (
+        objectiveIds.has(objective.id) ||
+        !Number.isInteger(objective.radiusCells) ||
+        objective.radiusCells < 1 ||
+        !isLegalDeployment(setup.map, objective.center) ||
+        objective.center.x - objective.radiusCells < 0 ||
+        objective.center.z - objective.radiusCells < 0 ||
+        objective.center.x + objective.radiusCells >= setup.map.width ||
+        objective.center.z + objective.radiusCells >= setup.map.height
+      ) {
+        throw new Error("Defense objectives must have unique legal centers and positive integer radii.");
+      }
+      if (countWalkableObjectiveCells(setup.map, objective) < 5) {
+        throw new Error("Defense objectives must contain at least five walkable cells.");
+      }
+      objectiveIds.add(objective.id);
+      claimUniqueId(objective.id, entityIds);
+    }
+    const objectiveRule = setup.mode.objectiveRule ?? "all";
+    if (!(["all", "count", "sequence"] as const).includes(objectiveRule)) {
+      throw new Error("Defense objectiveRule must be all, count, or sequence.");
+    }
     if (
-      !Number.isInteger(setup.mode.objective.radiusCells) ||
-      setup.mode.objective.radiusCells < 1 ||
-      !isLegalDeployment(setup.map, setup.mode.objective.center) ||
-      setup.mode.objective.center.x - setup.mode.objective.radiusCells < 0 ||
-      setup.mode.objective.center.z - setup.mode.objective.radiusCells < 0 ||
-      setup.mode.objective.center.x + setup.mode.objective.radiusCells >= setup.map.width ||
-      setup.mode.objective.center.z + setup.mode.objective.radiusCells >= setup.map.height
+      setup.mode.requiredCount !== undefined &&
+      (!Number.isInteger(setup.mode.requiredCount) ||
+        setup.mode.requiredCount < 1 ||
+        setup.mode.requiredCount > objectives.length)
     ) {
-      throw new Error("Defense objective must have a legal center and positive integer radius.");
+      throw new Error("Defense requiredCount must be within the objective count.");
     }
-    if (countWalkableObjectiveCells(setup.map, setup.mode.objective) < 5) {
-      throw new Error("Defense objective must contain at least five walkable cells.");
+    if (objectiveRule === "count" && setup.mode.requiredCount === undefined) {
+      throw new Error("Count objective rules require requiredCount.");
     }
-    claimUniqueId(setup.mode.objective.id, entityIds);
+    if (
+      setup.mode.reserveRatioBps !== undefined &&
+      (!Number.isInteger(setup.mode.reserveRatioBps) ||
+        setup.mode.reserveRatioBps < 0 ||
+        setup.mode.reserveRatioBps > 10_000)
+    ) {
+      throw new Error("Defense reserveRatioBps must be an integer from 0 to 10000.");
+    }
   }
   for (const group of setup.groups) {
     claimUniqueId(group.id, entityIds);
@@ -264,14 +313,54 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
     }
   }
 
+  for (const entrance of [...normalized.reinforcementEntrances].sort((a, b) =>
+    compareStrings(a.id, b.id),
+  )) {
+    hasher.addString(entrance.id);
+    hasher.addString(entrance.factionId);
+    hasher.addNumber(entrance.capacityPerTick);
+    for (const cell of entrance.cells) {
+      hasher.addNumber(cell.x);
+      hasher.addNumber(cell.z);
+    }
+  }
+  for (const wave of [...normalized.reinforcements].sort((a, b) =>
+    compareStrings(a.id, b.id),
+  )) {
+    hasher.addString(wave.id);
+    hasher.addString(wave.factionId);
+    hasher.addNumber(wave.arrivalTick);
+    hasher.addString(wave.blockedPolicy);
+    for (const entranceId of reinforcementEntranceIds(wave)) {
+      hasher.addString(entranceId);
+    }
+    for (const group of wave.groups) {
+      hasher.addString(group.id);
+      hasher.addString(group.factionId);
+      hasher.addNumber(group.spawn.x);
+      hasher.addNumber(group.spawn.z);
+      hasher.addNumber(group.evacuation.x);
+      hasher.addNumber(group.evacuation.z);
+      for (const member of group.members) {
+        hasher.addString(member.id);
+        hasher.addString(member.initialHealth ?? "healthy");
+      }
+    }
+  }
+
   hasher.addString(normalized.mode.kind);
   if (normalized.mode.kind === "defense") {
     hasher.addString(normalized.mode.attackerFactionId);
     hasher.addString(normalized.mode.defenderFactionId);
-    hasher.addString(normalized.mode.objective.id);
-    hasher.addNumber(normalized.mode.objective.center.x);
-    hasher.addNumber(normalized.mode.objective.center.z);
-    hasher.addNumber(normalized.mode.objective.radiusCells);
+    hasher.addString(normalized.mode.objectiveRule ?? "all");
+    hasher.addNumber(normalized.mode.requiredCount ?? -1);
+    hasher.addNumber(normalized.mode.reserveRatioBps ?? -1);
+    for (const objective of defenseObjectives(normalized.mode)) {
+      hasher.addString(objective.id);
+      hasher.addNumber(objective.center.x);
+      hasher.addNumber(objective.center.z);
+      hasher.addNumber(objective.radiusCells);
+    }
   }
 
   hasher.addNumber(normalized.rules.ticksPerSecond);
@@ -295,6 +384,121 @@ function createDefaultRelations(factions: readonly FactionSetup[]): readonly Rel
     }
   }
   return relations;
+}
+
+function validateReinforcements(
+  setup: BattleSetup,
+  factionIds: ReadonlySet<string>,
+  entityIds: Set<string>,
+): void {
+  const entrancesById = new Map<string, ReinforcementEntranceSetup>();
+  for (const entrance of setup.reinforcementEntrances) {
+    if (
+      entrancesById.has(entrance.id) ||
+      !factionIds.has(entrance.factionId) ||
+      !Number.isInteger(entrance.capacityPerTick) ||
+      entrance.capacityPerTick < 1 ||
+      entrance.cells.length === 0
+    ) {
+      throw new Error(`Reinforcement entrance ${entrance.id} is invalid.`);
+    }
+    claimUniqueId(entrance.id, entityIds);
+    const cellKeys = new Set<number>();
+    for (const cell of entrance.cells) {
+      if (
+        !isEdgeCell(setup.map, cell) ||
+        !isLegalDeployment(setup.map, cell) ||
+        cellKeys.has(cell.z * setup.map.width + cell.x)
+      ) {
+        throw new Error(`Reinforcement entrance ${entrance.id} must contain unique legal edge cells.`);
+      }
+      cellKeys.add(cell.z * setup.map.width + cell.x);
+    }
+    entrancesById.set(entrance.id, entrance);
+  }
+
+  for (const wave of setup.reinforcements) {
+    if (
+      !wave.id ||
+      !Number.isInteger(wave.arrivalTick) ||
+      wave.arrivalTick < 0 ||
+      !factionIds.has(wave.factionId) ||
+      !["wait", "try-alternate", "cancel"].includes(wave.blockedPolicy) ||
+      wave.groups.length === 0
+    ) {
+      throw new Error(`Reinforcement wave ${wave.id} is invalid.`);
+    }
+    claimUniqueId(wave.id, entityIds);
+    const entranceIds = reinforcementEntranceIds(wave);
+    if (entranceIds.length === 0 || new Set(entranceIds).size !== entranceIds.length) {
+      throw new Error(`Reinforcement wave ${wave.id} must define unique entrance IDs.`);
+    }
+    for (const entranceId of entranceIds) {
+      const entrance = entrancesById.get(entranceId);
+      if (!entrance || entrance.factionId !== wave.factionId) {
+        throw new Error(`Reinforcement wave ${wave.id} references an invalid entrance.`);
+      }
+    }
+    for (const group of wave.groups) {
+      claimUniqueId(group.id, entityIds);
+      if (group.factionId !== wave.factionId || group.members.length !== 8) {
+        throw new Error(`Reinforcement group ${group.id} has an invalid faction or roster.`);
+      }
+      for (const member of group.members) {
+        claimUniqueId(member.id, entityIds);
+        if (
+          member.initialHealth !== undefined &&
+          !["healthy", "wounded", "incapacitated", "dead"].includes(member.initialHealth)
+        ) {
+          throw new Error(`Member ${member.id} has an invalid initial health state.`);
+        }
+      }
+      if (!isLegalDeployment(setup.map, group.spawn) || !isLegalDeployment(setup.map, group.evacuation)) {
+        throw new Error(`Reinforcement group ${group.id} has an illegal template position.`);
+      }
+    }
+  }
+}
+
+export function reinforcementEntranceIds(wave: ReinforcementWaveSetup): readonly string[] {
+  return wave.entranceIds ?? wave.entranceZoneIds ?? [];
+}
+
+function isEdgeCell(map: BattleMap, cell: GridCoord): boolean {
+  return (
+    Number.isInteger(cell.x) &&
+    Number.isInteger(cell.z) &&
+    cell.x >= 0 &&
+    cell.z >= 0 &&
+    cell.x < map.width &&
+    cell.z < map.height &&
+    (cell.x === 0 || cell.z === 0 || cell.x === map.width - 1 || cell.z === map.height - 1)
+  );
+}
+
+function cloneEntrance(entrance: ReinforcementEntranceSetup): ReinforcementEntranceSetup {
+  return {
+    ...entrance,
+    cells: entrance.cells.map((cell) => ({ ...cell })),
+  };
+}
+
+function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
+  return {
+    ...wave,
+    entranceIds: wave.entranceIds ? [...wave.entranceIds] : undefined,
+    entranceZoneIds: wave.entranceZoneIds ? [...wave.entranceZoneIds] : undefined,
+    groups: wave.groups.map((group) => ({
+      ...group,
+      spawn: { ...group.spawn },
+      evacuation: { ...group.evacuation },
+      members: group.members.map((member) => ({ ...member })),
+    })),
+  };
+}
+
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function validateRelations(
@@ -378,15 +582,18 @@ function createDefenseMode(
   const corridorZ = Math.round(
     primaryAttackRouteCenterZ(map.width, map.height, targetX),
   );
+  const objective = {
+    id: "central-objective",
+    center: findNearestWalkable(map, { x: targetX, z: corridorZ }),
+    radiusCells: 2,
+  } satisfies DefenseObjectiveSetup;
   return {
     kind: "defense",
     attackerFactionId: factions[0].id,
     defenderFactionId: factions[1].id,
-    objective: {
-      id: "central-objective",
-      center: findNearestWalkable(map, { x: targetX, z: corridorZ }),
-      radiusCells: 2,
-    },
+    objective,
+    objectives: [objective],
+    objectiveRule: "all",
   };
 }
 
@@ -516,13 +723,29 @@ function validateRequiredRoutes(setup: BattleSetup): void {
     throw new Error(`Group ${evacuationBlocked.id} has no legal route to its evacuation cell.`);
   }
 
+  const entrancesById = new Map(
+    setup.reinforcementEntrances.map((entrance) => [entrance.id, entrance]),
+  );
+  for (const wave of setup.reinforcements) {
+    const entranceCells = reinforcementEntranceIds(wave).flatMap(
+      (entranceId) => entrancesById.get(entranceId)?.cells ?? [],
+    );
+    const blockedGroup = wave.groups.find(
+      (group) => !entranceCells.some((cell) => hasRoute(cell, group.evacuation)),
+    );
+    if (blockedGroup) {
+      throw new Error(
+        `Reinforcement group ${blockedGroup.id} has no legal route from its entrances to its evacuation cell.`,
+      );
+    }
+  }
+
   if (setup.mode.kind === "defense") {
     const mode = setup.mode;
-    const missionBlocked = setup.groups.find(
-      (group) =>
-        (group.factionId === mode.attackerFactionId ||
-          group.factionId === mode.defenderFactionId) &&
-        !hasRoute(group.spawn, mode.objective.center),
+    const objectives = defenseObjectives(mode);
+    const missionBlocked = setup.groups.find((group) =>
+      (group.factionId === mode.attackerFactionId || group.factionId === mode.defenderFactionId) &&
+      objectives.some((objective) => !hasRoute(group.spawn, objective.center)),
     );
     if (missionBlocked) {
       const routeKind =
@@ -553,4 +776,36 @@ function validateRequiredRoutes(setup: BattleSetup): void {
       );
     }
   }
+}
+
+export function defenseObjectives(mode: {
+  readonly objective?: DefenseObjectiveSetup;
+  readonly objectives?: readonly DefenseObjectiveSetup[];
+}): readonly DefenseObjectiveSetup[] {
+  if (mode.objectives !== undefined) {
+    return mode.objectives;
+  }
+  return mode.objective ? [mode.objective] : [];
+}
+
+function cloneMode(mode: BattleModeSetup | DefenseModeSetupInput): BattleModeSetup {
+  if (mode.kind !== "defense") {
+    return { kind: "conflict" };
+  }
+  const objectives = defenseObjectives(mode).map((objective) => ({
+    ...objective,
+    center: { ...objective.center },
+  }));
+  const primaryObjective = mode.objective ?? objectives[0];
+  if (!primaryObjective) {
+    throw new Error("Defense mode requires at least one objective.");
+  }
+  return {
+    ...mode,
+    objective: {
+      ...primaryObjective,
+      center: { ...primaryObjective.center },
+    },
+    objectives,
+  };
 }

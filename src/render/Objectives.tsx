@@ -119,6 +119,9 @@ function stateColor(
   objective: RenderObjective,
   factionColors: Readonly<Record<string, string>>,
 ): string {
+  if (objective.unlocked === false) {
+    return "#89949c";
+  }
   switch (objective.state) {
     case "attacker-controlled":
       return factionColors[objective.attackerFactionId] ?? "#e45f62";

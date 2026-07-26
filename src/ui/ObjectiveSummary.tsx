@@ -29,7 +29,9 @@ export function ObjectiveSummary({ objectives, factionNames, factionColors }: Ob
           <div className="objective-row" key={objective.id}>
             <div className="objective-heading">
               <strong>目标 {String.fromCharCode(65 + index)}</strong>
-              <span aria-live="polite">{statusLabels[objective.state]}</span>
+              <span aria-live="polite">
+                {objective.unlocked === false ? "待解锁" : statusLabels[objective.state]}
+              </span>
               <b>{percentage}%</b>
             </div>
             <div

@@ -194,6 +194,27 @@ export interface GroupSpawn {
   readonly members: readonly MemberSpawn[];
 }
 
+export interface ReinforcementEntranceSetup {
+  readonly id: string;
+  readonly factionId: FactionId;
+  readonly cells: readonly GridCoord[];
+  /** Maximum number of groups that may enter through this entrance per tick. */
+  readonly capacityPerTick: number;
+}
+
+export type ReinforcementBlockedPolicy = "wait" | "try-alternate" | "cancel";
+
+export interface ReinforcementWaveSetup {
+  readonly id: string;
+  readonly factionId: FactionId;
+  readonly arrivalTick: Tick;
+  /** Preferred entrance IDs; `entranceZoneIds` is accepted for the data-contract name. */
+  readonly entranceIds?: readonly string[];
+  readonly entranceZoneIds?: readonly string[];
+  readonly groups: readonly GroupSpawn[];
+  readonly blockedPolicy: ReinforcementBlockedPolicy;
+}
+
 export interface BattleRules {
   readonly ticksPerSecond: typeof SIMULATION_HZ;
   readonly sightRangeCells: number;
@@ -219,11 +240,31 @@ export interface DefenseObjectiveSetup {
   readonly radiusCells: number;
 }
 
+export type DefenseObjectiveRule = "all" | "count" | "sequence";
+
 export interface DefenseModeSetup {
   readonly kind: "defense";
   readonly attackerFactionId: FactionId;
   readonly defenderFactionId: FactionId;
+  /** Legacy primary objective. Multi-objective setups also expose `objectives`. */
   readonly objective: DefenseObjectiveSetup;
+  readonly objectives?: readonly DefenseObjectiveSetup[];
+  readonly objectiveRule?: DefenseObjectiveRule;
+  readonly requiredCount?: number;
+  /** Percentage of defender groups held outside the first defense line. */
+  readonly reserveRatioBps?: number;
+}
+
+/** Input convenience shape for generated setups; the primary objective defaults to the first item. */
+export interface DefenseModeSetupInput {
+  readonly kind: "defense";
+  readonly attackerFactionId: FactionId;
+  readonly defenderFactionId: FactionId;
+  readonly objective?: DefenseObjectiveSetup;
+  readonly objectives: readonly DefenseObjectiveSetup[];
+  readonly objectiveRule?: DefenseObjectiveRule;
+  readonly requiredCount?: number;
+  readonly reserveRatioBps?: number;
 }
 
 export type BattleModeSetup = ConflictModeSetup | DefenseModeSetup;
@@ -237,15 +278,22 @@ export interface BattleSetup {
   readonly factions: readonly FactionSetup[];
   readonly relations: readonly RelationSetup[];
   readonly groups: readonly GroupSpawn[];
+  readonly reinforcementEntrances: readonly ReinforcementEntranceSetup[];
+  readonly reinforcements: readonly ReinforcementWaveSetup[];
   readonly mode: BattleModeSetup;
   readonly rules: BattleRules;
 }
 
 /** Wire-level input accepted by validation, including the legacy two-faction version. */
-export type BattleSetupInput = Omit<BattleSetup, "schemaVersion" | "rulesVersion" | "relations"> & {
+export type BattleSetupInput = Omit<
+  BattleSetup,
+  "schemaVersion" | "rulesVersion" | "relations" | "reinforcementEntrances" | "reinforcements"
+> & {
   readonly schemaVersion: string;
   readonly rulesVersion: string;
   readonly relations?: readonly RelationSetup[];
+  readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
+  readonly reinforcements?: readonly ReinforcementWaveSetup[];
 };
 
 export interface BattleSetupOptions {
@@ -265,7 +313,9 @@ export interface BattleSetupOptions {
   readonly wallCoverage?: number;
   readonly maximumDurationSeconds?: number;
   readonly stalemateSeconds?: number;
-  readonly mode?: BattleModeKind;
+  readonly mode?: BattleModeKind | BattleModeSetup | DefenseModeSetupInput;
+  readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
+  readonly reinforcements?: readonly ReinforcementWaveSetup[];
 }
 
 export type HealthState =
@@ -274,7 +324,7 @@ export type HealthState =
   | "incapacitated"
   | "dead";
 
-export type PresenceState = "deployed" | "evacuated";
+export type PresenceState = "undeployed" | "deployed" | "evacuated";
 
 export type MoraleState = "steady" | "shaken" | "routing";
 
@@ -289,6 +339,9 @@ export type GroupAction =
 export interface RenderGroup {
   readonly id: GroupId;
   readonly factionId: FactionId;
+  /** Own groups are exact; known groups are last-known intelligence contacts. */
+  readonly visibility?: "own" | "known";
+  readonly observedAt?: Tick;
   readonly worldX: number;
   readonly worldY: number;
   readonly worldZ: number;
@@ -330,6 +383,7 @@ export interface RenderObjective {
   readonly defenderPower: number;
   readonly attackerFactionId: FactionId;
   readonly defenderFactionId: FactionId;
+  readonly unlocked?: boolean;
 }
 
 export interface RenderFrame {
@@ -351,6 +405,8 @@ export interface GroupInspection {
   readonly kind: "group";
   readonly id: GroupId;
   readonly factionId: FactionId;
+  readonly visibility?: "own" | "known";
+  readonly observedAt?: Tick;
   readonly cell: GridCoord;
   readonly destination?: GridCoord;
   readonly action: GroupAction;
@@ -365,6 +421,8 @@ export interface GroupInspection {
   readonly contacts: readonly ContactInspection[];
   readonly path: readonly GridCoord[];
   readonly defenseSlot?: GridCoord;
+  readonly defenseRole?: "frontline" | "reserve";
+  readonly assignedObjectiveId?: ObjectiveId;
   readonly currentCover?: CoverInspection;
   readonly coverEvaluation?: CoverEvaluationInspection;
 }
@@ -392,6 +450,7 @@ export interface ObjectiveInspection {
   readonly defenderPower: number;
   readonly attackerFactionId: FactionId;
   readonly defenderFactionId: FactionId;
+  readonly unlocked?: boolean;
 }
 
 export type EntityInspection = GroupInspection | MemberInspection | ObjectiveInspection;
@@ -436,6 +495,29 @@ export type BattleEvent =
       readonly groupId: GroupId;
     })
   | (BattleEventBase & {
+      readonly type: "reinforcement-triggered";
+      readonly waveId: string;
+      readonly factionId: FactionId;
+    })
+  | (BattleEventBase & {
+      readonly type: "reinforcement-waiting";
+      readonly waveId: string;
+      readonly remainingGroupCount: number;
+      readonly reason: "entrance-blocked" | "capacity";
+    })
+  | (BattleEventBase & {
+      readonly type: "reinforcement-deployed";
+      readonly waveId: string;
+      readonly groupIds: readonly GroupId[];
+      readonly entranceId: string;
+    })
+  | (BattleEventBase & {
+      readonly type: "reinforcement-cancelled";
+      readonly waveId: string;
+      readonly remainingGroupIds: readonly GroupId[];
+      readonly reason: "entrance-blocked" | "invalid-entrance";
+    })
+  | (BattleEventBase & {
       readonly type: "objective-state-changed";
       readonly objectiveId: ObjectiveId;
       readonly from: ObjectiveControlState;
@@ -463,7 +545,8 @@ export interface MemberResult {
   readonly factionId: FactionId;
   readonly health: HealthState;
   readonly presence: PresenceState;
-  readonly disposition: "present" | "evacuated" | "missing";
+  readonly disposition: "present" | "evacuated" | "missing" | "undeployed";
+  readonly deployment: "undeployed" | "deployed" | "evacuated";
 }
 
 export interface GroupResult {
@@ -472,6 +555,7 @@ export interface GroupResult {
   readonly evacuated: boolean;
   readonly moraleState: MoraleState;
   readonly activeMembers: number;
+  readonly deployment: "undeployed" | "deployed" | "evacuated";
 }
 
 export interface ObjectiveResult {
@@ -480,6 +564,7 @@ export interface ObjectiveResult {
   readonly progressBps: number;
   readonly attackerFactionId: FactionId;
   readonly defenderFactionId: FactionId;
+  readonly unlocked?: boolean;
 }
 
 export interface BattleResult {
@@ -501,8 +586,11 @@ export interface BattleSimulation {
   readonly status: SimulationStatus;
   getSetup(): BattleSetup;
   step(count?: number): void;
-  getRenderFrame(): RenderFrame;
-  inspect(entityId: GroupId | MemberId | ObjectiveId): EntityInspection | undefined;
+  getRenderFrame(observerFactionId?: FactionId): RenderFrame;
+  inspect(
+    entityId: GroupId | MemberId | ObjectiveId,
+    observerFactionId?: FactionId,
+  ): EntityInspection | undefined;
   getResult(): BattleResult | undefined;
   drainEvents(): readonly BattleEvent[];
   getStateHash(): string;

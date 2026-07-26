@@ -6,6 +6,8 @@ interface InspectorProps {
   readonly frame: RenderFrame;
   readonly factionNames: Readonly<Record<string, string>>;
   readonly factionColors: Readonly<Record<string, string>>;
+  readonly showContacts?: boolean;
+  readonly showPaths?: boolean;
 }
 
 const actionLabels: Readonly<Record<string, string>> = {
@@ -121,7 +123,14 @@ function Overview({ frame }: { readonly frame: RenderFrame }) {
   );
 }
 
-export function Inspector({ inspection, frame, factionNames, factionColors }: InspectorProps) {
+export function Inspector({
+  inspection,
+  frame,
+  factionNames,
+  factionColors,
+  showContacts = true,
+  showPaths = true,
+}: InspectorProps) {
   const coverSummary = inspection ? coverEvaluationSummary(inspection) : undefined;
   return (
     <aside className={`inspector-panel ${inspection ? "" : "inspector-panel--overview"}`}>
@@ -131,7 +140,12 @@ export function Inspector({ inspection, frame, factionNames, factionColors }: In
         <>
           <div className="panel-heading panel-heading--unit">
             <span>{factionNames[inspection.factionId] ?? inspection.factionId}</span>
-            <strong>{inspection.id}</strong>
+            <strong>
+              {inspection.id}
+              {inspection.visibility === "known" && (
+                <small className="inspection-visibility">已知接触</small>
+              )}
+            </strong>
             <i style={{ backgroundColor: factionColors[inspection.factionId] }} />
           </div>
 
@@ -194,29 +208,33 @@ export function Inspector({ inspection, frame, factionNames, factionColors }: In
             </dl>
           </section>
 
-          <section className="inspector-section inspector-section--contacts">
-            <div className="section-title">
-              <Radio size={15} />
-              <span>接触信息</span>
-              <b>{inspection.contacts.length}</b>
-            </div>
-            {inspection.contacts.slice(0, 4).map((contact) => (
-              <div className="contact-row" key={contact.targetGroupId}>
-                <Target size={14} />
-                <span>{contact.targetGroupId}</span>
-                <strong>{Math.round(contact.confidenceBps / 100)}%</strong>
+          {showContacts && (
+            <section className="inspector-section inspector-section--contacts">
+              <div className="section-title">
+                <Radio size={15} />
+                <span>接触信息</span>
+                <b>{inspection.contacts.length}</b>
               </div>
-            ))}
-            {inspection.contacts.length === 0 && <span className="empty-value">暂无有效接触</span>}
-          </section>
+              {inspection.contacts.slice(0, 4).map((contact) => (
+                <div className="contact-row" key={contact.targetGroupId}>
+                  <Target size={14} />
+                  <span>{contact.targetGroupId}</span>
+                  <strong>{Math.round(contact.confidenceBps / 100)}%</strong>
+                </div>
+              ))}
+              {inspection.contacts.length === 0 && <span className="empty-value">暂无有效接触</span>}
+            </section>
+          )}
 
-          <section className="inspector-section inspector-section--route">
-            <Route size={15} />
-            <span>
-              网格 {inspection.cell.x}, {inspection.cell.z}
-            </span>
-            <strong>{inspection.path.length} 路径点</strong>
-          </section>
+          {showPaths && (
+            <section className="inspector-section inspector-section--route">
+              <Route size={15} />
+              <span>
+                网格 {inspection.cell.x}, {inspection.cell.z}
+              </span>
+              <strong>{inspection.path.length} 路径点</strong>
+            </section>
+          )}
         </>
       )}
     </aside>

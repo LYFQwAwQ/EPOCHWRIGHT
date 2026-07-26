@@ -37,6 +37,13 @@ interface BattleTestApi {
   getFactionIds(): readonly string[];
   getGroupIds(): readonly string[];
   getEventTypes(): readonly string[];
+  getObservation(): string;
+  getLayerVisibility(): {
+    objectives: boolean;
+    contacts: boolean;
+    paths: boolean;
+  };
+  setObservation(factionId?: string): void;
   selectGroup(groupId?: string): void;
   pause(): void;
   run(): void;

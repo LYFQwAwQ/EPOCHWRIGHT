@@ -24,6 +24,7 @@ import type {
   IntelMessage,
   MemberState,
   ObjectiveRuntimeState,
+  ReinforcementRuntimeState,
   RuntimeState,
   ShotIntent,
 } from "./internal";
@@ -36,7 +37,13 @@ import {
 import { resolveObjectiveTick } from "./objective";
 import { areHostile, findRelation } from "./relations";
 import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
-import { hashBattleSetup, migrateBattleSetup, validateBattleSetup } from "./setup";
+import {
+  defenseObjectives,
+  hashBattleSetup,
+  migrateBattleSetup,
+  reinforcementEntranceIds,
+  validateBattleSetup,
+} from "./setup";
 import type {
   BattleEvent,
   BattleResult,
@@ -180,7 +187,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
-  getRenderFrame(): RenderFrame {
+  getRenderFrame(observerFactionId?: FactionId): RenderFrame {
     const groups: RenderGroup[] = [];
     const members: RenderMember[] = [];
     const objectives: RenderObjective[] = [];
@@ -188,22 +195,41 @@ class StageOneBattleSimulation implements BattleSimulation {
     const heightUnitMeters = this.setup.map.heightUnitMm / 1_000;
 
     for (const group of this.state.groups) {
-      const renderPosition = getGroupRenderPosition(group, this.setup.map);
-      if (group.action !== "evacuated") {
-        groups.push({
-          id: group.id,
-          factionId: group.factionId,
-          worldX: renderPosition.x * cellSizeMeters,
-          worldY: renderPosition.height * heightUnitMeters,
-          worldZ: renderPosition.z * cellSizeMeters,
-          headingRadians: group.headingRadians,
-          action: group.action,
-          moraleBps: group.moraleBps,
-          suppressionBps: group.suppressionBps,
-          activeMembers: activeMemberCount(group),
-        });
+      const ownGroup = observerFactionId === undefined || group.factionId === observerFactionId;
+      const contact = ownGroup ? undefined : this.getFactionContact(observerFactionId, group.id);
+      if (observerFactionId !== undefined && !ownGroup && !contact) {
+        continue;
       }
+      if (group.action === "evacuated") {
+        continue;
+      }
+      const renderPosition = contact
+        ? {
+            x: contact.lastKnown.x,
+            z: contact.lastKnown.z,
+            height: heightAt(this.setup.map, contact.lastKnown),
+          }
+        : getGroupRenderPosition(group, this.setup.map);
+      groups.push({
+        id: group.id,
+        factionId: group.factionId,
+        ...(observerFactionId === undefined
+          ? {}
+          : { visibility: ownGroup ? ("own" as const) : ("known" as const) }),
+        ...(contact ? { observedAt: contact.observedAt } : {}),
+        worldX: renderPosition.x * cellSizeMeters,
+        worldY: renderPosition.height * heightUnitMeters,
+        worldZ: renderPosition.z * cellSizeMeters,
+        headingRadians: group.headingRadians,
+        action: contact ? "searching" : group.action,
+        moraleBps: contact ? 0 : group.moraleBps,
+        suppressionBps: contact ? 0 : group.suppressionBps,
+        activeMembers: contact ? 0 : activeMemberCount(group),
+      });
 
+      if (contact) {
+        continue;
+      }
       const memberStates = [...group.members].sort(compareById);
       memberStates.forEach((member, memberIndex) => {
         if (member.presence === "evacuated") {
@@ -223,8 +249,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       });
     }
 
-    const objective = this.state.objective;
-    if (objective) {
+    for (const objective of this.state.objectives) {
       objectives.push({
         id: objective.id,
         worldX: objective.center.x * cellSizeMeters,
@@ -237,22 +262,31 @@ class StageOneBattleSimulation implements BattleSimulation {
         defenderPower: objective.defenderPower,
         attackerFactionId: objective.attackerFactionId,
         defenderFactionId: objective.defenderFactionId,
+        unlocked: objective.unlocked,
       });
     }
 
     return { tick: this.state.tick, groups, members, objectives };
   }
 
-  inspect(entityId: string): EntityInspection | undefined {
+  inspect(entityId: string, observerFactionId?: FactionId): EntityInspection | undefined {
     const group = this.state.groupsById.get(entityId);
     if (group) {
-      return this.inspectGroup(group);
+      if (observerFactionId !== undefined && group.factionId !== observerFactionId) {
+        const contact = this.getFactionContact(observerFactionId, group.id);
+        return contact ? this.inspectKnownGroup(group, contact) : undefined;
+      }
+      const inspection = this.inspectGroup(group);
+      return observerFactionId === undefined
+        ? inspection
+        : { ...inspection, visibility: "own" };
     }
-    if (this.state.objective?.id === entityId) {
-      return this.inspectObjective(this.state.objective);
+    const objective = this.state.objectives.find((candidate) => candidate.id === entityId);
+    if (objective) {
+      return this.inspectObjective(objective);
     }
     const member = this.state.membersById.get(entityId);
-    if (!member) {
+    if (!member || (observerFactionId !== undefined && member.factionId !== observerFactionId)) {
       return undefined;
     }
     const inspection: MemberInspection = {
@@ -267,6 +301,35 @@ class StageOneBattleSimulation implements BattleSimulation {
       shotCooldownTicks: member.shotCooldownTicks,
     };
     return inspection;
+  }
+
+  private getFactionContact(
+    observerFactionId: FactionId | undefined,
+    targetGroupId: GroupId,
+  ): ContactState | undefined {
+    if (observerFactionId === undefined) {
+      return undefined;
+    }
+    let latest: ContactState | undefined = this.state.factionKnowledge
+      .get(observerFactionId)
+      ?.contacts.get(targetGroupId);
+    for (const group of this.state.groups) {
+      if (group.factionId !== observerFactionId) {
+        continue;
+      }
+      const local = group.localContacts.get(targetGroupId);
+      if (local && (!latest || local.observedAt > latest.observedAt)) {
+        latest = local;
+      }
+    }
+    if (!latest) {
+      return undefined;
+    }
+    const confidence = confidenceAtAge(
+      this.state.tick - latest.observedAt,
+      this.setup.rules.contactForgetTicks,
+    );
+    return confidence > 0 ? { ...latest, confidenceBps: confidence } : undefined;
   }
 
   getResult(): BattleResult | undefined {
@@ -304,6 +367,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(group.pathGoal?.z ?? -1);
       hasher.addNumber(group.defenseSlot?.x ?? -1);
       hasher.addNumber(group.defenseSlot?.z ?? -1);
+      hasher.addString(group.defenseRole ?? "");
+      hasher.addString(group.assignedObjectiveId ?? "");
       hasher.addString(group.currentTargetId ?? "");
       hasher.addString(group.decisionReason);
       hasher.addString(group.coverDecision?.reason ?? "");
@@ -377,12 +442,21 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(message.lastKnown.z);
       hasher.addNumber(message.confidenceBps);
     }
-    if (this.state.objective) {
-      hasher.addString(this.state.objective.id);
-      hasher.addString(this.state.objective.state);
-      hasher.addNumber(this.state.objective.progressBps);
-      hasher.addNumber(this.state.objective.attackerPower);
-      hasher.addNumber(this.state.objective.defenderPower);
+    for (const objective of this.state.objectives) {
+      hasher.addString(objective.id);
+      hasher.addString(objective.state);
+      hasher.addNumber(objective.progressBps);
+      hasher.addNumber(objective.attackerPower);
+      hasher.addNumber(objective.defenderPower);
+      hasher.addNumber(objective.unlocked ? 1 : 0);
+    }
+    for (const wave of this.state.reinforcementWaves) {
+      hasher.addString(wave.id);
+      hasher.addString(wave.status);
+      hasher.addNumber(wave.lastWaitingEventTick ?? -1);
+      for (const groupId of [...wave.deployedGroupIds].sort(compareStrings)) {
+        hasher.addString(groupId);
+      }
     }
     hasher.addNumber(this.state.lastMeaningfulProgressTick);
     hasher.addString(this.state.resolutionCandidateKey ?? "");
@@ -391,6 +465,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private stepOnce(): void {
+    this.updateReinforcements();
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
@@ -408,34 +483,62 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private assignDefenseSlots(): void {
-    const objective = this.state.objective;
-    if (!objective) {
+    if (this.setup.mode.kind !== "defense" || this.state.objectives.length === 0) {
       return;
     }
-    const defenders = this.state.groups.filter(
-      (group) => group.factionId === objective.defenderFactionId,
-    );
-    const maximumRadius = objective.radiusCells + 4;
-    const candidates: GridCoord[] = [];
-    for (let z = objective.center.z - maximumRadius; z <= objective.center.z + maximumRadius; z += 1) {
-      for (let x = objective.center.x - maximumRadius; x <= objective.center.x + maximumRadius; x += 1) {
-        const candidate = { x, z };
-        if (
-          isWalkable(this.setup.map, candidate) &&
-          squaredGridDistance(candidate, objective.center) <= maximumRadius ** 2
+    const defenderFactionId = this.setup.mode.defenderFactionId;
+    const uniqueDefenders = [
+      ...new Map(
+        this.state.groups
+          .filter((group) => group.factionId === defenderFactionId)
+          .map((group) => [group.id, group]),
+      ).values(),
+    ]
+      .sort((a, b) => compareStrings(a.id, b.id));
+    const reserveRatioBps = this.setup.mode.reserveRatioBps ?? 0;
+    const reserveCount = reserveRatioBps > 0
+      ? Math.min(
+          Math.max(1, Math.ceil((uniqueDefenders.length * reserveRatioBps) / 10_000)),
+          Math.max(0, uniqueDefenders.length - 1),
+        )
+      : 0;
+    const frontlineCount = uniqueDefenders.length - reserveCount;
+    const assigned: GridCoord[] = [];
+    uniqueDefenders.forEach((group, groupIndex) => {
+      const role = groupIndex >= frontlineCount ? "reserve" : "frontline";
+      const objectiveIndex = role === "reserve"
+        ? (groupIndex - frontlineCount) % this.state.objectives.length
+        : groupIndex % this.state.objectives.length;
+      const objective = this.state.objectives[objectiveIndex] ?? this.state.objectives[0]!;
+      group.defenseRole = role;
+      group.assignedObjectiveId = objective.id;
+      const maximumRadius = objective.radiusCells + (role === "reserve" ? 7 : 4);
+      const candidates: GridCoord[] = [];
+      for (
+        let z = objective.center.z - maximumRadius;
+        z <= objective.center.z + maximumRadius;
+        z += 1
+      ) {
+        for (
+          let x = objective.center.x - maximumRadius;
+          x <= objective.center.x + maximumRadius;
+          x += 1
         ) {
-          candidates.push(candidate);
+          const candidate = { x, z };
+          const distance = squaredGridDistance(candidate, objective.center);
+          if (
+            isWalkable(this.setup.map, candidate) &&
+            distance <= maximumRadius ** 2 &&
+            (role !== "reserve" || distance >= (objective.radiusCells + 1) ** 2)
+          ) {
+            candidates.push(candidate);
+          }
         }
       }
-    }
-    candidates.sort(
-      (a, b) => cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b),
-    );
-
-    const assigned: GridCoord[] = [];
-    defenders.forEach((group, groupIndex) => {
-      const preferredRadius =
-        groupIndex % 2 === 0
+      candidates.sort((a, b) => cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b));
+      const preferredRadius = role === "reserve"
+        ? objective.radiusCells + 5
+        : groupIndex % 2 === 0
           ? Math.max(1, objective.radiusCells - 1)
           : objective.radiusCells + 2;
       const reachable = candidates.filter((candidate) => {
@@ -443,6 +546,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           return false;
         }
         if (
+          role === "frontline" &&
           groupIndex === 0 &&
           squaredGridDistance(candidate, objective.center) > objective.radiusCells ** 2
         ) {
@@ -494,6 +598,141 @@ class StageOneBattleSimulation implements BattleSimulation {
             evaluatedAt: this.state.tick,
           };
     });
+  }
+
+  private updateReinforcements(): void {
+    for (const wave of this.state.reinforcementWaves) {
+      if (wave.status === "deployed" || wave.status === "cancelled" || this.state.tick < wave.arrivalTick) {
+        continue;
+      }
+      if (wave.status === "pending") {
+        wave.status = "waiting";
+        this.emit({
+          type: "reinforcement-triggered",
+          waveId: wave.id,
+          factionId: wave.factionId,
+        });
+      }
+      this.tryDeployReinforcementWave(wave);
+    }
+  }
+
+  private tryDeployReinforcementWave(wave: ReinforcementRuntimeState): void {
+    const deployed = new Set(wave.deployedGroupIds);
+    const remainingGroups = wave.groups
+      .filter((group) => !deployed.has(group.id))
+      .sort(compareById);
+    if (remainingGroups.length === 0) {
+      wave.status = "deployed";
+      return;
+    }
+
+    const entranceCandidates = wave.blockedPolicy === "try-alternate"
+      ? wave.entranceIds
+      : wave.entranceIds.slice(0, 1);
+    const entrances = entranceCandidates
+      .map((id) => this.setup.reinforcementEntrances.find((entrance) => entrance.id === id))
+      .filter((entrance): entrance is BattleSetup["reinforcementEntrances"][number] => Boolean(entrance));
+    const selected = entrances.find((entrance) => {
+      if (this.isEnemyControlledEntrance(entrance)) {
+        return false;
+      }
+      return this.openEntranceCells(entrance).length > 0;
+    });
+    if (!selected) {
+      if (wave.blockedPolicy === "cancel") {
+        wave.status = "cancelled";
+        this.emit({
+          type: "reinforcement-cancelled",
+          waveId: wave.id,
+          remainingGroupIds: remainingGroups.map((group) => group.id),
+          reason: entrances.length === 0 ? "invalid-entrance" : "entrance-blocked",
+        });
+      } else if (
+        wave.lastWaitingEventTick === undefined ||
+        this.state.tick - wave.lastWaitingEventTick >= this.setup.rules.ticksPerSecond
+      ) {
+        wave.lastWaitingEventTick = this.state.tick;
+        this.emit({
+          type: "reinforcement-waiting",
+          waveId: wave.id,
+          remainingGroupCount: remainingGroups.length,
+          reason: entrances.length > 0 && entrances.some((entrance) => !this.isEnemyControlledEntrance(entrance))
+            ? "capacity"
+            : "entrance-blocked",
+        });
+      }
+      return;
+    }
+
+    const openCells = this.openEntranceCells(selected);
+    const deploymentCount = Math.min(
+      selected.capacityPerTick,
+      openCells.length,
+      remainingGroups.length,
+    );
+    const deployedGroups: GroupState[] = [];
+    for (let index = 0; index < deploymentCount; index += 1) {
+      const spawn = remainingGroups[index]!;
+      const group = createGroupState(spawn, openCells[index]!);
+      deployedGroups.push(group);
+      wave.deployedGroupIds.push(group.id);
+      this.state.groupsById.set(group.id, group);
+      for (const member of group.members) {
+        this.state.membersById.set(member.id, member);
+      }
+      this.state.occupancy.set(cellIndex(this.setup.map, group.cell), group.id);
+      const coverSlot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
+      if (coverSlot && activeMemberCount(group) > 0) {
+        claimCoverSlot(this.state.coverOccupancy, coverSlot, group.id);
+      }
+    }
+    this.state.groups.push(...deployedGroups);
+    this.state.groups.sort(compareById);
+    this.assignDefenseSlots();
+    for (const group of deployedGroups.sort(compareById)) {
+      this.decideForGroup(group);
+    }
+    this.emit({
+      type: "reinforcement-deployed",
+      waveId: wave.id,
+      groupIds: deployedGroups.map((group) => group.id).sort(compareStrings),
+      entranceId: selected.id,
+    });
+    this.markMeaningfulProgress();
+    if (wave.deployedGroupIds.length === wave.groups.length) {
+      wave.status = "deployed";
+    } else {
+      wave.status = "waiting";
+      this.emit({
+        type: "reinforcement-waiting",
+        waveId: wave.id,
+        remainingGroupCount: wave.groups.length - wave.deployedGroupIds.length,
+        reason: "capacity",
+      });
+    }
+  }
+
+  private openEntranceCells(
+    entrance: BattleSetup["reinforcementEntrances"][number],
+  ): readonly GridCoord[] {
+    return entrance.cells
+      .filter((cell) => {
+        const index = cellIndex(this.setup.map, cell);
+        return !this.state.occupancy.has(index) && !this.state.reservations.has(index);
+      })
+      .sort((a, b) => cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b));
+  }
+
+  private isEnemyControlledEntrance(
+    entrance: BattleSetup["reinforcementEntrances"][number],
+  ): boolean {
+    return this.state.groups.some(
+      (group) =>
+        activeMemberCount(group) > 0 &&
+        this.isHostile(group.factionId, entrance.factionId) &&
+        entrance.cells.some((cell) => sameCoord(group.cell, cell)),
+    );
   }
 
   private deliverIntelMessages(): void {
@@ -724,9 +963,16 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
 
-    const objective = this.state.objective;
-    const isDefender = objective?.defenderFactionId === group.factionId;
-    const isAttacker = objective?.attackerFactionId === group.factionId;
+    const defenseMode = this.setup.mode.kind === "defense" ? this.setup.mode : undefined;
+    const isDefender = defenseMode?.defenderFactionId === group.factionId;
+    const isAttacker = defenseMode?.attackerFactionId === group.factionId;
+    const objective = isDefender
+      ? this.state.objectives.find(
+          (candidate) => candidate.id === group.assignedObjectiveId,
+        ) ?? this.state.objectives[0]
+      : isAttacker
+        ? this.chooseObjectiveForAttacker(group)
+        : undefined;
     const directTarget = this.chooseDirectTarget(group);
     const directContact = directTarget
       ? group.localContacts.get(directTarget.id)
@@ -924,6 +1170,33 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.action = "moving-to-contact";
     group.decisionReason = "defend-objective";
     this.assignGoal(group, slot);
+  }
+
+  private chooseObjectiveForAttacker(group: GroupState): ObjectiveRuntimeState | undefined {
+    const candidates = this.state.objectives
+      .filter((objective) => objective.unlocked && objective.state !== "attacker-controlled")
+      .map((objective) => ({
+        objective,
+        pathLength: this.pathfinder.findPath(group.cell, objective.center).length ||
+          Number.MAX_SAFE_INTEGER,
+      }))
+      .sort((a, b) => {
+        if (this.setup.mode.kind === "defense" && this.setup.mode.objectiveRule === "sequence") {
+          return this.state.objectives.indexOf(a.objective) -
+            this.state.objectives.indexOf(b.objective);
+        }
+        return (
+          a.pathLength - b.pathLength ||
+          squaredGridDistance(group.cell, a.objective.center) -
+            squaredGridDistance(group.cell, b.objective.center) ||
+          compareStrings(a.objective.id, b.objective.id)
+        );
+      });
+    const objective = candidates[0]?.objective;
+    if (objective) {
+      group.assignedObjectiveId = objective.id;
+    }
+    return objective;
   }
 
   private chooseDirectTarget(group: GroupState): GroupState | undefined {
@@ -1330,7 +1603,8 @@ class StageOneBattleSimulation implements BattleSimulation {
         updateWeaponTimer(member);
       }
       const advancingAttacker =
-        this.state.objective?.attackerFactionId === group.factionId &&
+        this.setup.mode.kind === "defense" &&
+        this.setup.mode.attackerFactionId === group.factionId &&
         group.action === "moving-to-contact";
       if (
         (group.action !== "engaging" && !advancingAttacker) ||
@@ -1575,75 +1849,108 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private updateObjective(): void {
-    const objective = this.state.objective;
-    if (!objective || objective.state === "attacker-controlled") {
-      return;
-    }
-    let attackerPower = 0;
-    let defenderPower = 0;
-    for (const group of this.state.groups) {
-      if (!isGroupCombatEffective(group) || !isInsideObjective(group.cell, objective)) {
+    const objectivesUnlockedAtStart = new Set(
+      this.state.objectives
+        .filter((objective) => objective.unlocked)
+        .map((objective) => objective.id),
+    );
+    for (const objective of this.state.objectives) {
+      if (
+        !objectivesUnlockedAtStart.has(objective.id) ||
+        objective.state === "attacker-controlled"
+      ) {
+        objective.attackerPower = 0;
+        objective.defenderPower = 0;
         continue;
       }
-      if (group.factionId === objective.attackerFactionId) {
-        attackerPower += activeMemberCount(group);
-      } else if (group.factionId === objective.defenderFactionId) {
-        defenderPower += activeMemberCount(group);
+      let attackerPower = 0;
+      let defenderPower = 0;
+      for (const group of this.state.groups) {
+        if (!isGroupCombatEffective(group) || !isInsideObjective(group.cell, objective)) {
+          continue;
+        }
+        if (group.factionId === objective.attackerFactionId) {
+          attackerPower += activeMemberCount(group);
+        } else if (group.factionId === objective.defenderFactionId) {
+          defenderPower += activeMemberCount(group);
+        }
       }
-    }
-    objective.attackerPower = attackerPower;
-    objective.defenderPower = defenderPower;
-    const previousState = objective.state;
-    const previousProgress = objective.progressBps;
-    const resolved = resolveObjectiveTick({
-      progressBps: objective.progressBps,
-      attackerPower,
-      defenderPower,
-    });
-    objective.progressBps = resolved.progressBps;
-    objective.state = resolved.state;
-    if (previousState !== objective.state) {
-      this.emit({
-        type: "objective-state-changed",
-        objectiveId: objective.id,
-        from: previousState,
-        to: objective.state,
+      objective.attackerPower = attackerPower;
+      objective.defenderPower = defenderPower;
+      const previousState = objective.state;
+      const previousProgress = objective.progressBps;
+      const resolved = resolveObjectiveTick({
         progressBps: objective.progressBps,
+        attackerPower,
+        defenderPower,
       });
-    }
-    if (previousProgress !== objective.progressBps) {
-      this.markMeaningfulProgress();
+      objective.progressBps = resolved.progressBps;
+      objective.state = resolved.state;
+      if (previousState !== objective.state) {
+        this.emit({
+          type: "objective-state-changed",
+          objectiveId: objective.id,
+          from: previousState,
+          to: objective.state,
+          progressBps: objective.progressBps,
+        });
+      }
+      if (previousProgress !== objective.progressBps) {
+        this.markMeaningfulProgress();
+      }
+      if (objective.state === "attacker-controlled") {
+        const nextIndex = this.state.objectives.indexOf(objective) + 1;
+        if (
+          this.setup.mode.kind === "defense" &&
+          this.setup.mode.objectiveRule === "sequence" &&
+          this.state.objectives[nextIndex]
+        ) {
+          this.state.objectives[nextIndex]!.unlocked = true;
+          this.markMeaningfulProgress();
+        }
+      }
     }
   }
 
   private updateTermination(): void {
-    if (this.state.objective) {
-      this.updateDefenseTermination(this.state.objective);
+    if (this.state.objectives.length > 0) {
+      this.updateDefenseTermination();
       return;
     }
     this.updateConflictTermination();
   }
 
-  private updateDefenseTermination(objective: ObjectiveRuntimeState): void {
-    if (objective.state === "attacker-controlled") {
-      this.finishBattle("objective-captured", [objective.attackerFactionId]);
+  private updateDefenseTermination(): void {
+    const mode = this.setup.mode.kind === "defense" ? this.setup.mode : undefined;
+    if (!mode) {
+      return;
+    }
+    const capturedCount = this.state.objectives.filter(
+      (objective) => objective.state === "attacker-controlled",
+    ).length;
+    const objectiveRule = mode.objectiveRule ?? "all";
+    const requiredCount = objectiveRule === "count"
+      ? mode.requiredCount ?? this.state.objectives.length
+      : this.state.objectives.length;
+    if (capturedCount >= requiredCount) {
+      this.finishBattle("objective-captured", [mode.attackerFactionId]);
       return;
     }
     if (this.state.tick >= this.setup.rules.maximumDurationTicks) {
-      this.finishBattle("defense-time-expired", [objective.defenderFactionId]);
+      this.finishBattle("defense-time-expired", [mode.defenderFactionId]);
       return;
     }
 
     const attackersEffective = this.state.groups.some(
       (group) =>
-        group.factionId === objective.attackerFactionId && isGroupCombatEffective(group),
+        group.factionId === mode.attackerFactionId && isGroupCombatEffective(group),
     );
-    if (attackersEffective) {
+    if (attackersEffective || this.hasPendingReinforcementForFaction(mode.attackerFactionId)) {
       this.state.resolutionCandidateKey = undefined;
       this.state.resolutionCandidateSince = undefined;
       return;
     }
-    const candidateKey = `attackers-eliminated:${objective.attackerFactionId}`;
+    const candidateKey = `attackers-eliminated:${mode.attackerFactionId}`;
     if (this.state.resolutionCandidateKey !== candidateKey) {
       this.state.resolutionCandidateKey = candidateKey;
       this.state.resolutionCandidateSince = this.state.tick;
@@ -1654,13 +1961,18 @@ class StageOneBattleSimulation implements BattleSimulation {
       this.state.tick - this.state.resolutionCandidateSince >=
         this.setup.rules.resolutionStableTicks
     ) {
-      this.finishBattle("attackers-eliminated", [objective.defenderFactionId]);
+      this.finishBattle("attackers-eliminated", [mode.defenderFactionId]);
     }
   }
 
   private updateConflictTermination(): void {
     if (this.state.tick >= this.setup.rules.maximumDurationTicks) {
       this.finishBattle("maximum-duration", []);
+      return;
+    }
+    if (this.hasPendingReinforcements()) {
+      this.state.resolutionCandidateKey = undefined;
+      this.state.resolutionCandidateSince = undefined;
       return;
     }
     if (
@@ -1726,6 +2038,25 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
   }
 
+  private hasPendingReinforcements(): boolean {
+    return this.state.reinforcementWaves.some(
+      (wave) =>
+        wave.status !== "deployed" &&
+        wave.status !== "cancelled" &&
+        wave.groups.some((group) => !wave.deployedGroupIds.includes(group.id)),
+    );
+  }
+
+  private hasPendingReinforcementForFaction(factionId: FactionId): boolean {
+    return this.state.reinforcementWaves.some(
+      (wave) =>
+        wave.factionId === factionId &&
+        wave.status !== "deployed" &&
+        wave.status !== "cancelled" &&
+        wave.groups.some((group) => !wave.deployedGroupIds.includes(group.id)),
+    );
+  }
+
   private finishBattle(
     terminationReason: BattleTerminationReason,
     winnerFactionIds: readonly FactionId[],
@@ -1741,39 +2072,16 @@ class StageOneBattleSimulation implements BattleSimulation {
       outcome: winnerFactionIds.length > 0 ? "win" : "draw",
       terminationReason,
       winnerFactionIds: [...winnerFactionIds],
-      groups: this.state.groups.map((group) => ({
-        id: group.id,
-        factionId: group.factionId,
-        evacuated: hasEvacuatedMembers(group),
-        moraleState: group.moraleState,
-        activeMembers: activeMemberCount(group),
+      groups: this.buildGroupResults(),
+      members: this.buildMemberResults(),
+      objectives: this.state.objectives.map((objective) => ({
+        id: objective.id,
+        state: objective.state,
+        progressBps: objective.progressBps,
+        attackerFactionId: objective.attackerFactionId,
+        defenderFactionId: objective.defenderFactionId,
+        unlocked: objective.unlocked,
       })),
-      members: this.state.groups.flatMap((group) =>
-        group.members.map((member) => ({
-          id: member.id,
-          groupId: group.id,
-          factionId: group.factionId,
-          health: member.health,
-          presence: member.presence,
-          disposition:
-            member.presence === "evacuated"
-              ? "evacuated"
-              : group.moraleState === "routing" && canMemberFight(member)
-                ? "missing"
-                : "present",
-        })),
-      ),
-      objectives: this.state.objective
-        ? [
-            {
-              id: this.state.objective.id,
-              state: this.state.objective.state,
-              progressBps: this.state.objective.progressBps,
-              attackerFactionId: this.state.objective.attackerFactionId,
-              defenderFactionId: this.state.objective.defenderFactionId,
-            },
-          ]
-        : [],
       stateHash,
     };
     this.emit({
@@ -1781,6 +2089,67 @@ class StageOneBattleSimulation implements BattleSimulation {
       reason: terminationReason,
       winnerFactionIds: [...winnerFactionIds],
     });
+  }
+
+  private buildGroupResults(): BattleResult["groups"] {
+    const deployed = this.state.groups.map((group) => ({
+      id: group.id,
+      factionId: group.factionId,
+      evacuated: hasEvacuatedMembers(group),
+      moraleState: group.moraleState,
+      activeMembers: activeMemberCount(group),
+      deployment: hasEvacuatedMembers(group) ? "evacuated" as const : "deployed" as const,
+    }));
+    const deployedIds = new Set(this.state.groups.map((group) => group.id));
+    const undeployed = this.state.reinforcementWaves.flatMap((wave) =>
+      wave.groups
+        .filter((group) => !deployedIds.has(group.id))
+        .map((group) => ({
+          id: group.id,
+          factionId: group.factionId,
+          evacuated: false,
+          moraleState: "steady" as const,
+          activeMembers: countSpawnActiveMembers(group),
+          deployment: "undeployed" as const,
+        })),
+    );
+    return [...deployed, ...undeployed].sort((a, b) => compareStrings(a.id, b.id));
+  }
+
+  private buildMemberResults(): BattleResult["members"] {
+    const deployedIds = new Set(this.state.groups.map((group) => group.id));
+    const deployed = this.state.groups.flatMap((group) =>
+      group.members.map((member) => ({
+        id: member.id,
+        groupId: group.id,
+        factionId: group.factionId,
+        health: member.health,
+        presence: member.presence,
+        disposition:
+          member.presence === "evacuated"
+            ? "evacuated" as const
+            : group.moraleState === "routing" && canMemberFight(member)
+              ? "missing" as const
+              : "present" as const,
+        deployment: member.presence === "evacuated" ? "evacuated" as const : "deployed" as const,
+      })),
+    );
+    const undeployed = this.state.reinforcementWaves.flatMap((wave) =>
+      wave.groups
+        .filter((group) => !deployedIds.has(group.id))
+        .flatMap((group) =>
+          group.members.map((member) => ({
+            id: member.id,
+            groupId: group.id,
+            factionId: group.factionId,
+            health: member.initialHealth ?? "healthy" as const,
+            presence: "undeployed" as const,
+            disposition: "undeployed" as const,
+            deployment: "undeployed" as const,
+          })),
+        ),
+    );
+    return [...deployed, ...undeployed].sort((a, b) => compareStrings(a.id, b.id));
   }
 
   private hasFreshDirectContact(observer: GroupState, target: GroupState): boolean {
@@ -2130,6 +2499,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       ),
       path: group.path.map((coord) => ({ ...coord })),
       defenseSlot: group.defenseSlot ? { ...group.defenseSlot } : undefined,
+      defenseRole: group.defenseRole,
+      assignedObjectiveId: group.assignedObjectiveId,
       currentCover: currentCover
         ? {
             slotId: currentCover.id,
@@ -2157,6 +2528,28 @@ class StageOneBattleSimulation implements BattleSimulation {
     };
   }
 
+  private inspectKnownGroup(group: GroupState, contact: ContactState): GroupInspection {
+    return {
+      kind: "group",
+      id: group.id,
+      factionId: group.factionId,
+      visibility: "known",
+      observedAt: contact.observedAt,
+      cell: { ...contact.lastKnown },
+      action: "searching",
+      decisionReason: "known-contact",
+      moraleBps: 0,
+      moraleState: "steady",
+      suppressionBps: 0,
+      activeMembers: 0,
+      woundedMembers: 0,
+      incapacitatedMembers: 0,
+      deadMembers: 0,
+      contacts: [],
+      path: [],
+    };
+  }
+
   private inspectObjective(objective: ObjectiveRuntimeState): ObjectiveInspection {
     return {
       kind: "objective",
@@ -2169,6 +2562,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       defenderPower: objective.defenderPower,
       attackerFactionId: objective.attackerFactionId,
       defenderFactionId: objective.defenderFactionId,
+      unlocked: objective.unlocked,
     };
   }
 
@@ -2198,40 +2592,7 @@ function createRuntimeState(
 ): RuntimeState {
   const groups = [...setup.groups]
     .sort(compareById)
-    .map<GroupState>((spawn) => ({
-      id: spawn.id,
-      factionId: spawn.factionId,
-      evacuation: { ...spawn.evacuation },
-      members: [...spawn.members]
-        .sort(compareById)
-        .map<MemberState>((member) => ({
-          id: member.id,
-          groupId: spawn.id,
-          factionId: spawn.factionId,
-          health: member.initialHealth ?? "healthy",
-          presence: "deployed",
-          magazineRounds: MAGAZINE_SIZE,
-          reloadTicksRemaining: 0,
-          shotCooldownTicks: 0,
-        })),
-      cell: { ...spawn.spawn },
-      moveProgress: 0,
-      moveCost: 0,
-      waitAge: 0,
-      headingRadians: 0,
-      path: [],
-      action: "searching",
-      decisionReason: "search-sector",
-      moraleBps: 10_000,
-      moraleState: "steady",
-      suppressionBps: 0,
-      patrolIndex: 0,
-      lastFiredTick: -1_000_000,
-      lastDecisionTick: -1,
-      localDetections: new Map(),
-      localContacts: new Map(),
-      searchedContacts: new Map(),
-    }));
+    .map((spawn) => createGroupState(spawn, spawn.spawn));
   const groupsById = new Map(groups.map((group) => [group.id, group]));
   const membersById = new Map(
     groups.flatMap((group) => group.members.map((member) => [member.id, member] as const)),
@@ -2243,6 +2604,41 @@ function createRuntimeState(
       claimCoverSlot(coverOccupancy, slot, group.id);
     }
   }
+  const defenseMode = setup.mode.kind === "defense" ? setup.mode : undefined;
+  const objectives =
+    defenseMode
+      ? defenseObjectives(defenseMode).map((objective, index) => ({
+          id: objective.id,
+          center: { ...objective.center },
+          radiusCells: objective.radiusCells,
+          attackerFactionId: defenseMode.attackerFactionId,
+          defenderFactionId: defenseMode.defenderFactionId,
+          state: "defender-controlled" as const,
+          progressBps: 0,
+          attackerPower: 0,
+          defenderPower: 0,
+          unlocked:
+            (defenseMode.objectiveRule ?? "all") !== "sequence" || index === 0,
+        }))
+      : [];
+  const reinforcementWaves: ReinforcementRuntimeState[] = setup.reinforcements
+    .slice()
+    .sort((a, b) => a.arrivalTick - b.arrivalTick || compareStrings(a.id, b.id))
+    .map((wave) => ({
+      id: wave.id,
+      factionId: wave.factionId,
+      arrivalTick: wave.arrivalTick,
+      entranceIds: reinforcementEntranceIds(wave).slice(),
+      groups: wave.groups.map((group) => ({
+        ...group,
+        spawn: { ...group.spawn },
+        evacuation: { ...group.evacuation },
+        members: group.members.map((member) => ({ ...member })),
+      })),
+      blockedPolicy: wave.blockedPolicy,
+      status: "pending",
+      deployedGroupIds: [],
+    }));
   return {
     setup,
     groups,
@@ -2261,25 +2657,57 @@ function createRuntimeState(
     ),
     reservations: new Map(),
     coverOccupancy,
-    objective:
-      setup.mode.kind === "defense"
-        ? {
-            id: setup.mode.objective.id,
-            center: { ...setup.mode.objective.center },
-            radiusCells: setup.mode.objective.radiusCells,
-            attackerFactionId: setup.mode.attackerFactionId,
-            defenderFactionId: setup.mode.defenderFactionId,
-            state: "defender-controlled",
-            progressBps: 0,
-            attackerPower: 0,
-            defenderPower: 0,
-          }
-        : undefined,
+    objectives,
+    objective: objectives[0],
+    reinforcementWaves,
     tick: 0,
     eventSequence: 0,
     intelSequence: 0,
     lastMeaningfulProgressTick: 0,
   };
+}
+
+function createGroupState(spawn: BattleSetup["groups"][number], cell: GridCoord): GroupState {
+  return {
+    id: spawn.id,
+    factionId: spawn.factionId,
+    evacuation: { ...spawn.evacuation },
+    members: [...spawn.members]
+      .sort(compareById)
+      .map<MemberState>((member) => ({
+        id: member.id,
+        groupId: spawn.id,
+        factionId: spawn.factionId,
+        health: member.initialHealth ?? "healthy",
+        presence: "deployed",
+        magazineRounds: MAGAZINE_SIZE,
+        reloadTicksRemaining: 0,
+        shotCooldownTicks: 0,
+      })),
+    cell: { ...cell },
+    moveProgress: 0,
+    moveCost: 0,
+    waitAge: 0,
+    headingRadians: 0,
+    path: [],
+    action: "searching",
+    decisionReason: "search-sector",
+    moraleBps: 10_000,
+    moraleState: "steady",
+    suppressionBps: 0,
+    patrolIndex: 0,
+    lastFiredTick: -1_000_000,
+    lastDecisionTick: -1,
+    localDetections: new Map(),
+    localContacts: new Map(),
+    searchedContacts: new Map(),
+  };
+}
+
+function countSpawnActiveMembers(group: BattleSetup["groups"][number]): number {
+  return group.members.filter(
+    (member) => member.initialHealth !== "incapacitated" && member.initialHealth !== "dead",
+  ).length;
 }
 
 function cloneSetup(setup: BattleSetup): BattleSetup {
@@ -2307,6 +2735,21 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
       evacuation: { ...group.evacuation },
       members: group.members.map((member) => ({ ...member })),
     })),
+    reinforcementEntrances: setup.reinforcementEntrances.map((entrance) => ({
+      ...entrance,
+      cells: entrance.cells.map((cell) => ({ ...cell })),
+    })),
+    reinforcements: setup.reinforcements.map((wave) => ({
+      ...wave,
+      entranceIds: wave.entranceIds ? [...wave.entranceIds] : undefined,
+      entranceZoneIds: wave.entranceZoneIds ? [...wave.entranceZoneIds] : undefined,
+      groups: wave.groups.map((group) => ({
+        ...group,
+        spawn: { ...group.spawn },
+        evacuation: { ...group.evacuation },
+        members: group.members.map((member) => ({ ...member })),
+      })),
+    })),
     mode:
       setup.mode.kind === "defense"
         ? {
@@ -2315,6 +2758,10 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
               ...setup.mode.objective,
               center: { ...setup.mode.objective.center },
             },
+            objectives: defenseObjectives(setup.mode).map((objective) => ({
+              ...objective,
+              center: { ...objective.center },
+            })),
           }
         : { kind: "conflict" },
     rules: { ...setup.rules },

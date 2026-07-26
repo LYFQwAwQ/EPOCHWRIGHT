@@ -19,6 +19,14 @@ function describeEvent(event: BattleEvent): string | undefined {
       return undefined;
     case "morale-changed":
       return event.to === "routing" ? `${event.groupId} 开始撤离` : undefined;
+    case "reinforcement-triggered":
+      return `${event.waveId} 增援已触发`;
+    case "reinforcement-waiting":
+      return `${event.waveId} 增援等待入口`;
+    case "reinforcement-deployed":
+      return `${event.waveId} 增援进入战场`;
+    case "reinforcement-cancelled":
+      return `${event.waveId} 增援已取消`;
     case "battle-ended":
       return event.winnerFactionIds.length > 0 ? "敌对行动结束" : "战斗陷入僵局";
     case "objective-state-changed": {

@@ -9,12 +9,14 @@ import type {
   GridCoord,
   GroupAction,
   GroupId,
+  GroupSpawn,
   HealthState,
   MemberId,
   MoraleState,
   ObjectiveControlState,
   ObjectiveId,
   PresenceState,
+  ReinforcementBlockedPolicy,
   Tick,
 } from "./types";
 
@@ -89,6 +91,8 @@ export interface GroupState {
   localContacts: Map<GroupId, ContactState>;
   searchedContacts: Map<GroupId, Tick>;
   defenseSlot?: GridCoord;
+  defenseRole?: "frontline" | "reserve";
+  assignedObjectiveId?: ObjectiveId;
   coverDecision?: CoverDecisionState;
 }
 
@@ -118,6 +122,19 @@ export interface ObjectiveRuntimeState {
   progressBps: number;
   attackerPower: number;
   defenderPower: number;
+  unlocked: boolean;
+}
+
+export interface ReinforcementRuntimeState {
+  readonly id: string;
+  readonly factionId: FactionId;
+  readonly arrivalTick: Tick;
+  readonly entranceIds: readonly string[];
+  readonly groups: readonly GroupSpawn[];
+  readonly blockedPolicy: ReinforcementBlockedPolicy;
+  status: "pending" | "waiting" | "deployed" | "cancelled";
+  deployedGroupIds: GroupId[];
+  lastWaitingEventTick?: Tick;
 }
 
 export interface RuntimeState {
@@ -131,6 +148,9 @@ export interface RuntimeState {
   readonly occupancy: Map<number, GroupId>;
   readonly reservations: Map<number, GroupId>;
   readonly coverOccupancy: Map<CoverSlotId, GroupId>;
+  readonly objectives: ObjectiveRuntimeState[];
+  readonly reinforcementWaves: ReinforcementRuntimeState[];
+  /** Compatibility alias for the first objective in a defense setup. */
   readonly objective?: ObjectiveRuntimeState;
   tick: Tick;
   eventSequence: number;

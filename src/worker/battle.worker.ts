@@ -16,6 +16,7 @@ let lastWallTime = 0;
 let accumulatedMs = 0;
 let pendingEvents: BattleEvent[] = [];
 let inspectedEntityId: string | undefined;
+let observerFactionId: string | undefined;
 
 function post(message: WorkerMessage): void {
   scope.postMessage(message);
@@ -46,7 +47,7 @@ function emitInspection(): void {
   post({
     type: "inspection",
     sessionId,
-    inspection: simulation.inspect(inspectedEntityId),
+    inspection: simulation.inspect(inspectedEntityId, observerFactionId),
   });
 }
 
@@ -59,7 +60,7 @@ function emitFrame(): void {
   post({
     type: "frame",
     sessionId,
-    frame: simulation.getRenderFrame(),
+    frame: simulation.getRenderFrame(observerFactionId),
     events,
     stateHash: simulation.getStateHash(),
     simulationStatus: simulation.status,
@@ -88,7 +89,7 @@ function advance(count: number, emitIntermediateFrames = true): void {
     post({
       type: "finished",
       sessionId,
-      frame: simulation.getRenderFrame(),
+      frame: simulation.getRenderFrame(observerFactionId),
       events: trailingEvents,
       result,
       stateHash: simulation.getStateHash(),
@@ -119,13 +120,14 @@ function initialize(command: Extract<WorkerCommand, { type: "initialize" }>): vo
   running = false;
   pendingEvents = [];
   inspectedEntityId = undefined;
+  observerFactionId = undefined;
   lastWallTime = performance.now();
   accumulatedMs = 0;
   post({
     type: "ready",
     sessionId,
     setup: simulation.getSetup(),
-    frame: simulation.getRenderFrame(),
+    frame: simulation.getRenderFrame(observerFactionId),
     stateHash: simulation.getStateHash(),
     paused: !command.autostart,
   });
@@ -162,8 +164,14 @@ scope.onmessage = (event: MessageEvent<WorkerCommand>) => {
         post({
           type: "inspection",
           sessionId,
-          inspection: command.entityId ? simulation.inspect(command.entityId) : undefined,
+          inspection: command.entityId
+            ? simulation.inspect(command.entityId, observerFactionId)
+            : undefined,
         });
+        break;
+      case "set-observation":
+        observerFactionId = command.observerFactionId;
+        emitFrame();
         break;
       case "dispose":
         setRunning(false);
