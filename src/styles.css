@@ -111,6 +111,98 @@ button:focus-visible {
   border-radius: 6px;
 }
 
+.scenario-lab {
+  position: absolute;
+  z-index: 29;
+  top: 54px;
+  right: 0;
+  left: 0;
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  gap: 7px;
+  border-bottom: 1px solid var(--border);
+  background: rgb(29 34 39 / 94%);
+  box-shadow: 0 5px 14px rgb(0 0 0 / 13%);
+  backdrop-filter: blur(10px);
+}
+
+.scenario-lab-title {
+  display: flex;
+  align-items: center;
+  margin-right: 4px;
+  gap: 6px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.scenario-lab select,
+.scenario-seed-control input {
+  height: 32px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  background: #171b20;
+  font: inherit;
+  font-size: 11px;
+}
+
+.scenario-lab select {
+  width: 190px;
+  padding: 0 8px;
+}
+
+.scenario-seed-control {
+  display: flex;
+  width: 238px;
+  align-items: center;
+}
+
+.scenario-seed-control input {
+  width: 100%;
+  padding: 0 8px;
+  border-radius: 3px 0 0 3px;
+}
+
+.scenario-lab .icon-button {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+}
+
+.scenario-seed-control .icon-button {
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 3px 3px 0;
+}
+
+.scenario-lab-separator {
+  width: 1px;
+  height: 22px;
+  margin: 0 2px;
+  background: var(--border);
+}
+
+.has-scenario-lab .faction-summary,
+.has-scenario-lab .objective-summary,
+.has-scenario-lab .observation-panel {
+  top: 118px;
+}
+
+.has-scenario-lab .inspector-panel {
+  top: 102px;
+}
+
+.has-scenario-lab .result-banner,
+.has-scenario-lab .error-banner {
+  top: 120px;
+}
+
 .brand-lockup {
   display: flex;
   align-items: center;
@@ -283,7 +375,7 @@ button:focus-visible {
   position: absolute;
   z-index: 21;
   top: 70px;
-  left: 50%;
+  left: calc((100% - 310px) / 2);
   width: min(360px, calc(100vw - 660px));
   min-width: 280px;
   overflow: hidden;
@@ -293,6 +385,21 @@ button:focus-visible {
   box-shadow: 0 7px 24px rgb(0 0 0 / 16%);
   transform: translateX(-50%);
   backdrop-filter: blur(8px);
+}
+
+@media (min-width: 601px) and (max-width: 1180px) {
+  .objective-summary {
+    top: 192px;
+    right: 324px;
+    left: auto;
+    width: 300px;
+    min-width: 0;
+    transform: none;
+  }
+
+  .has-scenario-lab .objective-summary {
+    top: 240px;
+  }
 }
 
 .observation-panel {
@@ -832,6 +939,10 @@ button:focus-visible {
     border-radius: 6px;
   }
 
+  .has-scenario-lab .inspector-panel {
+    top: auto;
+  }
+
   .overview-grid,
   .inspector-panel > .panel-heading:not(.panel-heading--unit) {
     display: none;
@@ -846,11 +957,16 @@ button:focus-visible {
   }
 
   .objective-summary {
+    top: 192px;
     right: 10px;
     left: auto;
     width: min(340px, calc(100vw - 260px));
     min-width: 250px;
     transform: none;
+  }
+
+  .has-scenario-lab .objective-summary {
+    top: 240px;
   }
 
   .event-feed {
@@ -897,6 +1013,42 @@ button:focus-visible {
     gap: 2px;
   }
 
+  .scenario-lab {
+    top: 50px;
+    min-height: 52px;
+    padding: 6px 5px;
+    gap: 4px;
+  }
+
+  .scenario-lab-title {
+    display: none;
+  }
+
+  .scenario-lab select {
+    width: 118px;
+    flex: 1 1 118px;
+    padding: 0 4px;
+  }
+
+  .scenario-seed-control {
+    width: 104px;
+    flex: 1 1 104px;
+  }
+
+  .scenario-seed-control input {
+    padding: 0 5px;
+  }
+
+  .scenario-lab .icon-button {
+    width: 30px;
+    height: 32px;
+    flex-basis: 30px;
+  }
+
+  .scenario-lab-separator {
+    display: none;
+  }
+
   .faction-summary {
     top: 136px;
     right: 8px;
@@ -904,6 +1056,22 @@ button:focus-visible {
     display: grid;
     width: auto;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .has-scenario-lab .observation-panel {
+    top: 110px;
+  }
+
+  .has-scenario-lab .faction-summary {
+    top: 210px;
+  }
+
+  .has-scenario-lab .objective-summary {
+    top: 280px;
+  }
+
+  .has-scenario-lab .mobile-status {
+    top: 280px;
   }
 
   .faction-summary[data-faction-count="3"] {

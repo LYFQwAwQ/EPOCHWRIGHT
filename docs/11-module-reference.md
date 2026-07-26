@@ -57,6 +57,10 @@ future game systems -> complete BattleSetup --+
 
 网页演示显式配置三方关系，生成器无参默认仍为两方步枪编组。性能档位也只改写演示生成选项，最终仍向 Worker 发送完整 setup。
 
+### `src/demo/scenarios.ts`
+
+定义只用于开发观察端的稳定场景目录，把三方同盟冲突、双边冲突、单/多目标防守和增援波次转换为 `DemoBattleSetupOptions`。它可以组合公开模式和增援输入，但不创建模拟、不绕过 `validateBattleSetup`，也不属于正式游戏输入协议。
+
 ### `src/sim/types.ts`
 
 公共领域契约。包含版本常量、标准地图图层、战斗输入、模式判别联合、渲染帧、事件、检查结果、最终结果和 `BattleSimulation` 接口。
@@ -171,10 +175,11 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 应用组合层。负责：
 
-- 从 URL 读取 seed 和模式，并调用独立演示生成器；
-- 启动、重开和切换模式；
+- 从 URL 读取 seed、场景和兼容模式参数，并调用独立演示场景生成器；
+- 启动、重开和切换模式/开发场景；
 - 暂停、选择、镜头和纯净界面状态；
 - 将公开数据分发给 3D 场景和 UI；
+- 仅在开发服务或显式 `devtools=1` 时显示场景实验台；
 - 仅在 `e2e=1` 时安装测试 API。
 
 未来城市系统接入时，应通过更上层路由或战斗会话服务传入 `BattleSetup`，不要继续向 `App.tsx` 堆积领域生成逻辑。
@@ -197,6 +202,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | 文件 | 职责 |
 | --- | --- |
 | `ui/Toolbar.tsx` | 模式、暂停、重开、镜头和纯净界面控制 |
+| `ui/ScenarioLab.tsx` | 开发环境场景、seed 和暂停步进控制；不提供正式战术命令 |
 | `ui/FactionSummary.tsx` | 势力有效人数、伤亡与溃散概览 |
 | `ui/ObjectiveSummary.tsx` | 目标状态、语义化进度条和占领力 |
 | `ui/Inspector.tsx` | 选中编组的行动原因、士气、压制、伤情、接触、掩体评估和路线 |
@@ -208,7 +214,9 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 ## 8. 测试设施
 
 - `src/sim/*.test.ts`：Node 环境 Vitest，覆盖地图图层与移动规则、确定性和完整场景。
+- `src/sim/generated-invariants.test.ts`：批量 seed 覆盖地图边界/路线、逐 tick 哈希、非敌对安全和结果人数守恒，并支持按 seed 重放。
 - `src/demo/setup.test.ts`：覆盖演示生成结果、标准输入验证和 Worker 初始化边界。
+- `src/demo/scenarios.test.ts`：覆盖五类人工场景验证、多目标配置和增援事件接线。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
 - `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。

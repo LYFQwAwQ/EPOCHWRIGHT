@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
-import { createDemoBattleSetup, type DemoBattleSetupOptions } from "./demo";
+import {
+  DEMO_SCENARIOS,
+  createDemoBattleSetup,
+  createDemoScenarioOptions,
+  defaultDemoScenarioForMode,
+  getDemoScenario,
+  isDemoScenarioId,
+  type DemoScenarioId,
+} from "./demo";
 import { recordMetric, summarizeMetrics } from "./performance/metrics";
 import {
   applyPerformanceProfile,
   parsePerformanceProfile,
 } from "./performance/profiles";
 import { Battlefield, type CameraMode } from "./render/Battlefield";
-import { defaultRelation } from "./sim";
 import {
   MAP_CELL_FLAGS,
   SURFACE_TYPE_IDS,
@@ -15,7 +22,6 @@ import {
   type BattleEvent,
   type BattleModeKind,
   type BattleSetup,
-  type FactionSetup,
   type GroupInspection,
 } from "./sim/types";
 import { EventFeed } from "./ui/EventFeed";
@@ -23,33 +29,10 @@ import { FactionSummary } from "./ui/FactionSummary";
 import { Inspector } from "./ui/Inspector";
 import { ObjectiveSummary } from "./ui/ObjectiveSummary";
 import { ObservationControls, type ObservationLayers } from "./ui/ObservationControls";
+import { ScenarioLab } from "./ui/ScenarioLab";
 import { Toolbar } from "./ui/Toolbar";
 
 type BattleModeSelection = BattleModeKind;
-
-const DEFAULT_FACTIONS: readonly FactionSetup[] = [
-  { id: "ember", displayName: "赤焰", color: "#e45f62" },
-  { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
-  { id: "olive", displayName: "橄榄", color: "#7c9a52" },
-];
-
-const DEFAULT_OPTIONS: DemoBattleSetupOptions = {
-  width: 56,
-  height: 42,
-  groupsPerFaction: 4,
-  factions: DEFAULT_FACTIONS,
-  relations: [
-    defaultRelation("ember", "azure", "hostile"),
-    defaultRelation("ember", "olive", "hostile"),
-    defaultRelation("azure", "olive", "allied", 60, 40),
-  ],
-  mountainDensity: 0.12,
-  roughness: 0.46,
-  waterCoverage: 0.1,
-  wetlandCoverage: 0.08,
-  maximumDurationSeconds: 180,
-  stalemateSeconds: 70,
-};
 
 function randomSeed(): string {
   const value = new Uint32Array(1);
@@ -61,20 +44,30 @@ function initialSeed(): string {
   return new URLSearchParams(window.location.search).get("seed") ?? "ridge-0712";
 }
 
-function initialMode(): BattleModeSelection {
-  return new URLSearchParams(window.location.search).get("mode") === "defense"
-    ? "defense"
-    : "conflict";
+function initialScenario(): DemoScenarioId {
+  const searchParams = new URLSearchParams(window.location.search);
+  const scenarioId = searchParams.get("scenario");
+  if (isDemoScenarioId(scenarioId)) {
+    return scenarioId;
+  }
+  return defaultDemoScenarioForMode(
+    searchParams.get("mode") === "defense" ? "defense" : "conflict",
+  );
 }
 
 function initialPerformanceProfile() {
   return parsePerformanceProfile(new URLSearchParams(window.location.search).get("profile"));
 }
 
-function updateBattleUrl(seed: string, mode: BattleModeSelection): void {
+function updateBattleUrl(
+  seed: string,
+  mode: BattleModeSelection,
+  scenarioId: DemoScenarioId,
+): void {
   const url = new URL(window.location.href);
   url.searchParams.set("seed", seed);
   url.searchParams.set("mode", mode);
+  url.searchParams.set("scenario", scenarioId);
   window.history.replaceState(null, "", url);
 }
 
@@ -138,7 +131,10 @@ export function App() {
   const controller = useBattleWorker();
   const { state } = controller;
   const [seed, setSeed] = useState(initialSeed);
-  const [battleMode, setBattleMode] = useState<BattleModeSelection>(initialMode);
+  const [scenarioId, setScenarioId] = useState<DemoScenarioId>(initialScenario);
+  const [battleMode, setBattleMode] = useState<BattleModeSelection>(
+    () => getDemoScenario(initialScenario()).mode,
+  );
   const [selectedGroupId, setSelectedGroupId] = useState<string>();
   const [cleanView, setCleanView] = useState(false);
   const [cameraMode, setCameraMode] = useState<CameraMode>("free");
@@ -150,7 +146,7 @@ export function App() {
     paths: true,
   });
   const initialSeedRef = useRef(seed);
-  const initialModeRef = useRef(battleMode);
+  const initialScenarioRef = useRef(scenarioId);
   const performanceProfileRef = useRef(initialPerformanceProfile());
   const animationFrameDurationsRef = useRef<number[]>([]);
   const {
@@ -163,26 +159,34 @@ export function App() {
     resetPerformance,
     getPerformanceSnapshot,
   } = controller;
-  const e2eMode = new URLSearchParams(window.location.search).get("e2e") === "1";
-  const autostart = new URLSearchParams(window.location.search).get("autostart") !== "0";
+  const searchParams = new URLSearchParams(window.location.search);
+  const e2eMode = searchParams.get("e2e") === "1";
+  const autostart = searchParams.get("autostart") !== "0";
+  const showScenarioLab =
+    (import.meta.env.DEV || searchParams.get("devtools") === "1") &&
+    performanceProfileRef.current === undefined;
+
+  const createScenarioSetup = useCallback((nextScenarioId: DemoScenarioId, nextSeed: string) => {
+    const profile =
+      nextScenarioId === "alliance-conflict"
+        ? performanceProfileRef.current
+        : undefined;
+    return createDemoBattleSetup(
+      applyPerformanceProfile(
+        createDemoScenarioOptions(nextScenarioId, nextSeed),
+        profile,
+      ),
+    );
+  }, []);
 
   useEffect(() => {
     const performanceProfile = performanceProfileRef.current;
     start(
-      createDemoBattleSetup(
-        applyPerformanceProfile(
-          {
-            ...DEFAULT_OPTIONS,
-            seed: initialSeedRef.current,
-            mode: initialModeRef.current,
-          },
-          performanceProfile,
-        ),
-      ),
+      createScenarioSetup(initialScenarioRef.current, initialSeedRef.current),
       autostart,
       performanceProfile !== undefined,
     );
-  }, [autostart, start]);
+  }, [autostart, createScenarioSetup, start]);
 
   useEffect(() => {
     if (!performanceProfileRef.current) {
@@ -222,33 +226,10 @@ export function App() {
     [cameraMode, inspect],
   );
 
-  const restart = useCallback(() => {
-    const nextSeed = randomSeed();
-    setSeed(nextSeed);
-    setSelectedGroupId(undefined);
-    setObserverFactionId(undefined);
-    setObservation(undefined);
-    setCameraMode("free");
-    setCameraResetSignal((value) => value + 1);
-    updateBattleUrl(nextSeed, battleMode);
-    start(
-      createDemoBattleSetup(
-        applyPerformanceProfile(
-          { ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode },
-          performanceProfileRef.current,
-        ),
-      ),
-      true,
-      performanceProfileRef.current !== undefined,
-    );
-  }, [battleMode, setObservation, start]);
-
-  const changeBattleMode = useCallback(
-    (nextMode: BattleModeSelection) => {
-      if (nextMode === battleMode) {
-        return;
-      }
-      const nextSeed = randomSeed();
+  const launchScenario = useCallback(
+    (nextScenarioId: DemoScenarioId, nextSeed: string, shouldRun: boolean) => {
+      const nextMode = getDemoScenario(nextScenarioId).mode;
+      setScenarioId(nextScenarioId);
       setBattleMode(nextMode);
       setSeed(nextSeed);
       setSelectedGroupId(undefined);
@@ -256,19 +237,32 @@ export function App() {
       setObservation(undefined);
       setCameraMode("free");
       setCameraResetSignal((value) => value + 1);
-      updateBattleUrl(nextSeed, nextMode);
+      updateBattleUrl(nextSeed, nextMode, nextScenarioId);
       start(
-        createDemoBattleSetup(
-          applyPerformanceProfile(
-            { ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode },
-            performanceProfileRef.current,
-          ),
-        ),
-        true,
+        createScenarioSetup(nextScenarioId, nextSeed),
+        shouldRun,
         performanceProfileRef.current !== undefined,
       );
     },
-    [battleMode, setObservation, start],
+    [createScenarioSetup, setObservation, start],
+  );
+
+  const restart = useCallback(() => {
+    launchScenario(scenarioId, randomSeed(), true);
+  }, [launchScenario, scenarioId]);
+
+  const changeBattleMode = useCallback(
+    (nextMode: BattleModeSelection) => {
+      if (nextMode === battleMode) {
+        return;
+      }
+      launchScenario(
+        defaultDemoScenarioForMode(nextMode),
+        randomSeed(),
+        true,
+      );
+    },
+    [battleMode, launchScenario],
   );
 
   const factionColors = useMemo(
@@ -346,6 +340,7 @@ export function App() {
       getStateHash: () => state.stateHash ?? "",
       getStatus: () => state.status,
       getMode: () => state.setup?.mode.kind ?? battleMode,
+      getScenarioId: () => scenarioId,
       getBattleId: () => state.setup?.battleId ?? "",
       getMapLayerSummary: () => {
         const map = state.setup?.map;
@@ -448,7 +443,7 @@ export function App() {
       run,
       step: stepDebug,
     };
-  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, resetPerformance, run, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
+  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, resetPerformance, run, scenarioId, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -463,7 +458,11 @@ export function App() {
     state.result?.winnerFactionIds.map((id) => factionNames[id] ?? id).join("、") ?? "";
 
   return (
-    <main className={`app-shell ${cleanView ? "is-clean" : ""}`}>
+    <main
+      className={`app-shell ${cleanView ? "is-clean" : ""} ${
+        showScenarioLab && !cleanView ? "has-scenario-lab" : ""
+      }`}
+    >
       <section className="battle-stage" aria-label="三维自动战场">
         <Battlefield
           key={state.setup.battleId}
@@ -497,6 +496,26 @@ export function App() {
           setCameraMode(mode === "follow" && !selectedGroupId ? "free" : mode);
         }}
       />
+
+      {showScenarioLab && !cleanView && (
+        <ScenarioLab
+          scenarios={DEMO_SCENARIOS}
+          scenarioId={scenarioId}
+          seed={seed}
+          paused={state.status === "paused"}
+          finished={state.status === "finished"}
+          onScenarioChange={(nextScenarioId) =>
+            launchScenario(nextScenarioId, seed, state.status !== "paused")
+          }
+          onSeedChange={(nextSeed) =>
+            launchScenario(scenarioId, nextSeed, state.status !== "paused")
+          }
+          onRandomize={() =>
+            launchScenario(scenarioId, randomSeed(), state.status !== "paused")
+          }
+          onStep={stepDebug}
+        />
+      )}
 
       {!cleanView && (
         <>

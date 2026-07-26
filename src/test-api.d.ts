@@ -3,6 +3,7 @@ interface BattleTestApi {
   getStateHash(): string;
   getStatus(): string;
   getMode(): "conflict" | "defense";
+  getScenarioId(): string;
   getBattleId(): string;
   getMapLayerSummary():
     | {

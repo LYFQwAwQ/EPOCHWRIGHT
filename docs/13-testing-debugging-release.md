@@ -82,17 +82,21 @@ URL 参数：
 | 参数 | 示例 | 作用 |
 | --- | --- | --- |
 | `seed` | `seed=defense-bravo` | 固定地图和战斗随机输入 |
-| `mode` | `mode=defense` | 选择 `conflict` 或 `defense` |
+| `scenario` | `scenario=sequence-defense` | 精确选择开发场景；可选值以 `src/demo/scenarios.ts` 为准 |
+| `mode` | `mode=defense` | 未指定场景时选择默认 `conflict` 或 `defense` 场景 |
 | `autostart` | `autostart=0` | 初始化后保持暂停 |
+| `devtools` | `devtools=1` | 在生产预览中显式显示场景实验台 |
 | `e2e` | `e2e=1` | 安装测试调试桥 |
 
 示例：
 
 ```text
-http://localhost:5173/?seed=defense-bravo&mode=defense&autostart=0&e2e=1
+http://localhost:5173/?scenario=sequence-defense&seed=defense-bravo&autostart=0
 ```
 
-浏览器控制台可在该模式下使用：
+通过 `start.bat` 启动的 Vite 开发服务会自动显示场景实验台。场景切换、seed 应用/随机化和暂停后的 `1/20 tick` 推进都使用标准 setup 与 Worker 调试命令；生产构建默认不显示该入口。
+
+浏览器控制台可在 `e2e=1` 模式下使用：
 
 ```js
 window.__battleTest?.getTick();
@@ -102,6 +106,18 @@ window.__battleTest?.step(200);
 ```
 
 测试桥不保证向后兼容，不得被正式游戏系统调用。
+
+### 批量 seed 重放
+
+`src/sim/generated-invariants.test.ts` 默认运行 12 个稳定 seed，每个 seed 分别验证生成地图的边界/路线/哈希，以及三方交火的逐 tick 哈希、非敌对安全和结果人数守恒。测试名直接包含 seed；失败后可只重放该输入：
+
+```powershell
+$env:EPOCHWRIGHT_TEST_SEED="generated-invariant-07"
+npm test -- src/sim/generated-invariants.test.ts
+Remove-Item Env:EPOCHWRIGHT_TEST_SEED
+```
+
+新增批量 seed 时保持名称稳定。失败 seed 必须保留到回归集合或提取为更小的固定场景，不能通过改名或跳过隐藏失败。
 
 ## 4. 确定性问题定位
 

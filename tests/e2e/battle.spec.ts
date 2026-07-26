@@ -427,3 +427,71 @@ test("switching conflict and defense modes creates fresh battle sessions", async
   await expect(page.getByRole("region", { name: "防守目标" })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("development scenario lab exposes reproducible scenarios and paused stepping", async ({ page }, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=alliance-conflict&seed=e2e-scenario-lab",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getScenarioId() === "alliance-conflict",
+  );
+
+  const lab = page.getByRole("region", { name: "开发场景实验台" });
+  await expect(lab).toBeVisible();
+  await page.getByLabel("测试场景").selectOption("sequence-defense");
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getScenarioId() === "sequence-defense" &&
+      window.__battleTest?.getMode() === "defense" &&
+      window.__battleTest?.getObjectives().length === 3,
+  );
+  await expect(page.getByRole("region", { name: "防守目标" })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "场景种子" }).fill("manual-sequence-01");
+  await page.getByRole("button", { name: "应用场景种子" }).click();
+  await page.waitForFunction(
+    () => window.__battleTest?.getBattleId() === "demo-sequence-defense-manual-sequence-01",
+  );
+
+  await page.getByLabel("测试场景").selectOption("reinforcement-conflict");
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getScenarioId() === "reinforcement-conflict",
+  );
+  for (let index = 0; index < 5; index += 1) {
+    await page.getByRole("button", { name: "推进 20 tick" }).click();
+  }
+  await page.waitForFunction(
+    () =>
+      (window.__battleTest?.getTick() ?? 0) >= 100 &&
+      window.__battleTest?.getEventTypes().includes("reinforcement-triggered") &&
+      window.__battleTest?.getEventTypes().includes("reinforcement-deployed"),
+  );
+  expect(await page.evaluate(() => window.__battleTest?.getGroupIds().length)).toBeGreaterThan(4);
+
+  const desktopMetrics = await readCanvasMetrics(page);
+  expect(desktopMetrics.opaqueRatio).toBeGreaterThan(0.98);
+  expect(desktopMetrics.luminanceRange).toBeGreaterThan(25);
+  expect(desktopMetrics.quantizedColors).toBeGreaterThan(8);
+
+  await page.screenshot({ path: testInfo.outputPath("scenario-lab-desktop.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [labBox, observationBox, factionBox] = await Promise.all([
+    lab.boundingBox(),
+    page.locator(".observation-panel").boundingBox(),
+    page.locator(".faction-summary").boundingBox(),
+  ]);
+  expect(labBox && observationBox && factionBox).toBeTruthy();
+  expect(labBox!.y + labBox!.height).toBeLessThanOrEqual(observationBox!.y);
+  expect(observationBox!.y + observationBox!.height).toBeLessThanOrEqual(factionBox!.y);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("scenario-lab-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});
