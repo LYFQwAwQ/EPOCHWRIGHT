@@ -34,6 +34,7 @@ interface BattleTestApi {
     attackerPower: number;
     defenderPower: number;
   }[];
+  getFactionIds(): readonly string[];
   getGroupIds(): readonly string[];
   getEventTypes(): readonly string[];
   selectGroup(groupId?: string): void;

@@ -180,6 +180,12 @@ test("desktop battle renders, pauses, and exposes squad inspection", async ({ pa
   await page.goto("/?e2e=1&seed=e2e-desktop");
   await waitForBattle(page);
 
+  expect(await page.evaluate(() => window.__battleTest?.getFactionIds())).toEqual([
+    "ember",
+    "azure",
+    "olive",
+  ]);
+
   const canvas = page.locator("canvas");
   const box = await canvas.boundingBox();
   expect(box?.width).toBeGreaterThan(1_000);

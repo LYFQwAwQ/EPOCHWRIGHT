@@ -812,6 +812,10 @@ button:focus-visible {
     grid-template-columns: 1fr 1fr;
   }
 
+  .faction-summary[data-faction-count="3"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .objective-summary {
     top: 128px;
     right: 8px;
@@ -827,6 +831,11 @@ button:focus-visible {
   .faction-row {
     min-height: 58px;
     padding: 9px;
+  }
+
+  .faction-summary[data-faction-count="3"] .faction-row {
+    padding: 8px 6px;
+    gap: 6px;
   }
 
   .faction-row + .faction-row {

@@ -6,24 +6,29 @@ import {
   validateBattleMap,
 } from "./map";
 import { createPathfinder } from "./pathfinder";
+import { areHostile, defaultRelation, relationKey, sortRelations } from "./relations";
 import { StateHasher } from "./rng";
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  LEGACY_BATTLE_RULES_VERSION,
+  LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
   SIMULATION_HZ,
 } from "./types";
 import type {
   BattleMap,
   BattleRules,
   BattleSetup,
+  BattleSetupInput,
   BattleSetupOptions,
   DefenseModeSetup,
   FactionSetup,
   GridCoord,
   GroupSpawn,
+  RelationSetup,
 } from "./types";
 
-const DEFAULT_FACTIONS: readonly [FactionSetup, FactionSetup] = [
+const DEFAULT_FACTIONS: readonly FactionSetup[] = [
   { id: "ember", displayName: "赤焰", color: "#e45f62" },
   { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
 ];
@@ -38,6 +43,11 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     throw new Error("groupsPerFaction must be an integer from 1 to 8.");
   }
 
+  const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
+  if (factions.length < 2) {
+    throw new Error("A battle requires at least two factions.");
+  }
+
   const map = generateBattleMap({
     seed,
     width,
@@ -50,11 +60,10 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     rockCoverage: options.rockCoverage ?? 0.006,
     wallCoverage: options.wallCoverage ?? 0.003,
   });
-  const factions = DEFAULT_FACTIONS.map((faction) => ({ ...faction })) as [
-    FactionSetup,
-    FactionSetup,
-  ];
   const groups = createGroupSpawns(map, factions, groupsPerFaction);
+  const relations = (options.relations ?? createDefaultRelations(factions)).map((relation) => ({
+    ...relation,
+  }));
   const mode =
     options.mode === "defense"
       ? createDefenseMode(map, factions)
@@ -81,6 +90,7 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
     seed,
     map,
     factions,
+    relations,
     groups,
     mode,
     rules,
@@ -89,7 +99,27 @@ export function createBattleSetup(options: BattleSetupOptions = {}): BattleSetup
   return setup;
 }
 
-export function validateBattleSetup(setup: BattleSetup): void {
+export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
+  const candidate = inputSetup;
+  if (
+    candidate.schemaVersion === LEGACY_BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === LEGACY_BATTLE_RULES_VERSION &&
+    candidate.factions?.length === 2
+  ) {
+    return {
+      ...inputSetup,
+      schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
+      rulesVersion: BATTLE_RULES_VERSION,
+      factions: inputSetup.factions.map((faction) => ({ ...faction })),
+      relations: inputSetup.relations?.map((relation) => ({ ...relation })) ??
+        createDefaultRelations(inputSetup.factions),
+    } as BattleSetup;
+  }
+  return inputSetup as BattleSetup;
+}
+
+export function validateBattleSetup(inputSetup: BattleSetupInput): void {
+  const setup = migrateBattleSetup(inputSetup);
   if (
     setup.schemaVersion !== BATTLE_SETUP_SCHEMA_VERSION ||
     setup.rulesVersion !== BATTLE_RULES_VERSION
@@ -102,9 +132,14 @@ export function validateBattleSetup(setup: BattleSetup): void {
   validateBattleMap(setup.map);
 
   const factionIds = new Set(setup.factions.map((faction) => faction.id));
-  if (factionIds.size !== 2 || setup.factions.some((faction) => !faction.id)) {
-    throw new Error("The current rules require exactly two factions with unique IDs.");
+  if (
+    setup.factions.length < 2 ||
+    factionIds.size !== setup.factions.length ||
+    setup.factions.some((faction) => !faction.id)
+  ) {
+    throw new Error("Battle factions must contain at least two unique non-empty IDs.");
   }
+  validateRelations(setup.factions, setup.relations);
 
   const entityIds = new Set<string>();
   for (const staticObject of setup.map.staticObjects) {
@@ -114,12 +149,16 @@ export function validateBattleSetup(setup: BattleSetup): void {
   const factionGroupCounts = new Map(setup.factions.map((faction) => [faction.id, 0]));
   if (setup.mode.kind === "defense") {
     if (
-      setup.mode.attackerFactionId !== "ember" ||
-      setup.mode.defenderFactionId !== "azure" ||
+      setup.mode.attackerFactionId === setup.mode.defenderFactionId ||
       !factionIds.has(setup.mode.attackerFactionId) ||
-      !factionIds.has(setup.mode.defenderFactionId)
+      !factionIds.has(setup.mode.defenderFactionId) ||
+      !areHostile(
+        setup.relations,
+        setup.mode.attackerFactionId,
+        setup.mode.defenderFactionId,
+      )
     ) {
-      throw new Error("Defense mode currently requires ember attacking azure.");
+      throw new Error("Defense mode requires two distinct hostile factions.");
     }
     if (
       !Number.isInteger(setup.mode.objective.radiusCells) ||
@@ -174,7 +213,7 @@ export function validateBattleSetup(setup: BattleSetup): void {
   }
 
   if ([...factionGroupCounts.values()].some((count) => count === 0)) {
-    throw new Error("Both factions must deploy at least one group.");
+    throw new Error("Every faction must deploy at least one group.");
   }
   if (setup.rules.sameFactionIntelDelayTicks !== 15) {
     throw new Error("The current same-faction intelligence delay must be 15 ticks.");
@@ -189,18 +228,30 @@ export function validateBattleSetup(setup: BattleSetup): void {
   validateRequiredRoutes(setup);
 }
 
-export function hashBattleSetup(setup: BattleSetup): string {
+export function hashBattleSetup(setup: BattleSetupInput): string {
+  const normalized = migrateBattleSetup(setup);
   const hasher = new StateHasher();
-  hasher.addString(setup.schemaVersion);
-  hasher.addString(setup.rulesVersion);
-  hasher.addString(setup.battleId);
-  hasher.addString(setup.seed);
-  hasher.addString(hashBattleMap(setup.map));
+  hasher.addString(normalized.schemaVersion);
+  hasher.addString(normalized.rulesVersion);
+  hasher.addString(normalized.battleId);
+  hasher.addString(normalized.seed);
+  hasher.addString(hashBattleMap(normalized.map));
 
-  for (const faction of setup.factions) {
+  for (const faction of normalized.factions) {
     hasher.addString(faction.id);
   }
-  for (const group of setup.groups) {
+  for (const relation of sortRelations(normalized.relations)) {
+    const [firstFactionId, secondFactionId] = relation.a < relation.b
+      ? [relation.a, relation.b]
+      : [relation.b, relation.a];
+    hasher.addString(firstFactionId);
+    hasher.addString(secondFactionId);
+    hasher.addString(relation.kind);
+    hasher.addNumber(relation.shareIntel ? 1 : 0);
+    hasher.addNumber(relation.minimumIntelDelayTicks);
+    hasher.addNumber(relation.intelUpdateIntervalTicks);
+  }
+  for (const group of normalized.groups) {
     hasher.addString(group.id);
     hasher.addString(group.factionId);
     hasher.addNumber(group.spawn.x);
@@ -213,27 +264,83 @@ export function hashBattleSetup(setup: BattleSetup): string {
     }
   }
 
-  hasher.addString(setup.mode.kind);
-  if (setup.mode.kind === "defense") {
-    hasher.addString(setup.mode.attackerFactionId);
-    hasher.addString(setup.mode.defenderFactionId);
-    hasher.addString(setup.mode.objective.id);
-    hasher.addNumber(setup.mode.objective.center.x);
-    hasher.addNumber(setup.mode.objective.center.z);
-    hasher.addNumber(setup.mode.objective.radiusCells);
+  hasher.addString(normalized.mode.kind);
+  if (normalized.mode.kind === "defense") {
+    hasher.addString(normalized.mode.attackerFactionId);
+    hasher.addString(normalized.mode.defenderFactionId);
+    hasher.addString(normalized.mode.objective.id);
+    hasher.addNumber(normalized.mode.objective.center.x);
+    hasher.addNumber(normalized.mode.objective.center.z);
+    hasher.addNumber(normalized.mode.objective.radiusCells);
   }
 
-  hasher.addNumber(setup.rules.ticksPerSecond);
-  hasher.addNumber(setup.rules.sightRangeCells);
-  hasher.addNumber(setup.rules.weaponRangeCells);
-  hasher.addNumber(setup.rules.preferredRangeCells);
-  hasher.addNumber(setup.rules.sameFactionIntelDelayTicks);
-  hasher.addNumber(setup.rules.intelUpdateIntervalTicks);
-  hasher.addNumber(setup.rules.contactForgetTicks);
-  hasher.addNumber(setup.rules.resolutionStableTicks);
-  hasher.addNumber(setup.rules.stalemateTicks);
-  hasher.addNumber(setup.rules.maximumDurationTicks);
+  hasher.addNumber(normalized.rules.ticksPerSecond);
+  hasher.addNumber(normalized.rules.sightRangeCells);
+  hasher.addNumber(normalized.rules.weaponRangeCells);
+  hasher.addNumber(normalized.rules.preferredRangeCells);
+  hasher.addNumber(normalized.rules.sameFactionIntelDelayTicks);
+  hasher.addNumber(normalized.rules.intelUpdateIntervalTicks);
+  hasher.addNumber(normalized.rules.contactForgetTicks);
+  hasher.addNumber(normalized.rules.resolutionStableTicks);
+  hasher.addNumber(normalized.rules.stalemateTicks);
+  hasher.addNumber(normalized.rules.maximumDurationTicks);
   return hasher.digest();
+}
+
+function createDefaultRelations(factions: readonly FactionSetup[]): readonly RelationSetup[] {
+  const relations: RelationSetup[] = [];
+  for (let first = 0; first < factions.length; first += 1) {
+    for (let second = first + 1; second < factions.length; second += 1) {
+      relations.push(defaultRelation(factions[first]!.id, factions[second]!.id));
+    }
+  }
+  return relations;
+}
+
+function validateRelations(
+  factions: readonly FactionSetup[],
+  relations: readonly RelationSetup[] | undefined,
+): void {
+  const factionIds = new Set(factions.map((faction) => faction.id));
+  const expectedPairCount = (factions.length * (factions.length - 1)) / 2;
+  if (!Array.isArray(relations) || relations.length !== expectedPairCount) {
+    throw new Error(
+      `Relations must contain exactly one entry for each faction pair (${expectedPairCount}).`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const relation of relations) {
+    if (
+      !factionIds.has(relation.a) ||
+      !factionIds.has(relation.b) ||
+      relation.a === relation.b
+    ) {
+      throw new Error("Relations must reference two distinct known factions.");
+    }
+    const key = relationKey(relation.a, relation.b);
+    if (seen.has(key)) {
+      throw new Error(`Relations contain a duplicate faction pair: ${relation.a}/${relation.b}.`);
+    }
+    seen.add(key);
+    if (!(["hostile", "neutral", "allied"] as const).includes(relation.kind)) {
+      throw new Error(`Relation ${relation.a}/${relation.b} has an invalid kind.`);
+    }
+    if (typeof relation.shareIntel !== "boolean") {
+      throw new Error(`Relation ${relation.a}/${relation.b} must define shareIntel.`);
+    }
+    if (
+      !Number.isInteger(relation.minimumIntelDelayTicks) ||
+      relation.minimumIntelDelayTicks < 0 ||
+      !Number.isInteger(relation.intelUpdateIntervalTicks) ||
+      relation.intelUpdateIntervalTicks < 0 ||
+      (relation.shareIntel && relation.intelUpdateIntervalTicks <= 0)
+    ) {
+      throw new Error(`Relation ${relation.a}/${relation.b} has invalid intelligence timing.`);
+    }
+  }
+  if (seen.size !== expectedPairCount) {
+    throw new Error("Relations are incomplete.");
+  }
 }
 
 function countWalkableObjectiveCells(
@@ -265,7 +372,7 @@ function countWalkableObjectiveCells(
 
 function createDefenseMode(
   map: BattleMap,
-  factions: readonly [FactionSetup, FactionSetup],
+  factions: readonly FactionSetup[],
 ): DefenseModeSetup {
   const targetX = Math.round((map.width - 1) * 0.7);
   const corridorZ = Math.round(
@@ -307,17 +414,34 @@ function findNearestWalkable(map: BattleMap, origin: GridCoord): GridCoord {
 
 function createGroupSpawns(
   map: BattleMap,
-  factions: readonly [FactionSetup, FactionSetup],
+  factions: readonly FactionSetup[],
   groupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
-  const sideXs = [2, map.width - 3] as const;
+  const occupied = new Set<number>();
+  const sideXs =
+    factions.length <= 2
+      ? [2, map.width - 3]
+      : [
+          2,
+          map.width - 3,
+          ...factions.slice(2).map((_, index) =>
+            Math.round(
+              2 + ((index + 1) * (map.width - 5)) / factions.length,
+            ),
+          ),
+        ];
 
   for (let side = 0; side < factions.length; side += 1) {
     const faction = factions[side];
     for (let groupIndex = 0; groupIndex < groupsPerFaction; groupIndex += 1) {
       const z = Math.round(((groupIndex + 1) * (map.height - 6)) / (groupsPerFaction + 1)) + 3;
-      const spawn = { x: sideXs[side], z: Math.min(map.height - 3, z) };
+      const desiredSpawn = {
+        x: Math.min(map.width - 3, Math.max(2, sideXs[side] ?? 2)),
+        z: Math.min(map.height - 3, z),
+      };
+      const spawn = findAvailableSpawn(map, desiredSpawn, occupied);
+      occupied.add(spawn.z * map.width + spawn.x);
       const groupId = `${faction.id}-squad-${groupIndex + 1}`;
       groups.push({
         id: groupId,
@@ -331,6 +455,33 @@ function createGroupSpawns(
     }
   }
   return groups;
+}
+
+function findAvailableSpawn(
+  map: BattleMap,
+  origin: GridCoord,
+  occupied: ReadonlySet<number>,
+): GridCoord {
+  for (let radius = 0; radius < Math.max(map.width, map.height); radius += 1) {
+    const candidates: GridCoord[] = [];
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+          continue;
+        }
+        const candidate = { x: origin.x + dx, z: origin.z + dz };
+        const index = candidate.z * map.width + candidate.x;
+        if (isLegalDeployment(map, candidate) && !occupied.has(index)) {
+          candidates.push(candidate);
+        }
+      }
+    }
+    candidates.sort((a, b) => a.z * map.width + a.x - (b.z * map.width + b.x));
+    if (candidates[0]) {
+      return candidates[0];
+    }
+  }
+  throw new Error("Unable to place a unique legal faction spawn cell.");
 }
 
 function claimUniqueId(id: string, ids: Set<string>): void {
@@ -368,7 +519,10 @@ function validateRequiredRoutes(setup: BattleSetup): void {
   if (setup.mode.kind === "defense") {
     const mode = setup.mode;
     const missionBlocked = setup.groups.find(
-      (group) => !hasRoute(group.spawn, mode.objective.center),
+      (group) =>
+        (group.factionId === mode.attackerFactionId ||
+          group.factionId === mode.defenderFactionId) &&
+        !hasRoute(group.spawn, mode.objective.center),
     );
     if (missionBlocked) {
       const routeKind =
@@ -380,16 +534,23 @@ function validateRequiredRoutes(setup: BattleSetup): void {
     return;
   }
 
-  const firstFactionGroups = setup.groups.filter(
-    (group) => group.factionId === setup.factions[0].id,
-  );
-  const secondFactionGroups = setup.groups.filter(
-    (group) => group.factionId === setup.factions[1].id,
-  );
-  const hasCrossMapRoute = firstFactionGroups.some((first) =>
-    secondFactionGroups.some((second) => hasRoute(first.spawn, second.spawn)),
-  );
-  if (!hasCrossMapRoute) {
-    throw new Error("Conflict mode requires at least one legal cross-map attack route.");
+  for (const relation of sortRelations(setup.relations)) {
+    if (relation.kind !== "hostile") {
+      continue;
+    }
+    const firstFactionGroups = setup.groups.filter(
+      (group) => group.factionId === relation.a,
+    );
+    const secondFactionGroups = setup.groups.filter(
+      (group) => group.factionId === relation.b,
+    );
+    const hasHostileRoute = firstFactionGroups.some((first) =>
+      secondFactionGroups.some((second) => hasRoute(first.spawn, second.spawn)),
+    );
+    if (!hasHostileRoute) {
+      throw new Error(
+        `Conflict mode requires at least one legal cross-map attack route between ${relation.a} and ${relation.b}.`,
+      );
+    }
   }
 }

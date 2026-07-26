@@ -3,6 +3,16 @@ export {
   createSimulation,
 } from "./simulation";
 export { createBattleSetup, hashBattleSetup, validateBattleSetup } from "./setup";
+export { migrateBattleSetup } from "./setup";
+export {
+  areAllied,
+  areHostile,
+  defaultRelation,
+  findRelation,
+  relationKey,
+  relationKind,
+  sortRelations,
+} from "./relations";
 export {
   cellIndex,
   coordFromIndex,
@@ -30,6 +40,8 @@ export {
   BATTLE_MAP_SCHEMA_VERSION,
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  LEGACY_BATTLE_RULES_VERSION,
+  LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
   MAP_CELL_FLAGS,
   SIMULATION_HZ,
   STATIC_OBJECT_DEFINITIONS,

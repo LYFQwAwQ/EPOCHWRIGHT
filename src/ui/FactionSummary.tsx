@@ -7,7 +7,11 @@ interface FactionSummaryProps {
 
 export function FactionSummary({ factions, frame }: FactionSummaryProps) {
   return (
-    <section className="faction-summary" aria-label="势力状态">
+    <section
+      className="faction-summary"
+      data-faction-count={factions.length}
+      aria-label="势力状态"
+    >
       {factions.map((faction) => {
         const members = frame.members.filter((member) => member.factionId === faction.id);
         const ready = members.filter(

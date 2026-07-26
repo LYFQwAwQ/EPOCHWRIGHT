@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
 import { Battlefield, type CameraMode } from "./render/Battlefield";
+import { defaultRelation } from "./sim";
 import {
   MAP_CELL_FLAGS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   type BattleModeKind,
   type BattleSetupOptions,
+  type FactionSetup,
   type GroupInspection,
 } from "./sim/types";
 import { EventFeed } from "./ui/EventFeed";
@@ -17,10 +19,22 @@ import { Toolbar } from "./ui/Toolbar";
 
 type BattleModeSelection = BattleModeKind;
 
+const DEFAULT_FACTIONS: readonly FactionSetup[] = [
+  { id: "ember", displayName: "赤焰", color: "#e45f62" },
+  { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
+  { id: "olive", displayName: "橄榄", color: "#7c9a52" },
+];
+
 const DEFAULT_OPTIONS: BattleSetupOptions = {
   width: 56,
   height: 42,
   groupsPerFaction: 4,
+  factions: DEFAULT_FACTIONS,
+  relations: [
+    defaultRelation("ember", "azure", "hostile"),
+    defaultRelation("ember", "olive", "hostile"),
+    defaultRelation("azure", "olive", "allied", 60, 40),
+  ],
   mountainDensity: 0.12,
   roughness: 0.46,
   waterCoverage: 0.1,
@@ -261,6 +275,7 @@ export function App() {
         };
       },
       getObjectives: () => state.frame?.objectives ?? [],
+      getFactionIds: () => state.setup?.factions.map((faction) => faction.id) ?? [],
       getGroupIds: () => state.frame?.groups.map((group) => group.id) ?? [],
       getEventTypes: () => state.events.map((event) => event.type),
       selectGroup,

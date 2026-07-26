@@ -1,7 +1,10 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
-export const BATTLE_RULES_VERSION = "stage-2.4" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2.1" as const;
+export const BATTLE_RULES_VERSION = "stage-2.5" as const;
+/** Versions accepted by the input migration for the original two-faction slice. */
+export const LEGACY_BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
+export const LEGACY_BATTLE_RULES_VERSION = "stage-2.4" as const;
 export const BATTLE_MAP_SCHEMA_VERSION = "map-2" as const;
 
 export const SURFACE_TYPE_IDS = {
@@ -167,6 +170,17 @@ export interface FactionSetup {
   readonly color: string;
 }
 
+export type RelationKind = "hostile" | "neutral" | "allied";
+
+export interface RelationSetup {
+  readonly a: FactionId;
+  readonly b: FactionId;
+  readonly kind: RelationKind;
+  readonly shareIntel: boolean;
+  readonly minimumIntelDelayTicks: Tick;
+  readonly intelUpdateIntervalTicks: Tick;
+}
+
 export interface MemberSpawn {
   readonly id: MemberId;
   readonly initialHealth?: HealthState;
@@ -220,11 +234,19 @@ export interface BattleSetup {
   readonly battleId: string;
   readonly seed: string;
   readonly map: BattleMap;
-  readonly factions: readonly [FactionSetup, FactionSetup];
+  readonly factions: readonly FactionSetup[];
+  readonly relations: readonly RelationSetup[];
   readonly groups: readonly GroupSpawn[];
   readonly mode: BattleModeSetup;
   readonly rules: BattleRules;
 }
+
+/** Wire-level input accepted by validation, including the legacy two-faction version. */
+export type BattleSetupInput = Omit<BattleSetup, "schemaVersion" | "rulesVersion" | "relations"> & {
+  readonly schemaVersion: string;
+  readonly rulesVersion: string;
+  readonly relations?: readonly RelationSetup[];
+};
 
 export interface BattleSetupOptions {
   readonly seed?: string;
@@ -232,6 +254,8 @@ export interface BattleSetupOptions {
   readonly width?: number;
   readonly height?: number;
   readonly groupsPerFaction?: number;
+  readonly factions?: readonly FactionSetup[];
+  readonly relations?: readonly RelationSetup[];
   readonly mountainDensity?: number;
   readonly roughness?: number;
   readonly waterCoverage?: number;

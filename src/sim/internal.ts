@@ -33,6 +33,8 @@ export interface DetectionState {
   progressBps: number;
   lastCandidateTick: Tick;
   lastSentTick: Tick;
+  /** Last tick at which an allied recipient received an update from this detection. */
+  lastSentTickByFaction: Map<FactionId, Tick>;
   confirmed: boolean;
 }
 

@@ -18,6 +18,7 @@ import type {
   ContactState,
   CoverDecisionState,
   CoverThreatState,
+  DetectionState,
   GroupState,
   HitIntent,
   IntelMessage,
@@ -33,12 +34,14 @@ import {
   type Pathfinder,
 } from "./pathfinder";
 import { resolveObjectiveTick } from "./objective";
+import { areHostile, findRelation } from "./relations";
 import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
-import { hashBattleSetup, validateBattleSetup } from "./setup";
+import { hashBattleSetup, migrateBattleSetup, validateBattleSetup } from "./setup";
 import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
+  BattleSetupInput,
   BattleSimulation,
   BattleTerminationReason,
   CoverEvaluationReason,
@@ -125,7 +128,7 @@ type PendingBattleEvent = BattleEvent extends infer Event
     : never
   : never;
 
-export function createSimulation(setup: BattleSetup): BattleSimulation {
+export function createSimulation(setup: BattleSetupInput): BattleSimulation {
   return new StageOneBattleSimulation(setup);
 }
 
@@ -140,9 +143,10 @@ class StageOneBattleSimulation implements BattleSimulation {
   private readonly walkableComponentIds: Int32Array;
   private readonly setupHash: string;
 
-  constructor(inputSetup: BattleSetup) {
-    validateBattleSetup(inputSetup);
-    this.setup = cloneSetup(inputSetup);
+  constructor(inputSetup: BattleSetupInput) {
+    const normalizedSetup = migrateBattleSetup(inputSetup);
+    validateBattleSetup(normalizedSetup);
+    this.setup = cloneSetup(normalizedSetup);
     this.setupHash = hashBattleSetup(this.setup);
     this.coverSlots = buildCoverSlots(this.setup.map);
     this.coverSlotsByCell = new Map(
@@ -335,6 +339,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addNumber(detection.progressBps);
         hasher.addNumber(detection.lastCandidateTick);
         hasher.addNumber(detection.lastSentTick);
+        for (const [factionId, sentTick] of [...(detection.lastSentTickByFaction ?? new Map())].sort(
+          ([a], [b]) => compareStrings(a, b),
+        )) {
+          hasher.addString(factionId);
+          hasher.addNumber(sentTick);
+        }
         hasher.addNumber(detection.confirmed ? 1 : 0);
       }
       for (const pathCell of group.path) {
@@ -359,11 +369,13 @@ class StageOneBattleSimulation implements BattleSimulation {
     for (const message of [...this.state.intelQueue].sort(compareIntelMessages)) {
       hasher.addNumber(message.sequence);
       hasher.addString(message.factionId);
+      hasher.addString(message.sourceGroupId);
       hasher.addString(message.targetGroupId);
       hasher.addNumber(message.observedAt);
       hasher.addNumber(message.deliveryAt);
       hasher.addNumber(message.lastKnown.x);
       hasher.addNumber(message.lastKnown.z);
+      hasher.addNumber(message.confidenceBps);
     }
     if (this.state.objective) {
       hasher.addString(this.state.objective.id);
@@ -545,6 +557,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           progressBps: 0,
           lastCandidateTick: -1,
           lastSentTick: -this.setup.rules.intelUpdateIntervalTicks,
+          lastSentTickByFaction: new Map(),
           confirmed: false,
         };
 
@@ -569,7 +582,9 @@ class StageOneBattleSimulation implements BattleSimulation {
                 observerGroupId: observer.id,
                 targetGroupId: target.id,
               });
-              this.markMeaningfulProgress();
+              if (this.isHostile(observer.factionId, target.factionId)) {
+                this.markMeaningfulProgress();
+              }
             }
             observer.localContacts.set(target.id, {
               targetGroupId: target.id,
@@ -579,13 +594,7 @@ class StageOneBattleSimulation implements BattleSimulation {
               confidenceBps: 10_000,
               sourceGroupId: observer.id,
             });
-            if (
-              this.state.tick - detection.lastSentTick >=
-              this.setup.rules.intelUpdateIntervalTicks
-            ) {
-              this.queueIntel(observer, target);
-              detection.lastSentTick = this.state.tick;
-            }
+            this.queueIntel(observer, target, detection);
           }
         } else {
           detection.progressBps = Math.max(0, detection.progressBps - 160);
@@ -614,19 +623,70 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
-  private queueIntel(observer: GroupState, target: GroupState): void {
-    const message: IntelMessage = {
-      sequence: this.state.intelSequence,
-      factionId: observer.factionId,
-      sourceGroupId: observer.id,
-      targetGroupId: target.id,
-      observedAt: this.state.tick,
-      deliveryAt: this.state.tick + this.setup.rules.sameFactionIntelDelayTicks,
-      lastKnown: { ...target.cell },
-      confidenceBps: 10_000,
-    };
-    this.state.intelSequence += 1;
-    this.state.intelQueue.push(message);
+  private queueIntel(
+    observer: GroupState,
+    target: GroupState,
+    detection: DetectionState,
+  ): void {
+    const lastSentTickByFaction =
+      detection.lastSentTickByFaction ?? new Map<FactionId, number>();
+    detection.lastSentTickByFaction = lastSentTickByFaction;
+    const recipients = this.setup.factions
+      .map((faction) => {
+        if (faction.id === observer.factionId) {
+          return {
+            factionId: faction.id,
+            deliveryDelayTicks: this.setup.rules.sameFactionIntelDelayTicks,
+            updateIntervalTicks: this.setup.rules.intelUpdateIntervalTicks,
+          };
+        }
+        const relation = findRelation(this.setup.relations, observer.factionId, faction.id);
+        if (!relation || relation.kind !== "allied" || !relation.shareIntel) {
+          return undefined;
+        }
+        return {
+          factionId: faction.id,
+          deliveryDelayTicks: relation.minimumIntelDelayTicks,
+          updateIntervalTicks: relation.intelUpdateIntervalTicks,
+        };
+      })
+      .filter(
+        (
+          recipient,
+        ): recipient is {
+          factionId: FactionId;
+          deliveryDelayTicks: number;
+          updateIntervalTicks: number;
+        } => Boolean(recipient),
+      )
+      .sort((a, b) => compareStrings(a.factionId, b.factionId));
+
+    for (const recipient of recipients) {
+      const lastSentTick =
+        recipient.factionId === observer.factionId
+          ? detection.lastSentTick
+          : (lastSentTickByFaction.get(recipient.factionId) ??
+            -recipient.updateIntervalTicks);
+      if (this.state.tick - lastSentTick < recipient.updateIntervalTicks) {
+        continue;
+      }
+      this.state.intelQueue.push({
+        sequence: this.state.intelSequence,
+        factionId: recipient.factionId,
+        sourceGroupId: observer.id,
+        targetGroupId: target.id,
+        observedAt: this.state.tick,
+        deliveryAt: this.state.tick + recipient.deliveryDelayTicks,
+        lastKnown: { ...target.cell },
+        confidenceBps: 10_000,
+      });
+      this.state.intelSequence += 1;
+      if (recipient.factionId === observer.factionId) {
+        detection.lastSentTick = this.state.tick;
+      } else {
+        lastSentTickByFaction.set(recipient.factionId, this.state.tick);
+      }
+    }
   }
 
   private updateDecisions(force = false): void {
@@ -873,7 +933,14 @@ class StageOneBattleSimulation implements BattleSimulation {
           this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS,
       )
       .map((contact) => this.state.groupsById.get(contact.targetGroupId))
-      .filter((target): target is GroupState => Boolean(target && activeMemberCount(target) > 0))
+      .filter(
+        (target): target is GroupState =>
+          Boolean(
+            target &&
+              activeMemberCount(target) > 0 &&
+              this.isHostile(group.factionId, target.factionId),
+          ),
+      )
       .sort((a, b) => {
         const distanceDifference =
           squaredGridDistance(group.cell, a.cell) - squaredGridDistance(group.cell, b.cell);
@@ -898,7 +965,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       .filter(
         (contact) =>
           contact.confidenceBps > 0 &&
-          contact.observedAt > (group.searchedContacts.get(contact.targetGroupId) ?? -1),
+          contact.observedAt > (group.searchedContacts.get(contact.targetGroupId) ?? -1) &&
+          this.state.groupsById.get(contact.targetGroupId) !== undefined &&
+          this.isHostile(
+            group.factionId,
+            this.state.groupsById.get(contact.targetGroupId)!.factionId,
+          ),
       )
       .sort((a, b) => {
         const recency = b.observedAt - a.observedAt;
@@ -951,12 +1023,30 @@ class StageOneBattleSimulation implements BattleSimulation {
     const lane = hash % laneCount;
     const z = Math.round(((lane + 1) * (this.setup.map.height - 4)) / (laneCount + 1)) + 2;
     const phase = group.patrolIndex % 4;
-    const fractions = factionIndex === 0 ? [0.62, 0.78, 0.48, 0.7] : [0.38, 0.22, 0.52, 0.3];
-    const x = Math.round((this.setup.map.width - 1) * (fractions[phase] ?? 0.5));
+    const fractions = this.setup.factions.length === 2
+      ? factionIndex === 0
+        ? [0.62, 0.78, 0.48, 0.7]
+        : [0.38, 0.22, 0.52, 0.3]
+      : [0.04, -0.04, 0.03, -0.03].map(
+          (offset) => this.getFactionPatrolSectorFraction(group.factionId) + offset,
+        );
+    const fraction = Math.min(0.92, Math.max(0.08, fractions[phase] ?? 0.5));
+    const x = Math.round((this.setup.map.width - 1) * fraction);
     return this.findNearestWalkable(
       { x, z: Math.min(this.setup.map.height - 2, z) },
       group.cell,
     );
+  }
+
+  private getFactionPatrolSectorFraction(factionId: FactionId): number {
+    const factionSpawns = this.setup.groups.filter(
+      (spawn) => spawn.factionId === factionId,
+    );
+    const averageSpawnX =
+      factionSpawns.reduce((sum, spawn) => sum + spawn.spawn.x, 0) /
+      Math.max(1, factionSpawns.length);
+    const deploymentFraction = averageSpawnX / Math.max(1, this.setup.map.width - 1);
+    return 0.12 + deploymentFraction * 0.76;
   }
 
   private findNearestWalkable(origin: GridCoord, reachableFrom: GridCoord): GridCoord {
@@ -1001,7 +1091,9 @@ class StageOneBattleSimulation implements BattleSimulation {
     return Boolean(
       blocker &&
         blocker.id !== group.id &&
-        blocker.factionId === group.factionId &&
+        isGroupSpatiallyActive(blocker) &&
+        (blocker.factionId === group.factionId ||
+          !this.isHostile(group.factionId, blocker.factionId)) &&
         !blocker.movingTo,
     );
   }
@@ -1247,7 +1339,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
       const target = this.state.groupsById.get(group.currentTargetId);
-      if (!target || activeMemberCount(target) === 0 || !this.hasFreshDirectContact(group, target)) {
+      if (
+        !target ||
+        !this.isHostile(group.factionId, target.factionId) ||
+        activeMemberCount(target) === 0 ||
+        !this.hasFreshDirectContact(group, target)
+      ) {
         continue;
       }
       const distanceSquared = squaredGridDistance(group.cell, target.cell);
@@ -1582,7 +1679,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       )
       .map((faction) => faction.id)
       .sort();
-    if (effectiveFactions.length === 2) {
+    const hasHostileEffectivePair = effectiveFactions.some((factionId, index) =>
+      effectiveFactions
+        .slice(index + 1)
+        .some((otherFactionId) => this.isHostile(factionId, otherFactionId)),
+    );
+    if (hasHostileEffectivePair) {
       this.state.resolutionCandidateKey = undefined;
       this.state.resolutionCandidateSince = undefined;
       return;
@@ -1602,10 +1704,21 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
 
+    const remainingFactionIds = [
+      ...new Set(
+        this.state.groups
+          .filter((group) => activeMemberCount(group) > 0 || hasEvacuatedMembers(group))
+          .map((group) => group.factionId),
+      ),
+    ];
     const hasRoutedOpposition = this.state.groups.some(
       (group) =>
         !effectiveFactions.includes(group.factionId) &&
-        (activeMemberCount(group) > 0 || hasEvacuatedMembers(group)),
+        (activeMemberCount(group) > 0 || hasEvacuatedMembers(group)) &&
+        remainingFactionIds.some(
+          (factionId) =>
+            factionId !== group.factionId && this.isHostile(factionId, group.factionId),
+        ),
     );
     this.finishBattle(
       hasRoutedOpposition ? "hostiles-routed" : "hostiles-eliminated",
@@ -1806,10 +1919,15 @@ class StageOneBattleSimulation implements BattleSimulation {
     group: GroupState,
     occupantGroupId: GroupId | undefined,
   ): boolean {
+    const occupant = occupantGroupId
+      ? this.state.groupsById.get(occupantGroupId)
+      : undefined;
     return Boolean(
-      occupantGroupId &&
-        occupantGroupId !== group.id &&
-        this.state.groupsById.get(occupantGroupId)?.factionId === group.factionId,
+      occupant &&
+        occupant.id !== group.id &&
+        isGroupSpatiallyActive(occupant) &&
+        (occupant.factionId === group.factionId ||
+          !this.isHostile(group.factionId, occupant.factionId)),
     );
   }
 
@@ -1945,10 +2063,24 @@ class StageOneBattleSimulation implements BattleSimulation {
       (candidate) =>
         candidate.id !== shooter.id &&
         candidate.id !== target.id &&
-        candidate.factionId === shooter.factionId &&
         isGroupSpatiallyActive(candidate) &&
+        this.isKnownSpatialBlocker(shooter, candidate) &&
         lineIndices.has(cellIndex(this.setup.map, candidate.cell)),
     );
+  }
+
+  private isKnownSpatialBlocker(observer: GroupState, candidate: GroupState): boolean {
+    if (
+      candidate.factionId === observer.factionId ||
+      !this.isHostile(observer.factionId, candidate.factionId)
+    ) {
+      return true;
+    }
+    const localContact = observer.localContacts.get(candidate.id);
+    const sharedContact = this.state.factionKnowledge
+      .get(observer.factionId)
+      ?.contacts.get(candidate.id);
+    return (localContact?.confidenceBps ?? sharedContact?.confidenceBps ?? 0) > 0;
   }
 
   private inspectGroup(group: GroupState): GroupInspection {
@@ -2042,6 +2174,10 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private markMeaningfulProgress(): void {
     this.state.lastMeaningfulProgressTick = this.state.tick;
+  }
+
+  private isHostile(a: FactionId, b: FactionId): boolean {
+    return areHostile(this.setup.relations, a, b);
   }
 
   private emit(
@@ -2163,10 +2299,8 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
         cell: { ...object.cell },
       })),
     },
-    factions: setup.factions.map((faction) => ({ ...faction })) as [
-      (typeof setup.factions)[0],
-      (typeof setup.factions)[1],
-    ],
+    factions: setup.factions.map((faction) => ({ ...faction })),
+    relations: setup.relations.map((relation) => ({ ...relation })),
     groups: setup.groups.map((group) => ({
       ...group,
       spawn: { ...group.spawn },
