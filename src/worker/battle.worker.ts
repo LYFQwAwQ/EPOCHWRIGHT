@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import { createBattleSetup, createSimulation, TICK_DURATION_MS } from "../sim";
+import { createSimulation, TICK_DURATION_MS } from "../sim";
 import type { BattleEvent, BattleSimulation } from "../sim";
 import { recordMetric, summarizeMetrics } from "../performance/metrics";
 import type {
@@ -166,7 +166,7 @@ function initialize(command: Extract<WorkerCommand, { type: "initialize" }>): vo
   collectPerformance = command.collectPerformance === true;
   resetPerformanceSamples();
   const initializationStartedAt = collectPerformance ? performance.now() : 0;
-  simulation = createSimulation(createBattleSetup(command.options));
+  simulation = createSimulation(command.setup);
   initializationDurationMs = collectPerformance
     ? performance.now() - initializationStartedAt
     : 0;

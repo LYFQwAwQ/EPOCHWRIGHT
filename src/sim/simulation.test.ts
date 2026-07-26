@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   canTraverseStep,
   BATTLE_MAP_SCHEMA_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createPathfinder,
   createSimulation,
   generateBattleMap,
@@ -76,7 +76,7 @@ describe("battle simulation", () => {
 
   it("finishes an atomic movement step while known-contact goals update", () => {
     const simulation = createSimulation(
-      createBattleSetup({
+      createDemoBattleSetup({
         seed: "audit-2",
         width: 40,
         height: 28,
@@ -200,7 +200,7 @@ describe("battle simulation", () => {
   });
 
   it("repeats an entire autonomous battle with the same final hash", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "repeatable-battle",
       width: 40,
       height: 28,
@@ -261,7 +261,7 @@ function createFlatSetup(
   groups: readonly GroupSpawn[],
   ruleOverrides: Partial<BattleSetup["rules"]> = {},
 ): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "flat-test",
     width: 40,
     height: 24,

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createPathfinder,
   createSimulation,
   isWalkable,
@@ -21,11 +21,11 @@ import {
 
 describe("defense mode", () => {
   it("generates a legal reachable objective while conflict remains the default", () => {
-    const conflict = createBattleSetup({ seed: "conflict-regression", groupsPerFaction: 1 });
+    const conflict = createDemoBattleSetup({ seed: "conflict-regression", groupsPerFaction: 1 });
     expect(conflict.mode.kind).toBe("conflict");
     expect(createSimulation(conflict).getRenderFrame().objectives).toEqual([]);
 
-    const defense = createBattleSetup({
+    const defense = createDemoBattleSetup({
       seed: "defense-objective",
       mode: "defense",
       groupsPerFaction: 2,
@@ -329,7 +329,7 @@ describe("defense mode", () => {
   });
 
   it("keeps defense mode deterministic and conflict results backward compatible", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "defense-determinism",
       mode: "defense",
       groupsPerFaction: 2,
@@ -343,7 +343,7 @@ describe("defense mode", () => {
     expect(first.getResult()).toEqual(second.getResult());
 
     const conflict = createSimulation(
-      createBattleSetup({
+      createDemoBattleSetup({
         seed: "repeatable-battle",
         width: 40,
         height: 28,
@@ -360,7 +360,7 @@ describe("defense mode", () => {
   });
 
   it("keeps default attackers advancing through the fire line into the objective", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "defense-bravo",
       mode: "defense",
     });
@@ -483,7 +483,7 @@ function createDefenseSetup(
   groups: readonly GroupSpawn[],
   ruleOverrides: Partial<BattleSetup["rules"]> = {},
 ): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "defense-flat",
     width: map.width,
     height: map.height,

@@ -3,7 +3,6 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
-  BattleSetupOptions,
   EntityInspection,
   RenderFrame,
 } from "../sim/types";
@@ -57,7 +56,7 @@ function appendEvents(
 export interface BattleWorkerController {
   readonly state: BattleClientState;
   readonly start: (
-    options: BattleSetupOptions,
+    setup: BattleSetup,
     autostart?: boolean,
     collectPerformance?: boolean,
   ) => void;
@@ -92,7 +91,7 @@ export function useBattleWorker(): BattleWorkerController {
   }, []);
 
   const start = useCallback((
-    options: BattleSetupOptions,
+    setup: BattleSetup,
     autostart = true,
     collectPerformance = false,
   ) => {
@@ -191,7 +190,7 @@ export function useBattleWorker(): BattleWorkerController {
     worker.postMessage({
       type: "initialize",
       sessionId,
-      options,
+      setup,
       autostart,
       collectPerformance,
     } satisfies WorkerCommand);

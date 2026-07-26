@@ -10,7 +10,7 @@
 
 ### 1.1 纯规则测试
 
-位置：`src/sim/*.test.ts`，运行环境为 Node.js。
+位置：`src/sim/*.test.ts` 与 `src/demo/*.test.ts`，运行环境为 Node.js。
 
 适合：
 

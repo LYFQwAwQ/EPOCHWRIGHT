@@ -1,4 +1,4 @@
-import type { BattleSetupOptions } from "../sim/types";
+import type { DemoBattleSetupOptions } from "../demo";
 
 export type PerformanceProfile = "medium" | "large";
 
@@ -40,9 +40,9 @@ export function parsePerformanceProfile(value: string | null): PerformanceProfil
 }
 
 export function applyPerformanceProfile(
-  options: BattleSetupOptions,
+  options: DemoBattleSetupOptions,
   profile: PerformanceProfile | undefined,
-): BattleSetupOptions {
+): DemoBattleSetupOptions {
   if (!profile) {
     return options;
   }

@@ -296,28 +296,6 @@ export type BattleSetupInput = Omit<
   readonly reinforcements?: readonly ReinforcementWaveSetup[];
 };
 
-export interface BattleSetupOptions {
-  readonly seed?: string;
-  readonly battleId?: string;
-  readonly width?: number;
-  readonly height?: number;
-  readonly groupsPerFaction?: number;
-  readonly factions?: readonly FactionSetup[];
-  readonly relations?: readonly RelationSetup[];
-  readonly mountainDensity?: number;
-  readonly roughness?: number;
-  readonly waterCoverage?: number;
-  readonly wetlandCoverage?: number;
-  readonly treeCoverage?: number;
-  readonly rockCoverage?: number;
-  readonly wallCoverage?: number;
-  readonly maximumDurationSeconds?: number;
-  readonly stalemateSeconds?: number;
-  readonly mode?: BattleModeKind | BattleModeSetup | DefenseModeSetupInput;
-  readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
-  readonly reinforcements?: readonly ReinforcementWaveSetup[];
-}
-
 export type HealthState =
   | "healthy"
   | "wounded"

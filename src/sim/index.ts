@@ -3,7 +3,6 @@ export {
   createSimulation,
 } from "./simulation";
 export {
-  createBattleSetup,
   defenseObjectives,
   hashBattleSetup,
   reinforcementEntranceIds,
@@ -31,6 +30,7 @@ export {
   isWalkable,
   movementCostAt,
   movementCostAtIndex,
+  primaryAttackRouteCenterZ,
   squaredGridDistance,
   validateBattleMap,
 } from "./map";

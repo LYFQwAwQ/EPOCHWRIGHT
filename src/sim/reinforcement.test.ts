@@ -1,8 +1,8 @@
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createSimulation,
   type BattleMap,
   type BattleSetup,
@@ -141,7 +141,7 @@ interface ReinforcementScenarioOptions {
 }
 
 function createReinforcementSetup(options: ReinforcementScenarioOptions): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "reinforcement-test",
     width: 24,
     height: 20,

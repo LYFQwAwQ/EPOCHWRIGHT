@@ -11,10 +11,13 @@
 ## 1. 总体数据流
 
 ```text
-URL / future game systems
-          |
-          v
-BattleSetupOptions -> createBattleSetup -> validateBattleSetup
+URL demo controls -> createDemoBattleSetup --+
+                                              |
+future game systems -> complete BattleSetup --+
+                                              v
+                                      useBattleWorker
+                                              |
+                                  initialize(BattleSetup)
                                               |
                                               v
                                       BattleSimulation
@@ -27,28 +30,32 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
                     |                          |                        |
                     +------------- Worker protocol -------------------+
                                               |
-                                              v
-                                      useBattleWorker
-                                              |
                                     +---------+---------+
                                     v                   v
                               Three.js render         React UI
 ```
 
-主线程不直接创建或推进模拟。`battle.worker.ts` 拥有模拟实例，React 只管理会话、选择、镜头和观察界面。
+主线程可以生成演示输入或接收外部完整输入，但不创建或推进模拟。`battle.worker.ts` 拥有唯一模拟实例，React 只管理会话、选择、镜头和观察界面。
 
 ## 2. 依赖分层
 
 | 层 | 目录 | 可以依赖 | 不得依赖 |
 | --- | --- | --- | --- |
 | 领域核心 | `src/sim` | 纯 TypeScript、封装后的算法库 | React、Three.js、DOM、Worker、真实时间 |
+| 演示数据 | `src/demo` | `src/sim` 公共 API | Worker、React、模拟运行时状态 |
 | 线程适配 | `src/worker` | `src/sim` 公共 API、协议类型 | React、Three.js、UI 状态 |
 | 客户端适配 | `src/client` | Worker 协议、公开领域类型、React | 模拟内部状态和战斗规则 |
 | 3D 表现 | `src/render` | `RenderFrame`、事件、地图投影、Three.js | `sim/internal.ts`、权威状态修改 |
 | 观察 UI | `src/ui` | 公开投影和检查结果 | 运行时内部状态、战斗结算 |
 | 组合层 | `src/App.tsx` | Client、Render、UI | 具体命中或 AI 规则 |
 
-## 3. 模拟核心
+## 3. 标准输入与模拟核心
+
+### `src/demo/setup.ts`
+
+只负责把 seed、规模和演示模式等便利选项生成完整的当前版本 `BattleSetup`。生成结果在返回前走标准验证器；模块不创建模拟，也不属于外部系统必须依赖的战斗输入契约。
+
+网页演示显式配置三方关系，生成器无参默认仍为两方步枪编组。性能档位也只改写演示生成选项，最终仍向 Worker 发送完整 setup。
 
 ### `src/sim/types.ts`
 
@@ -69,9 +76,9 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/sim/setup.ts`
 
-负责从简化选项生成当前演示战斗，并严格验证完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离、目标和增援入口位置都使用步行通行规则；增援入口必须位于地图边缘，批次的每个撤离路线会从至少一个授权入口经过实际 A* 验证。`hashBattleSetup` 为全部静态规则输入生成确定性摘要。模拟生成器无参默认仍使用两势力，网页演示显式传入三方、八人小队和单目标防守配置；性能场景生成最多 500 个编组、单势力最多 250 个，输入可表达多个势力及敌对/中立/同盟关系。
+负责迁移、严格验证和哈希完整 `BattleSetup`。地图验证委托给统一的 `validateBattleMap`，出生、撤离、目标和增援入口位置都使用步行通行规则；增援入口必须位于地图边缘，批次的每个撤离路线会从至少一个授权入口经过实际 A* 验证。`hashBattleSetup` 为全部静态规则输入生成确定性摘要。
 
-未来外部城市系统接入后，随机演示生成器与标准输入验证应拆分，但所有来源仍必须走同一个验证器。
+演示、未来城市/养成系统和持久化加载器都通过相同的 `BattleSetup` 边界接入，并在创建运行时状态前走同一个验证器。
 
 ### `src/sim/map.ts`
 
@@ -133,7 +140,7 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 | 方向 | 类型 | 用途 |
 | --- | --- | --- |
-| 主线程 -> Worker | `initialize` | 创建带新 `sessionId` 的战斗 |
+| 主线程 -> Worker | `initialize` | 传入完整 `BattleSetup`，创建带新 `sessionId` 的战斗 |
 | 主线程 -> Worker | `run/pause` | 控制真实时间泵，不修改规则 |
 | 主线程 -> Worker | `step-debug` | 暂停后显式推进测试 tick |
 | 主线程 -> Worker | `inspect` | 请求单个实体详情 |
@@ -150,13 +157,13 @@ BattleSetupOptions -> createBattleSetup -> validateBattleSetup
 
 ### `src/worker/battle.worker.ts`
 
-负责真实时间累积、catch-up 上限、调用 `step()`、聚合事件和发布帧。它不拥有战斗规则。当前每 2 tick 发布帧，最多一次追赶 4 tick。
+负责验证并消费收到的完整 setup、真实时间累积、catch-up 上限、调用 `step()`、聚合事件和发布帧。它不生成演示数据，也不拥有战斗规则。当前每 2 tick 发布帧，最多一次追赶 4 tick。
 
 ## 5. 主线程适配
 
 ### `src/client/useBattleWorker.ts`
 
-React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。启动新战斗会终止旧 Worker，旧会话消息会被丢弃。显式性能模式还在客户端边界估算 Worker 消息载荷并采样同步消息处理耗时。
+React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。`start()` 接收完整 `BattleSetup`，可供演示生成器或未来更上层战斗会话服务调用；启动新战斗会终止旧 Worker，旧会话消息会被丢弃。显式性能模式还在客户端边界估算 Worker 消息载荷并采样同步消息处理耗时。
 
 此处不应计算伤亡、目标进度或胜负；它只组合 Worker 已给出的事实。
 
@@ -164,7 +171,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 应用组合层。负责：
 
-- 从 URL 读取 seed 和模式；
+- 从 URL 读取 seed 和模式，并调用独立演示生成器；
 - 启动、重开和切换模式；
 - 暂停、选择、镜头和纯净界面状态；
 - 将公开数据分发给 3D 场景和 UI；
@@ -201,6 +208,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 ## 8. 测试设施
 
 - `src/sim/*.test.ts`：Node 环境 Vitest，覆盖地图图层与移动规则、确定性和完整场景。
+- `src/demo/setup.test.ts`：覆盖演示生成结果、标准输入验证和 Worker 初始化边界。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
 - `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
@@ -222,7 +230,5 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 ## 10. 已知技术债
 
 - `simulation.ts` 调度范围较大，未来应按经过测试的规则域逐步提取。
-- 默认生成器仍以两势力为演示基线；多势力关系和延迟盟友情报复制已进入标准 `BattleSetup` 与模拟队列。
-- 演示 setup 生成和标准输入验证仍在同一文件。
 - 主包包含完整 Three.js 依赖，构建会提示超过 500KB；需要在功能边界稳定后做按路由或场景拆分。
 - 当前事件列表仅保留最近 160 条，不是回放日志。

@@ -1,0 +1,318 @@
+import {
+  BATTLE_RULES_VERSION,
+  BATTLE_SETUP_SCHEMA_VERSION,
+  SIMULATION_HZ,
+  defaultRelation,
+  generateBattleMap,
+  isWalkable,
+  primaryAttackRouteCenterZ,
+  validateBattleSetup,
+} from "../sim";
+import type {
+  BattleMap,
+  BattleModeKind,
+  BattleModeSetup,
+  BattleRules,
+  BattleSetup,
+  DefenseModeSetup,
+  DefenseModeSetupInput,
+  DefenseObjectiveSetup,
+  FactionSetup,
+  GridCoord,
+  GroupSpawn,
+  RelationSetup,
+  ReinforcementEntranceSetup,
+  ReinforcementWaveSetup,
+} from "../sim/types";
+
+export interface DemoBattleSetupOptions {
+  readonly seed?: string;
+  readonly battleId?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly groupsPerFaction?: number;
+  readonly factions?: readonly FactionSetup[];
+  readonly relations?: readonly RelationSetup[];
+  readonly mountainDensity?: number;
+  readonly roughness?: number;
+  readonly waterCoverage?: number;
+  readonly wetlandCoverage?: number;
+  readonly treeCoverage?: number;
+  readonly rockCoverage?: number;
+  readonly wallCoverage?: number;
+  readonly maximumDurationSeconds?: number;
+  readonly stalemateSeconds?: number;
+  readonly mode?: BattleModeKind | BattleModeSetup | DefenseModeSetupInput;
+  readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
+  readonly reinforcements?: readonly ReinforcementWaveSetup[];
+}
+
+const DEFAULT_FACTIONS: readonly FactionSetup[] = [
+  { id: "ember", displayName: "赤焰", color: "#e45f62" },
+  { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
+];
+
+const MAX_GENERATED_GROUP_COUNT = 500;
+const MAX_GENERATED_GROUPS_PER_FACTION = 250;
+
+export function createDemoBattleSetup(
+  options: DemoBattleSetupOptions = {},
+): BattleSetup {
+  const seed = options.seed ?? "epochwright-default";
+  const width = options.width ?? 48;
+  const height = options.height ?? 36;
+  const groupsPerFaction = options.groupsPerFaction ?? 3;
+
+  const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
+  if (factions.length < 2) {
+    throw new Error("A battle requires at least two factions.");
+  }
+  if (
+    !Number.isInteger(groupsPerFaction) ||
+    groupsPerFaction < 1 ||
+    groupsPerFaction > MAX_GENERATED_GROUPS_PER_FACTION ||
+    groupsPerFaction * factions.length > MAX_GENERATED_GROUP_COUNT
+  ) {
+    throw new Error(
+      `groupsPerFaction must be an integer that keeps the generated battle within ${MAX_GENERATED_GROUP_COUNT} groups and ${MAX_GENERATED_GROUPS_PER_FACTION} groups per faction.`,
+    );
+  }
+
+  const map = generateBattleMap({
+    seed,
+    width,
+    height,
+    mountainDensity: options.mountainDensity ?? 0.12,
+    roughness: options.roughness ?? 0.45,
+    waterCoverage: options.waterCoverage ?? 0.1,
+    wetlandCoverage: options.wetlandCoverage ?? 0.08,
+    treeCoverage: options.treeCoverage ?? 0.02,
+    rockCoverage: options.rockCoverage ?? 0.006,
+    wallCoverage: options.wallCoverage ?? 0.003,
+  });
+  const groups = createGroupSpawns(map, factions, groupsPerFaction);
+  const relations = (options.relations ?? createDefaultRelations(factions)).map((relation) => ({
+    ...relation,
+  }));
+  const mode: BattleModeSetup =
+    typeof options.mode === "object"
+      ? cloneMode(options.mode)
+      : options.mode === "defense"
+        ? createDefenseMode(map, factions)
+        : ({ kind: "conflict" } as const);
+  const rules: BattleRules = {
+    ticksPerSecond: SIMULATION_HZ,
+    sightRangeCells: 13,
+    weaponRangeCells: 11,
+    preferredRangeCells: 7,
+    sameFactionIntelDelayTicks: 15,
+    intelUpdateIntervalTicks: 10,
+    contactForgetTicks: 400,
+    resolutionStableTicks: 60,
+    stalemateTicks: Math.round((options.stalemateSeconds ?? 75) * SIMULATION_HZ),
+    maximumDurationTicks: Math.round(
+      (options.maximumDurationSeconds ?? 210) * SIMULATION_HZ,
+    ),
+  };
+
+  const setup: BattleSetup = {
+    schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
+    rulesVersion: BATTLE_RULES_VERSION,
+    battleId: options.battleId ?? `battle-${seed}`,
+    seed,
+    map,
+    factions,
+    relations,
+    groups,
+    reinforcementEntrances: (options.reinforcementEntrances ?? []).map(cloneEntrance),
+    reinforcements: (options.reinforcements ?? []).map(cloneWave),
+    mode,
+    rules,
+  };
+  validateBattleSetup(setup);
+  return setup;
+}
+
+function createDefaultRelations(factions: readonly FactionSetup[]): readonly RelationSetup[] {
+  const relations: RelationSetup[] = [];
+  for (let first = 0; first < factions.length; first += 1) {
+    for (let second = first + 1; second < factions.length; second += 1) {
+      relations.push(defaultRelation(factions[first]!.id, factions[second]!.id));
+    }
+  }
+  return relations;
+}
+
+function cloneEntrance(entrance: ReinforcementEntranceSetup): ReinforcementEntranceSetup {
+  return {
+    ...entrance,
+    cells: entrance.cells.map((cell) => ({ ...cell })),
+  };
+}
+
+function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
+  return {
+    ...wave,
+    entranceIds: wave.entranceIds ? [...wave.entranceIds] : undefined,
+    entranceZoneIds: wave.entranceZoneIds ? [...wave.entranceZoneIds] : undefined,
+    groups: wave.groups.map((group) => ({
+      ...group,
+      spawn: { ...group.spawn },
+      evacuation: { ...group.evacuation },
+      members: group.members.map((member) => ({ ...member })),
+    })),
+  };
+}
+
+function createDefenseMode(
+  map: BattleMap,
+  factions: readonly FactionSetup[],
+): DefenseModeSetup {
+  const targetX = Math.round((map.width - 1) * 0.7);
+  const corridorZ = Math.round(
+    primaryAttackRouteCenterZ(map.width, map.height, targetX),
+  );
+  const objective = {
+    id: "central-objective",
+    center: findNearestWalkable(map, { x: targetX, z: corridorZ }),
+    radiusCells: 2,
+  } satisfies DefenseObjectiveSetup;
+  return {
+    kind: "defense",
+    attackerFactionId: factions[0]!.id,
+    defenderFactionId: factions[1]!.id,
+    objective,
+    objectives: [objective],
+    objectiveRule: "all",
+  };
+}
+
+function findNearestWalkable(map: BattleMap, origin: GridCoord): GridCoord {
+  for (let radius = 0; radius < Math.max(map.width, map.height); radius += 1) {
+    const candidates: GridCoord[] = [];
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+          continue;
+        }
+        const candidate = { x: origin.x + dx, z: origin.z + dz };
+        if (isLegalDeployment(map, candidate)) {
+          candidates.push(candidate);
+        }
+      }
+    }
+    candidates.sort((a, b) => a.z * map.width + a.x - (b.z * map.width + b.x));
+    if (candidates[0]) {
+      return candidates[0];
+    }
+  }
+  throw new Error("Unable to place a legal defense objective.");
+}
+
+function createGroupSpawns(
+  map: BattleMap,
+  factions: readonly FactionSetup[],
+  groupsPerFaction: number,
+): readonly GroupSpawn[] {
+  const groups: GroupSpawn[] = [];
+  const occupied = new Set<number>();
+  const sideXs =
+    factions.length <= 2
+      ? [2, map.width - 3]
+      : [
+          2,
+          map.width - 3,
+          ...factions.slice(2).map((_, index) =>
+            Math.round(2 + ((index + 1) * (map.width - 5)) / factions.length),
+          ),
+        ];
+
+  for (let side = 0; side < factions.length; side += 1) {
+    const faction = factions[side]!;
+    for (let groupIndex = 0; groupIndex < groupsPerFaction; groupIndex += 1) {
+      const z = Math.round(((groupIndex + 1) * (map.height - 6)) / (groupsPerFaction + 1)) + 3;
+      const desiredSpawn = {
+        x: Math.min(map.width - 3, Math.max(2, sideXs[side] ?? 2)),
+        z: Math.min(map.height - 3, z),
+      };
+      const spawn = findAvailableSpawn(map, desiredSpawn, occupied);
+      occupied.add(spawn.z * map.width + spawn.x);
+      const groupId = `${faction.id}-squad-${groupIndex + 1}`;
+      groups.push({
+        id: groupId,
+        factionId: faction.id,
+        spawn,
+        evacuation: { ...spawn },
+        members: Array.from({ length: 8 }, (_, memberIndex) => ({
+          id: `${groupId}-member-${memberIndex + 1}`,
+        })),
+      });
+    }
+  }
+  return groups;
+}
+
+function findAvailableSpawn(
+  map: BattleMap,
+  origin: GridCoord,
+  occupied: ReadonlySet<number>,
+): GridCoord {
+  for (let radius = 0; radius < Math.max(map.width, map.height); radius += 1) {
+    const candidates: GridCoord[] = [];
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+          continue;
+        }
+        const candidate = { x: origin.x + dx, z: origin.z + dz };
+        const index = candidate.z * map.width + candidate.x;
+        if (isLegalDeployment(map, candidate) && !occupied.has(index)) {
+          candidates.push(candidate);
+        }
+      }
+    }
+    candidates.sort((a, b) => a.z * map.width + a.x - (b.z * map.width + b.x));
+    if (candidates[0]) {
+      return candidates[0];
+    }
+  }
+  throw new Error("Unable to place a unique legal faction spawn cell.");
+}
+
+function isLegalDeployment(map: BattleMap, coord: GridCoord): boolean {
+  if (
+    !Number.isInteger(coord.x) ||
+    !Number.isInteger(coord.z) ||
+    coord.x < 0 ||
+    coord.z < 0 ||
+    coord.x >= map.width ||
+    coord.z >= map.height
+  ) {
+    return false;
+  }
+  return isWalkable(map, coord);
+}
+
+function cloneMode(mode: BattleModeSetup | DefenseModeSetupInput): BattleModeSetup {
+  if (mode.kind !== "defense") {
+    return { kind: "conflict" };
+  }
+  const objectives = (mode.objectives ?? (mode.objective ? [mode.objective] : [])).map(
+    (objective) => ({
+      ...objective,
+      center: { ...objective.center },
+    }),
+  );
+  const primaryObjective = mode.objective ?? objectives[0];
+  if (!primaryObjective) {
+    throw new Error("Defense mode requires at least one objective.");
+  }
+  return {
+    ...mode,
+    objective: {
+      ...primaryObjective,
+      center: { ...primaryObjective.center },
+    },
+    objectives,
+  };
+}

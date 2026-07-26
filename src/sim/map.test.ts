@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   BATTLE_RULES_VERSION,
@@ -10,7 +11,6 @@ import {
   WATER_DEPTH_UNITS,
   canTraverseStep,
   cellIndex,
-  createBattleSetup,
   createPathfinder,
   createSimulation,
   generateBattleMap,
@@ -150,7 +150,7 @@ describe("standard terrain layers", () => {
       }),
     ).toThrow(/aspect ratio/i);
     expect(() =>
-      createBattleSetup({
+      createDemoBattleSetup({
         seed: "generated-group-budget",
         groupsPerFaction: 251,
       }),
@@ -208,7 +208,7 @@ describe("standard terrain layers", () => {
   });
 
   it("keeps deployments and a defense attack route legal on composite terrain", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "composite-defense-route",
       width: 56,
       height: 42,
@@ -236,7 +236,7 @@ describe("standard terrain layers", () => {
       .map((group) => pathfinder.findPath(group.spawn, mode.objective.center));
     expect(attackPaths.every((path) => path.length > 1)).toBe(true);
 
-    const disconnected = createBattleSetup({
+    const disconnected = createDemoBattleSetup({
       seed: "disconnected-defense-route",
       width: 40,
       height: 24,
@@ -256,7 +256,7 @@ describe("standard terrain layers", () => {
     }
     expect(() => validateBattleSetup(disconnected)).toThrow(/attack route/i);
 
-    const disconnectedDefender = createBattleSetup({
+    const disconnectedDefender = createDemoBattleSetup({
       seed: "disconnected-defense-position",
       width: 40,
       height: 24,
@@ -277,7 +277,7 @@ describe("standard terrain layers", () => {
     }
     expect(() => validateBattleSetup(disconnectedDefender)).toThrow(/defense route/i);
 
-    const evacuationBase = createBattleSetup({
+    const evacuationBase = createDemoBattleSetup({
       seed: "disconnected-evacuation-route",
       width: 40,
       height: 24,
@@ -311,7 +311,7 @@ describe("standard terrain layers", () => {
     }
     expect(() => validateBattleSetup(evacuationDisconnected)).toThrow(/evacuation cell/i);
 
-    const disconnectedConflict = createBattleSetup({
+    const disconnectedConflict = createDemoBattleSetup({
       seed: "disconnected-conflict-route",
       width: 40,
       height: 24,
@@ -544,13 +544,13 @@ describe("standard terrain layers", () => {
   });
 
   it("rejects spawns and defense objectives placed in deep water", () => {
-    const conflict = createBattleSetup({ seed: "deep-spawn", groupsPerFaction: 1 });
+    const conflict = createDemoBattleSetup({ seed: "deep-spawn", groupsPerFaction: 1 });
     const spawn = conflict.groups[0]!.spawn;
     conflict.map.layers.waterDepthUnits[spawn.z * conflict.map.width + spawn.x] =
       WATER_DEPTH_UNITS.deep;
     expect(() => validateBattleSetup(conflict)).toThrow(/illegal spawn/i);
 
-    const evacuationBase = createBattleSetup({ seed: "deep-evacuation", groupsPerFaction: 1 });
+    const evacuationBase = createDemoBattleSetup({ seed: "deep-evacuation", groupsPerFaction: 1 });
     const spawnIndices = new Set(
       evacuationBase.groups.map(
         (group) => group.spawn.z * evacuationBase.map.width + group.spawn.x,
@@ -584,7 +584,7 @@ describe("standard terrain layers", () => {
       WATER_DEPTH_UNITS.deep;
     expect(() => validateBattleSetup(evacuation)).toThrow(/illegal evacuation/i);
 
-    const defense = createBattleSetup({
+    const defense = createDemoBattleSetup({
       seed: "deep-objective",
       groupsPerFaction: 1,
       mode: "defense",
@@ -599,8 +599,8 @@ describe("standard terrain layers", () => {
   });
 
   it("versions, clones, and hashes authoritative map layers", () => {
-    const firstSetup = createBattleSetup({ seed: "terrain-hash", groupsPerFaction: 1 });
-    const secondSetup = createBattleSetup({ seed: "terrain-hash", groupsPerFaction: 1 });
+    const firstSetup = createDemoBattleSetup({ seed: "terrain-hash", groupsPerFaction: 1 });
+    const secondSetup = createDemoBattleSetup({ seed: "terrain-hash", groupsPerFaction: 1 });
     expect(firstSetup.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
     expect(firstSetup.rulesVersion).toBe(BATTLE_RULES_VERSION);
     expect(firstSetup.map.schemaVersion).toBe(BATTLE_MAP_SCHEMA_VERSION);

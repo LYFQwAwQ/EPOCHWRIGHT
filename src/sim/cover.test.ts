@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   STATIC_OBJECT_DEFINITIONS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createSimulation,
   type BattleMap,
   type BattleSetup,
@@ -247,7 +247,7 @@ function createCoverSetup(
   seed = "directional-cover",
   weaponRangeCells = 1,
 ): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed,
     width: 40,
     height: 24,

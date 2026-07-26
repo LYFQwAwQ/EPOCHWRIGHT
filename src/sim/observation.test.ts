@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createBattleSetup, createSimulation, type GroupInspection } from "./index";
+import { createDemoBattleSetup } from "../demo";
+import { createSimulation, type GroupInspection } from "./index";
 
 describe("observation projections", () => {
   it("keeps unknown enemy groups and members out of a faction view", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "observation-view",
       width: 36,
       height: 24,
@@ -33,7 +34,7 @@ describe("observation projections", () => {
   });
 
   it("projects a known contact without exposing combat details", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "observation-contact",
       width: 36,
       height: 24,
@@ -71,7 +72,7 @@ describe("observation projections", () => {
   });
 
   it("does not let view projection affect deterministic progression", () => {
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "observation-hash",
       width: 36,
       height: 24,

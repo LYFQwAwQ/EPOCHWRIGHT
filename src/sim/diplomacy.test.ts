@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   BATTLE_RULES_VERSION,
@@ -7,7 +8,6 @@ import {
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createSimulation,
   defaultRelation,
   migrateBattleSetup,
@@ -29,7 +29,7 @@ describe("multi-faction diplomacy", () => {
       { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
       { id: "olive", displayName: "橄榄", color: "#7c9a52" },
     ];
-    const setup = createBattleSetup({
+    const setup = createDemoBattleSetup({
       seed: "generated-three-factions",
       width: 40,
       height: 24,
@@ -80,7 +80,7 @@ describe("multi-faction diplomacy", () => {
   });
 
   it("migrates the original two-faction setup to hostile relations", () => {
-    const current = createBattleSetup({ seed: "diplomacy-migration", groupsPerFaction: 1 });
+    const current = createDemoBattleSetup({ seed: "diplomacy-migration", groupsPerFaction: 1 });
     const { relations: _relations, ...withoutRelations } = current;
     const legacy = {
       ...withoutRelations,
@@ -329,7 +329,7 @@ function createThreeFactionSetup(
   ruleOverrides: Partial<BattleSetup["rules"]> = {},
   relationsOverride?: readonly RelationSetup[],
 ): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "diplomacy-flat",
     width: 40,
     height: 24,

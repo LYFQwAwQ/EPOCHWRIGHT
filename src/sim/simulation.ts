@@ -48,7 +48,6 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
-  BattleSetupInput,
   BattleSimulation,
   BattleTerminationReason,
   CoverEvaluationReason,
@@ -135,7 +134,7 @@ type PendingBattleEvent = BattleEvent extends infer Event
     : never
   : never;
 
-export function createSimulation(setup: BattleSetupInput): BattleSimulation {
+export function createSimulation(setup: BattleSetup): BattleSimulation {
   return new StageOneBattleSimulation(setup);
 }
 
@@ -150,7 +149,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private readonly walkableComponentIds: Int32Array;
   private readonly setupHash: string;
 
-  constructor(inputSetup: BattleSetupInput) {
+  constructor(inputSetup: BattleSetup) {
     const normalizedSetup = migrateBattleSetup(inputSetup);
     validateBattleSetup(normalizedSetup);
     this.setup = cloneSetup(normalizedSetup);

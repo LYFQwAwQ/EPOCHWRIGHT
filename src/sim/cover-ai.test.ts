@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { createDemoBattleSetup } from "../demo";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
   STATIC_OBJECT_DEFINITIONS,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
-  createBattleSetup,
   createSimulation,
   type BattleMap,
   type BattleSetup,
@@ -93,7 +93,7 @@ describe("limited-intelligence cover AI", () => {
 });
 
 function createDefenseSetup(map: BattleMap): BattleSetup {
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "cover-defense-ai",
     width: map.width,
     height: map.height,
@@ -137,7 +137,7 @@ function createSuppressionScenario(
     ? [createStaticObject("threat-wall", "wall", 12, 11, 0)]
     : [];
   const map = createFlatMap(staticObjects);
-  const base = createBattleSetup({
+  const base = createDemoBattleSetup({
     seed: "cover-suppression-ai",
     width: map.width,
     height: map.height,

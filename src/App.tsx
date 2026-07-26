@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
+import { createDemoBattleSetup, type DemoBattleSetupOptions } from "./demo";
 import { recordMetric, summarizeMetrics } from "./performance/metrics";
 import {
   applyPerformanceProfile,
@@ -14,7 +15,6 @@ import {
   type BattleEvent,
   type BattleModeKind,
   type BattleSetup,
-  type BattleSetupOptions,
   type FactionSetup,
   type GroupInspection,
 } from "./sim/types";
@@ -33,7 +33,7 @@ const DEFAULT_FACTIONS: readonly FactionSetup[] = [
   { id: "olive", displayName: "橄榄", color: "#7c9a52" },
 ];
 
-const DEFAULT_OPTIONS: BattleSetupOptions = {
+const DEFAULT_OPTIONS: DemoBattleSetupOptions = {
   width: 56,
   height: 42,
   groupsPerFaction: 4,
@@ -169,13 +169,15 @@ export function App() {
   useEffect(() => {
     const performanceProfile = performanceProfileRef.current;
     start(
-      applyPerformanceProfile(
-        {
-          ...DEFAULT_OPTIONS,
-          seed: initialSeedRef.current,
-          mode: initialModeRef.current,
-        },
-        performanceProfile,
+      createDemoBattleSetup(
+        applyPerformanceProfile(
+          {
+            ...DEFAULT_OPTIONS,
+            seed: initialSeedRef.current,
+            mode: initialModeRef.current,
+          },
+          performanceProfile,
+        ),
       ),
       autostart,
       performanceProfile !== undefined,
@@ -230,9 +232,11 @@ export function App() {
     setCameraResetSignal((value) => value + 1);
     updateBattleUrl(nextSeed, battleMode);
     start(
-      applyPerformanceProfile(
-        { ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode },
-        performanceProfileRef.current,
+      createDemoBattleSetup(
+        applyPerformanceProfile(
+          { ...DEFAULT_OPTIONS, seed: nextSeed, mode: battleMode },
+          performanceProfileRef.current,
+        ),
       ),
       true,
       performanceProfileRef.current !== undefined,
@@ -254,9 +258,11 @@ export function App() {
       setCameraResetSignal((value) => value + 1);
       updateBattleUrl(nextSeed, nextMode);
       start(
-        applyPerformanceProfile(
-          { ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode },
-          performanceProfileRef.current,
+        createDemoBattleSetup(
+          applyPerformanceProfile(
+            { ...DEFAULT_OPTIONS, seed: nextSeed, mode: nextMode },
+            performanceProfileRef.current,
+          ),
         ),
         true,
         performanceProfileRef.current !== undefined,

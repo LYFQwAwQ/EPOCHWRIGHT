@@ -2,7 +2,6 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
-  BattleSetupOptions,
   EntityInspection,
   RenderFrame,
   SimulationStatus,
@@ -19,7 +18,7 @@ export type WorkerCommand =
   | {
       readonly type: "initialize";
       readonly sessionId: string;
-      readonly options: BattleSetupOptions;
+      readonly setup: BattleSetup;
       readonly autostart: boolean;
       readonly collectPerformance?: boolean;
     }
