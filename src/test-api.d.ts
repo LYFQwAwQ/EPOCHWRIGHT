@@ -45,6 +45,7 @@ interface BattleTestApi {
     paths: boolean;
   };
   getPerformanceProfile(): "medium" | "large" | undefined;
+  getRenderQuality(): "low" | "medium" | "high";
   getPerformanceMetrics(): {
     worker?: {
       initializationDurationMs: number;

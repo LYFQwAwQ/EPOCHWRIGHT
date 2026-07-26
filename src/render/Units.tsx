@@ -2,6 +2,7 @@ import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef } from "react";
 import { InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
 import type { RenderFrame, RenderMember } from "../sim/types";
+import { visualWorldY } from "./elevation";
 
 interface UnitsProps {
   readonly frame: RenderFrame;
@@ -32,7 +33,8 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
     }
 
     members.forEach((member, index) => {
-      const target = new Vector3(member.worldX, member.worldY + 1.05, member.worldZ);
+      const groundY = visualWorldY(member.worldY);
+      const target = new Vector3(member.worldX, groundY + 1.05, member.worldZ);
       let current = currentPositions.current.get(member.id);
       if (!current) {
         current = target.clone();
@@ -44,7 +46,7 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
       const inactive = member.health === "dead" || member.health === "incapacitated";
       dummy.position.copy(current);
       if (inactive) {
-        dummy.position.y = member.worldY + 0.48;
+        dummy.position.y = groundY + 0.48;
         dummy.quaternion.copy(proneQuaternion);
         dummy.scale.set(0.78, 0.78, 0.78);
       } else {
@@ -121,7 +123,10 @@ export function SquadMarkers({
         const routed = group.action === "routing";
         const factionColor = factionColors[group.factionId] ?? "#ffffff";
         return (
-          <group key={group.id} position={[group.worldX, group.worldY, group.worldZ]}>
+          <group
+            key={group.id}
+            position={[group.worldX, visualWorldY(group.worldY), group.worldZ]}
+          >
             <mesh
               position={[0, 0.1, 0]}
               rotation={[-Math.PI / 2, 0, 0]}

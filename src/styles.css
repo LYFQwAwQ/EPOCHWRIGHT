@@ -280,6 +280,30 @@ button:focus-visible {
   gap: 6px;
 }
 
+.quality-select {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-soft);
+  background: #171b20;
+}
+
+.quality-select select {
+  min-width: 42px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 .icon-button,
 .segmented-icons button {
   display: grid;
@@ -993,6 +1017,11 @@ button:focus-visible {
   .toolbar-actions > .icon-button:nth-of-type(2),
   .brand-lockup span {
     display: none;
+  }
+
+  .quality-select {
+    height: 30px;
+    padding: 0 4px;
   }
 
   .mode-switch button {

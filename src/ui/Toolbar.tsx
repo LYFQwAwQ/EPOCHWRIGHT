@@ -8,9 +8,11 @@ import {
   RefreshCw,
   RotateCcw,
   Shield,
+  SlidersHorizontal,
   Swords,
 } from "lucide-react";
 import type { CameraMode } from "../render/Battlefield";
+import type { RenderQuality } from "../render/quality";
 
 interface ToolbarProps {
   readonly battleMode: "conflict" | "defense";
@@ -21,12 +23,14 @@ interface ToolbarProps {
   readonly tick: number;
   readonly statusLabel: string;
   readonly seed: string;
+  readonly quality: RenderQuality;
   readonly onTogglePause: () => void;
   readonly onBattleModeChange: (mode: "conflict" | "defense") => void;
   readonly onRestart: () => void;
   readonly onResetCamera: () => void;
   readonly onToggleCleanView: () => void;
   readonly onCameraModeChange: (mode: CameraMode) => void;
+  readonly onQualityChange: (quality: RenderQuality) => void;
 }
 
 function formatBattleTime(tick: number): string {
@@ -46,12 +50,14 @@ export function Toolbar({
   tick,
   statusLabel,
   seed,
+  quality,
   onTogglePause,
   onBattleModeChange,
   onRestart,
   onResetCamera,
   onToggleCleanView,
   onCameraModeChange,
+  onQualityChange,
 }: ToolbarProps) {
   return (
     <header className={`toolbar ${cleanView ? "toolbar--clean" : ""}`}>
@@ -149,6 +155,18 @@ export function Toolbar({
             >
               <RotateCcw size={17} />
             </button>
+            <label className="quality-select">
+              <SlidersHorizontal size={15} aria-hidden="true" />
+              <select
+                aria-label="画质"
+                value={quality}
+                onChange={(event) => onQualityChange(event.target.value as RenderQuality)}
+              >
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </label>
           </>
         )}
 

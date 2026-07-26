@@ -6,6 +6,7 @@ import {
   Uint32BufferAttribute,
 } from "three";
 import type { BattleMap, RenderObjective } from "../sim/types";
+import { visualMapHeightMeters, visualWorldY } from "./elevation";
 
 interface ObjectivesProps {
   readonly map: BattleMap;
@@ -17,7 +18,6 @@ const SEGMENTS = 64;
 
 function sampleTerrainHeight(map: BattleMap, worldX: number, worldZ: number): number {
   const cellSize = map.cellSizeMm / 1_000;
-  const heightUnit = map.heightUnitMm / 1_000;
   const gridX = Math.min(map.width - 1, Math.max(0, worldX / cellSize));
   const gridZ = Math.min(map.height - 1, Math.max(0, worldZ / cellSize));
   const x0 = Math.floor(gridX);
@@ -27,7 +27,7 @@ function sampleTerrainHeight(map: BattleMap, worldX: number, worldZ: number): nu
   const tx = gridX - x0;
   const tz = gridZ - z0;
   const heightAt = (x: number, z: number) =>
-    (map.layers.heightUnits[z * map.width + x] ?? 0) * heightUnit;
+    visualMapHeightMeters(map, map.layers.heightUnits[z * map.width + x] ?? 0);
   const top = heightAt(x0, z0) * (1 - tx) + heightAt(x1, z0) * tx;
   const bottom = heightAt(x0, z1) * (1 - tx) + heightAt(x1, z1) * tx;
   return top * (1 - tz) + bottom * tz;
@@ -210,11 +210,11 @@ function ObjectiveZone({ map, objective, factionColors }: ObjectiveZoneProps) {
           />
         </mesh>
       )}
-      <mesh position={[objective.worldX, objective.worldY + 3.3, objective.worldZ]}>
+      <mesh position={[objective.worldX, visualWorldY(objective.worldY) + 3.3, objective.worldZ]}>
         <octahedronGeometry args={[1.05, 0]} />
         <meshBasicMaterial color={color} toneMapped={false} />
       </mesh>
-      <mesh position={[objective.worldX, objective.worldY + 1.55, objective.worldZ]}>
+      <mesh position={[objective.worldX, visualWorldY(objective.worldY) + 1.55, objective.worldZ]}>
         <cylinderGeometry args={[0.12, 0.12, 3.1, 8]} />
         <meshBasicMaterial color="#f0c765" toneMapped={false} />
       </mesh>

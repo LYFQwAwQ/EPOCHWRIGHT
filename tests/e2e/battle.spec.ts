@@ -255,6 +255,27 @@ test("narrow viewport keeps a nonblank battlefield and stable controls", async (
   expect(errors).toEqual([]);
 });
 
+test("quality changes stay in the renderer and preserve the battle hash", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?e2e=1&autostart=0&seed=e2e-quality");
+  await page.waitForFunction(
+    () => window.__battleTest?.getStatus() === "paused" && Boolean(document.querySelector("canvas")),
+  );
+
+  const initialHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  expect(await page.evaluate(() => window.__battleTest?.getRenderQuality())).toBe("high");
+  const quality = page.getByLabel("画质");
+  await quality.selectOption("low");
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getRenderQuality())).toBe("low");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(initialHash);
+
+  await quality.selectOption("medium");
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getRenderQuality())).toBe("medium");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(initialHash);
+  expect(errors).toEqual([]);
+});
+
 test("faction observation projects only authorized groups and independent layers", async ({ page }) => {
   const errors = collectErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });

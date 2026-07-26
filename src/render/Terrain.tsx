@@ -13,6 +13,7 @@ import {
   WATER_DEPTH_UNITS,
   type BattleMap,
 } from "../sim";
+import { visualCellGroundHeight, visualMapHeightMeters } from "./elevation";
 import { StaticObjects } from "./StaticObjects";
 
 interface TerrainProps {
@@ -70,7 +71,6 @@ function terrainColor(
 function buildTerrainGeometry(map: BattleMap): BufferGeometry {
   const geometry = new BufferGeometry();
   const cellSize = map.cellSizeMm / 1_000;
-  const heightUnit = map.heightUnitMm / 1_000;
   const positions = new Float32Array(map.width * map.height * 3);
   const colors = new Float32Array(map.width * map.height * 3);
   const indices = new Uint32Array((map.width - 1) * (map.height - 1) * 6);
@@ -88,7 +88,7 @@ function buildTerrainGeometry(map: BattleMap): BufferGeometry {
       );
 
       positions[offset] = x * cellSize;
-      positions[offset + 1] = height * heightUnit;
+      positions[offset + 1] = visualMapHeightMeters(map, height);
       positions[offset + 2] = z * cellSize;
       colors[offset] = color.r;
       colors[offset + 1] = color.g;
@@ -158,12 +158,11 @@ function applyWaterMatrices(
   }
   const dummy = new Object3D();
   const cellSize = map.cellSizeMm / 1_000;
-  const heightUnit = map.heightUnitMm / 1_000;
   cells.forEach((cellIndex, instanceIndex) => {
     const hash = Math.imul(cellIndex + 71, 2_246_822_519) >>> 0;
     dummy.position.set(
       (cellIndex % map.width) * cellSize,
-      (map.layers.heightUnits[cellIndex] ?? 0) * heightUnit + elevation,
+      visualCellGroundHeight(map, cellIndex) + elevation,
       Math.floor(cellIndex / map.width) * cellSize,
     );
     dummy.rotation.set(0, irregular ? (hash % 314) / 100 : 0, 0);

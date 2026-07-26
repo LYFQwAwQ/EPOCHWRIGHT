@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
 import {
   DEMO_SCENARIOS,
@@ -14,7 +14,12 @@ import {
   applyPerformanceProfile,
   parsePerformanceProfile,
 } from "./performance/profiles";
-import { Battlefield, type CameraMode } from "./render/Battlefield";
+import type { CameraMode } from "./render/Battlefield";
+import {
+  DEFAULT_RENDER_QUALITY,
+  parseRenderQuality,
+  type RenderQuality,
+} from "./render/quality";
 import {
   MAP_CELL_FLAGS,
   SURFACE_TYPE_IDS,
@@ -31,6 +36,12 @@ import { ObjectiveSummary } from "./ui/ObjectiveSummary";
 import { ObservationControls, type ObservationLayers } from "./ui/ObservationControls";
 import { ScenarioLab } from "./ui/ScenarioLab";
 import { Toolbar } from "./ui/Toolbar";
+
+const Battlefield = lazy(() =>
+  import("./render/Battlefield").then(({ Battlefield: Component }) => ({
+    default: Component,
+  })),
+);
 
 type BattleModeSelection = BattleModeKind;
 
@@ -59,6 +70,11 @@ function initialPerformanceProfile() {
   return parsePerformanceProfile(new URLSearchParams(window.location.search).get("profile"));
 }
 
+function initialRenderQuality(): RenderQuality {
+  const value = new URLSearchParams(window.location.search).get("quality");
+  return value === null ? DEFAULT_RENDER_QUALITY : parseRenderQuality(value);
+}
+
 function updateBattleUrl(
   seed: string,
   mode: BattleModeSelection,
@@ -68,6 +84,12 @@ function updateBattleUrl(
   url.searchParams.set("seed", seed);
   url.searchParams.set("mode", mode);
   url.searchParams.set("scenario", scenarioId);
+  window.history.replaceState(null, "", url);
+}
+
+function updateRenderQualityUrl(quality: RenderQuality): void {
+  const url = new URL(window.location.href);
+  url.searchParams.set("quality", quality);
   window.history.replaceState(null, "", url);
 }
 
@@ -138,6 +160,7 @@ export function App() {
   const [selectedGroupId, setSelectedGroupId] = useState<string>();
   const [cleanView, setCleanView] = useState(false);
   const [cameraMode, setCameraMode] = useState<CameraMode>("free");
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>(initialRenderQuality);
   const [cameraResetSignal, setCameraResetSignal] = useState(0);
   const [observerFactionId, setObserverFactionId] = useState<string>();
   const [observationLayers, setObservationLayers] = useState<ObservationLayers>({
@@ -424,6 +447,7 @@ export function App() {
       getObservation: () => observerFactionId ?? "omniscient",
       getLayerVisibility: () => ({ ...observationLayers }),
       getPerformanceProfile: () => performanceProfileRef.current,
+      getRenderQuality: () => renderQuality,
       getPerformanceMetrics: () => ({
         ...getPerformanceSnapshot(),
         animationFrameIntervalMs: summarizeMetrics(animationFrameDurationsRef.current),
@@ -443,7 +467,7 @@ export function App() {
       run,
       step: stepDebug,
     };
-  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, resetPerformance, run, scenarioId, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
+  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -464,18 +488,21 @@ export function App() {
       }`}
     >
       <section className="battle-stage" aria-label="三维自动战场">
-        <Battlefield
-          key={state.setup.battleId}
-          map={state.setup.map}
-          frame={frameForUi}
-          events={visibleEvents}
-          factionColors={factionColors}
-          showObjectives={observationLayers.objectives}
-          selectedGroupId={selectedGroupId}
-          cameraMode={cameraMode}
-          resetSignal={cameraResetSignal}
-          onSelectGroup={selectGroup}
-        />
+        <Suspense fallback={null}>
+          <Battlefield
+            key={state.setup.battleId}
+            map={state.setup.map}
+            frame={frameForUi}
+            events={visibleEvents}
+            factionColors={factionColors}
+            showObjectives={observationLayers.objectives}
+            selectedGroupId={selectedGroupId}
+            cameraMode={cameraMode}
+            resetSignal={cameraResetSignal}
+            onSelectGroup={selectGroup}
+            quality={renderQuality}
+          />
+        </Suspense>
       </section>
 
       <Toolbar
@@ -487,6 +514,7 @@ export function App() {
         tick={tick}
         statusLabel={statusLabel}
         seed={seed}
+        quality={renderQuality}
         onTogglePause={state.status === "paused" ? run : pause}
         onBattleModeChange={changeBattleMode}
         onRestart={restart}
@@ -494,6 +522,10 @@ export function App() {
         onToggleCleanView={() => setCleanView((value) => !value)}
         onCameraModeChange={(mode) => {
           setCameraMode(mode === "follow" && !selectedGroupId ? "free" : mode);
+        }}
+        onQualityChange={(quality) => {
+          setRenderQuality(quality);
+          updateRenderQualityUrl(quality);
         }}
       />
 

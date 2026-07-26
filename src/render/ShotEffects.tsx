@@ -2,10 +2,12 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import { InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
 import type { BattleEvent, RenderFrame } from "../sim/types";
+import { visualWorldY } from "./elevation";
 
 interface ShotEffectsProps {
   readonly events: readonly BattleEvent[];
   readonly frame: RenderFrame;
+  readonly maxTracers: number;
 }
 
 interface Tracer {
@@ -16,7 +18,6 @@ interface Tracer {
   readonly durationMs: number;
 }
 
-const MAX_TRACERS = 96;
 const tracerAxis = new Vector3(0, 0, 1);
 const hiddenScale = new Vector3(0, 0, 0);
 
@@ -27,7 +28,7 @@ function deterministicUnit(value: number): number {
   return ((hash ^ (hash >>> 16)) >>> 0) / 0x1_0000_0000;
 }
 
-export function ShotEffects({ events, frame }: ShotEffectsProps) {
+export function ShotEffects({ events, frame, maxTracers }: ShotEffectsProps) {
   const tracerMeshRef = useRef<InstancedMesh>(null);
   const impactMeshRef = useRef<InstancedMesh>(null);
   const tracersRef = useRef<Tracer[]>([]);
@@ -60,13 +61,24 @@ export function ShotEffects({ events, frame }: ShotEffectsProps) {
         continue;
       }
 
-      const visualCount = Math.min(3, Math.max(1, Math.ceil(event.shotCount / 4)));
+      const visualCount = Math.min(
+        3,
+        Math.max(1, Math.ceil(event.shotCount / 4)),
+      );
       for (let visualIndex = 0; visualIndex < visualCount; visualIndex += 1) {
         const seed = event.tick * 131 + event.sequence * 17 + visualIndex * 911;
         const lateral = (deterministicUnit(seed) - 0.5) * 2.6;
         const vertical = (deterministicUnit(seed + 1) - 0.5) * 1.1;
-        const from = new Vector3(shooter.worldX, shooter.worldY + 1.75, shooter.worldZ);
-        const to = new Vector3(target.worldX, target.worldY + 1.15 + vertical, target.worldZ);
+        const from = new Vector3(
+          shooter.worldX,
+          visualWorldY(shooter.worldY) + 1.75,
+          shooter.worldZ,
+        );
+        const to = new Vector3(
+          target.worldX,
+          visualWorldY(target.worldY) + 1.15 + vertical,
+          target.worldZ,
+        );
         perpendicular.set(-(to.z - from.z), 0, to.x - from.x).normalize();
         from.addScaledVector(perpendicular, lateral * 0.22);
         to.addScaledVector(perpendicular, lateral);
@@ -81,14 +93,14 @@ export function ShotEffects({ events, frame }: ShotEffectsProps) {
     }
 
     if (additions.length > 0) {
-      tracersRef.current = [...tracersRef.current, ...additions].slice(-MAX_TRACERS);
+      tracersRef.current = [...tracersRef.current, ...additions].slice(-maxTracers);
     }
     if (seenEventsRef.current.size > 4_096) {
       seenEventsRef.current = new Set(
         events.slice(-256).map((event) => `${event.tick}:${event.sequence}`),
       );
     }
-  }, [events, frame.groups, perpendicular]);
+  }, [events, frame.groups, maxTracers, perpendicular]);
 
   useFrame(() => {
     const tracerMesh = tracerMeshRef.current;
@@ -103,7 +115,7 @@ export function ShotEffects({ events, frame }: ShotEffectsProps) {
     );
     tracersRef.current = active;
 
-    for (let index = 0; index < MAX_TRACERS; index += 1) {
+    for (let index = 0; index < maxTracers; index += 1) {
       const tracer = active[index];
       if (!tracer || now < tracer.startedAt) {
         dummy.position.set(0, 0, 0);
@@ -147,7 +159,8 @@ export function ShotEffects({ events, frame }: ShotEffectsProps) {
     <group>
       <instancedMesh
         ref={tracerMeshRef}
-        args={[undefined, undefined, MAX_TRACERS]}
+        key={`tracer-mesh-${maxTracers}`}
+        args={[undefined, undefined, maxTracers]}
         frustumCulled={false}
       >
         <boxGeometry args={[0.18, 0.18, 1]} />
@@ -155,7 +168,8 @@ export function ShotEffects({ events, frame }: ShotEffectsProps) {
       </instancedMesh>
       <instancedMesh
         ref={impactMeshRef}
-        args={[undefined, undefined, MAX_TRACERS]}
+        key={`impact-mesh-${maxTracers}`}
+        args={[undefined, undefined, maxTracers]}
         frustumCulled={false}
       >
         <octahedronGeometry args={[0.75, 0]} />

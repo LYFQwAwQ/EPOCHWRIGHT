@@ -4,6 +4,8 @@ import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
 import type CameraControlsImpl from "camera-controls";
 import { Vector3 } from "three";
 import type { BattleEvent, BattleMap, RenderFrame } from "../sim/types";
+import { visualWorldY } from "./elevation";
+import { getRenderQualitySettings, type RenderQuality } from "./quality";
 import { ShotEffects } from "./ShotEffects";
 import { Objectives } from "./Objectives";
 import { Terrain } from "./Terrain";
@@ -77,7 +79,12 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
     }
     const selected = frame.groups.find((group) => group.id === selectedGroupId);
     if (selected) {
-      controlsRef.current?.setTarget(selected.worldX, selected.worldY, selected.worldZ, true);
+      controlsRef.current?.setTarget(
+        selected.worldX,
+        visualWorldY(selected.worldY),
+        selected.worldZ,
+        true,
+      );
     }
   });
 
@@ -118,6 +125,7 @@ interface BattlefieldProps {
   readonly cameraMode: CameraMode;
   readonly resetSignal: number;
   readonly onSelectGroup: (groupId?: string) => void;
+  readonly quality: RenderQuality;
 }
 
 export function Battlefield({
@@ -130,12 +138,15 @@ export function Battlefield({
   cameraMode,
   resetSignal,
   onSelectGroup,
+  quality,
 }: BattlefieldProps) {
+  const qualitySettings = getRenderQualitySettings(quality);
+
   return (
     <Canvas
       className="battle-canvas"
-      dpr={[1, 1.7]}
-      shadows
+      dpr={qualitySettings.dpr}
+      shadows={qualitySettings.shadows}
       gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       onPointerMissed={() => onSelectGroup(undefined)}
     >
@@ -143,12 +154,12 @@ export function Battlefield({
       <fog attach="fog" args={["#a8b1b1", 190, 620]} />
       <hemisphereLight args={["#dce5e3", "#343a3b", 1.75]} />
       <directionalLight
-        castShadow
+        castShadow={qualitySettings.shadows}
         color="#fff1d6"
         intensity={2.2}
         position={[120, 180, 80]}
-        shadow-mapSize-width={1_024}
-        shadow-mapSize-height={1_024}
+        shadow-mapSize-width={qualitySettings.shadowMapSize}
+        shadow-mapSize-height={qualitySettings.shadowMapSize}
         shadow-camera-near={10}
         shadow-camera-far={500}
         shadow-camera-left={-180}
@@ -177,7 +188,11 @@ export function Battlefield({
           selectedGroupId={selectedGroupId}
           onSelectGroup={onSelectGroup}
         />
-        <ShotEffects events={events} frame={frame} />
+        <ShotEffects
+          events={events}
+          frame={frame}
+          maxTracers={qualitySettings.maxTracers}
+        />
       </Suspense>
       <CameraRig
         map={map}

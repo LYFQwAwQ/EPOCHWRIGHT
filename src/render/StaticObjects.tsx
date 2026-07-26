@@ -6,6 +6,7 @@ import {
   type StaticMapObject,
   type StaticObjectKind,
 } from "../sim";
+import { visualCellGroundHeight } from "./elevation";
 
 interface StaticObjectsProps {
   readonly map: BattleMap;
@@ -44,7 +45,7 @@ function groupStaticObjects(objects: readonly StaticMapObject[]): StaticObjectGr
 
 function groundHeightMeters(map: BattleMap, object: StaticMapObject): number {
   const index = object.cell.z * map.width + object.cell.x;
-  return (map.layers.heightUnits[index] ?? 0) * (map.heightUnitMm / 1_000);
+  return visualCellGroundHeight(map, index);
 }
 
 function objectHeightMeters(map: BattleMap, object: StaticMapObject): number {
