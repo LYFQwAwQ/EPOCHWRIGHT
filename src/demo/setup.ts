@@ -1,8 +1,13 @@
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+  DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+  DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
+  DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
   SIMULATION_HZ,
   createDefaultBattleContent,
   defaultRelation,
@@ -34,6 +39,7 @@ export interface DemoBattleSetupOptions {
   readonly width?: number;
   readonly height?: number;
   readonly groupsPerFaction?: number;
+  readonly vehicleGroupsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
   readonly mountainDensity?: number;
@@ -65,6 +71,7 @@ export function createDemoBattleSetup(
   const width = options.width ?? 48;
   const height = options.height ?? 36;
   const groupsPerFaction = options.groupsPerFaction ?? 3;
+  const vehicleGroupsPerFaction = options.vehicleGroupsPerFaction ?? 0;
 
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
   if (factions.length < 2) {
@@ -80,6 +87,13 @@ export function createDemoBattleSetup(
       `groupsPerFaction must be an integer that keeps the generated battle within ${MAX_GENERATED_GROUP_COUNT} groups and ${MAX_GENERATED_GROUPS_PER_FACTION} groups per faction.`,
     );
   }
+  if (
+    !Number.isInteger(vehicleGroupsPerFaction) ||
+    vehicleGroupsPerFaction < 0 ||
+    vehicleGroupsPerFaction > groupsPerFaction
+  ) {
+    throw new Error("vehicleGroupsPerFaction must be an integer within groupsPerFaction.");
+  }
 
   const map = generateBattleMap({
     seed,
@@ -93,7 +107,12 @@ export function createDemoBattleSetup(
     rockCoverage: options.rockCoverage ?? 0.006,
     wallCoverage: options.wallCoverage ?? 0.003,
   });
-  const groups = createGroupSpawns(map, factions, groupsPerFaction);
+  const groups = createGroupSpawns(
+    map,
+    factions,
+    groupsPerFaction,
+    vehicleGroupsPerFaction,
+  );
   const relations = (options.relations ?? createDefaultRelations(factions)).map((relation) => ({
     ...relation,
   }));
@@ -128,6 +147,7 @@ export function createDemoBattleSetup(
     factions,
     relations,
     groups,
+    transportAssignments: [],
     reinforcementEntrances: (options.reinforcementEntrances ?? []).map(cloneEntrance),
     reinforcements: (options.reinforcements ?? []).map(cloneWave),
     mode,
@@ -164,6 +184,10 @@ function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
       members: group.members.map((member) => ({ ...member })),
+      platforms: group.platforms.map((platform) => ({
+        ...platform,
+        crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+      })),
     })),
   };
 }
@@ -217,6 +241,7 @@ function createGroupSpawns(
   map: BattleMap,
   factions: readonly FactionSetup[],
   groupsPerFaction: number,
+  vehicleGroupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -241,6 +266,38 @@ function createGroupSpawns(
       };
       const spawn = findAvailableSpawn(map, desiredSpawn, occupied);
       occupied.add(spawn.z * map.width + spawn.x);
+      if (groupIndex < vehicleGroupsPerFaction) {
+        const tracked = side % 2 === 1;
+        const groupId = `${faction.id}-${tracked ? "tracked" : "wheeled"}-${groupIndex + 1}`;
+        const memberId = `${groupId}-driver`;
+        const platformId = `${groupId}-platform`;
+        groups.push({
+          id: groupId,
+          factionId: faction.id,
+          groupTemplateId: tracked
+            ? DEFAULT_TRACKED_GROUP_TEMPLATE_ID
+            : DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
+          spawn,
+          evacuation: { ...spawn },
+          members: [
+            {
+              id: memberId,
+              memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+            },
+          ],
+          platforms: [
+            {
+              id: platformId,
+              platformTemplateId: tracked
+                ? DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID
+                : DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+              initialFacing: side === 0 ? 2 : side === 1 ? 6 : 0,
+              crewAssignments: [{ stationId: "driver", memberId }],
+            },
+          ],
+        });
+        continue;
+      }
       const groupId = `${faction.id}-squad-${groupIndex + 1}`;
       groups.push({
         id: groupId,
@@ -252,6 +309,7 @@ function createGroupSpawns(
           id: `${groupId}-member-${memberIndex + 1}`,
           memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
         })),
+        platforms: [],
       });
     }
   }

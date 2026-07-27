@@ -316,5 +316,6 @@ function createGroup(
       id: `${id}-member-${index + 1}`,
       memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
     })),
+    platforms: [],
   };
 }

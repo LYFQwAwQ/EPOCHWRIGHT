@@ -1,4 +1,4 @@
-import { Activity, Radio, Route, ShieldAlert, ShieldCheck, Target } from "lucide-react";
+import { Activity, Radio, Route, ShieldAlert, ShieldCheck, Target, Truck } from "lucide-react";
 import type { GroupInspection, RenderFrame } from "../sim/types";
 
 interface InspectorProps {
@@ -95,12 +95,15 @@ function Overview({ frame }: { readonly frame: RenderFrame }) {
       member.presence === "deployed" &&
       (member.health === "healthy" || member.health === "wounded"),
   ).length;
+  const activePlatforms = frame.platforms.filter(
+    (platform) => platform.disposition === "crewed" && platform.mobility === "mobile",
+  ).length;
 
   return (
     <>
       <div className="panel-heading">
         <span>战场态势</span>
-        <strong>{active} 名有效成员</strong>
+        <strong>{active} 名下车成员 · {activePlatforms} 平台</strong>
       </div>
       <div className="overview-grid">
         <div>
@@ -157,6 +160,26 @@ export function Inspector({
             <strong className="action-label">{actionLabels[inspection.action] ?? inspection.action}</strong>
             <p>{reasonLabels[inspection.decisionReason] ?? inspection.decisionReason}</p>
           </section>
+
+          {inspection.platforms.length > 0 && (
+            <section className="inspector-section" data-testid="platform-status">
+              <div className="section-title">
+                <Truck size={15} />
+                <span>平台状态</span>
+                <b>{inspection.platforms.length}</b>
+              </div>
+              {inspection.platforms.map((platform) => (
+                <div className="contact-row" key={platform.id}>
+                  <Truck size={14} />
+                  <span>{platform.id}</span>
+                  <strong>
+                    {platform.movementType === "tracked" ? "履带" : "轮式"}
+                    {platform.mobility === "mobile" ? "可机动" : "失去机动"}
+                  </strong>
+                </div>
+              ))}
+            </section>
+          )}
 
           {(inspection.currentCover || inspection.coverEvaluation) && (
             <section className="inspector-section">

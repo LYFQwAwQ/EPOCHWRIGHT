@@ -57,6 +57,7 @@ interface BattleSetup {
   readonly factions: readonly FactionSetup[];
   readonly relations: readonly RelationSetup[];
   readonly groups: readonly TacticalGroupSpawn[];
+  readonly transportAssignments: readonly TransportAssignment[];
   readonly reinforcements: readonly ReinforcementWave[];
   readonly mode: BattleModeConfig;
   readonly environment: EnvironmentSetup;
@@ -276,7 +277,6 @@ interface TacticalGroupSpawn {
   readonly preferredCell?: GridCoord;
   readonly members: readonly MemberSpawn[];
   readonly platforms: readonly PlatformSpawn[];
-  readonly initialEmbarkation?: readonly EmbarkationLink[];
   readonly persistentTags: readonly string[];
 }
 
@@ -292,6 +292,7 @@ interface MemberSpawn {
 interface PlatformSpawn {
   readonly id: PlatformId;
   readonly platformTemplateId: TemplateId;
+  readonly initialFacing: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
   readonly crewAssignments: readonly CrewAssignment[];
   readonly persistentId?: string;
 }
@@ -300,9 +301,26 @@ interface CrewAssignment {
   readonly stationId: string;
   readonly memberId: MemberId;
 }
+
+interface TransportAssignment {
+  readonly id: string;
+  readonly platformId: PlatformId;
+  readonly passengerGroupId: GroupId;
+  readonly initiallyEmbarked: boolean;
+}
 ```
 
-固定编制由 `GroupTemplate` 和具体 spawn 成员共同验证。英雄既可以是单成员编组，也可以占普通编组中的特殊成员槽位。
+固定编制由 `GroupTemplate` 和具体 spawn 成员/平台共同验证。英雄既可以是单成员编组，也可以占普通编组中的特殊成员槽位。成员 ID、平台 ID 和编组 ID 在整场战斗内共享全局唯一性约束。
+
+阶段 3 初始化额外验证：
+
+1. 每个平台匹配一个 `platformSlotRule`，其移动类型有成本矩阵且出生、任务和撤离路线合法。
+2. 每名初始乘员属于平台所在编组、只分配到一个有效岗位，并满足岗位资格或明确允许的替代规则。
+3. 每个乘客编组最多绑定一个运输平台；双方属于同一势力，平台总容量覆盖全部已部署成员的运输占用值。
+4. 初始搭载的乘客编组与平台所属编组使用相同出生锚点，并从初始地面占用中排除；非初始搭载编组必须各自具有合法出生占用。
+5. 首个实现切片要求每个车辆编组恰好一个平台；多平台槽位可以存在于目标 schema，但引用超过一个平台的输入在对应运行时实现完成前明确拒绝。
+
+`TransportAssignment` 只授权编组与平台之间的自动上下车，不转移成员所有权。增援中的平台、乘员与运输关系使用同一结构和验证规则；跨波次关系必须等双方均已部署后才可执行，不能通过引用未到达实体提前生成占用或情报。
 
 ## 9. 模板能力组合
 
@@ -320,6 +338,13 @@ interface GroupTemplate {
   readonly capturePowerScaleBps: BasisPoints;
   readonly behaviorProfileId: string;
 }
+
+interface PlatformSlotRule {
+  readonly slotId: string;
+  readonly platformTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
 ```
 
 ### 9.1.1 成员、传感器和槽位
@@ -334,6 +359,7 @@ interface MemberTemplate {
   readonly sensorTemplateId: TemplateId;
   readonly weaponSlotRules: readonly WeaponSlotRule[];
   readonly roleTags: readonly string[];
+  readonly transportOccupancyUnits: number;
   readonly silhouetteId: string;
   readonly protectionBps: BasisPoints;
   readonly suppressionResistanceBps: BasisPoints;
@@ -365,6 +391,61 @@ interface WeaponSlotRule {
 
 `GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额。`MemberTemplate.weaponSlotRules` 决定成员的默认装备，首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员名称推导。
 
+### 9.1.2 平台、部件与岗位
+
+```ts
+type PlatformMovementType = "wheeled" | "tracked";
+type ArmorFace = "front" | "side" | "rear" | "top";
+type PlatformComponentKind =
+  | "structure"
+  | "powertrain"
+  | "running-gear"
+  | "weapon"
+  | "loader"
+  | "sensor";
+type CrewStationKind = "driver" | "gunner" | "commander" | "loader" | "auxiliary";
+
+interface PlatformTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly movementType: PlatformMovementType;
+  readonly visualTypeId: string;
+  readonly occupancyUnits: number;
+  readonly turnTicksPer45Degrees: Tick;
+  readonly armorRatingByFace: Readonly<Record<ArmorFace, number>>;
+  readonly componentRules: readonly PlatformComponentRule[];
+  readonly crewStationRules: readonly CrewStationRule[];
+  readonly transportCapacityUnits: number;
+  readonly embarkTicks: Tick;
+  readonly disembarkTicks: Tick;
+  readonly capturePowerBps: BasisPoints;
+}
+
+interface PlatformComponentRule {
+  readonly id: string;
+  readonly kind: PlatformComponentKind;
+  readonly hitWeight: number;
+  readonly external: boolean;
+  readonly disabledAtBps: BasisPoints;
+  readonly requiredStationIds: readonly string[];
+  readonly weaponTemplateId?: TemplateId;
+}
+
+interface CrewStationRule {
+  readonly id: string;
+  readonly kind: CrewStationKind;
+  readonly requiredRoleTags: readonly string[];
+  readonly replacementTicks: Tick;
+  readonly substituteEfficiencyBps: BasisPoints;
+}
+```
+
+每个平台必须恰好有一个 `structure` 部件；轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。
+
+运行时部件完整度使用 `0..10000` 整数：`10000` 为正常，低于该值为受损，不高于 `disabledAtBps` 为失效，`0` 为摧毁。平台的机动、作战和存续状态只从部件、岗位与乘员状态派生。`capturePowerBps` 可以为零或低值，但乘员和乘客在车内时不额外叠加成员占领力。
+
 ### 9.2 武器模板
 
 ```ts
@@ -388,6 +469,8 @@ interface WeaponTemplate {
   readonly exposureOnFireBps: BasisPoints;
 }
 ```
+
+反载具武器通过判别式 `platform-damage` 效果提供非负整数穿透评级、内部部件伤害、乘员伤害和可选外露部件伤害。没有该效果的武器不能因为目标名称或标签被临时赋予穿甲能力；顶部攻击必须由效果标签显式声明。
 
 首版运行规则把备用弹药解释为无限，但模板仍可保存未来的携弹量。
 
@@ -418,12 +501,13 @@ interface EraTemplate {
   readonly tags: readonly string[];
   readonly allowedGroupTemplateIds: readonly TemplateId[];
   readonly allowedMemberTemplateIds: readonly TemplateId[];
+  readonly allowedPlatformTemplateIds: readonly TemplateId[];
   readonly allowedWeaponTemplateIds: readonly TemplateId[];
   readonly allowedSensorTemplateIds: readonly TemplateId[];
 }
 ```
 
-`BattleContentBundle` 增加 `eraId` 和 `eraTemplates` 字段。解析器先选择一个 `EraTemplate`，再把允许的单位、成员、武器和传感器模板收集到 bundle；核心只验证 `eraId` 与引用的一致性。时代模板本身不修改伤害、射程或 AI 行为，也不提供名称到规则的映射。未来需要科技解锁时，由外部系统生成不同的已解析 bundle，而不是在模拟中加入 `if (eraId === ...)`。
+`BattleContentBundle` 增加 `eraId` 和 `eraTemplates` 字段。解析器先选择一个 `EraTemplate`，再把允许的单位、成员、平台、武器和传感器模板收集到 bundle；核心只验证 `eraId` 与引用的一致性。时代模板本身不修改伤害、射程或 AI 行为，也不提供名称到规则的映射。未来需要科技解锁时，由外部系统生成不同的已解析 bundle，而不是在模拟中加入 `if (eraId === ...)`。
 
 `CONTENT-001` 的默认内容映射如下，目标是让现有演示在迁移后逐项表达而不改变固定 seed 行为：
 
@@ -556,17 +640,36 @@ interface BattleSimulationFactory {
 ```ts
 interface RenderFrame {
   readonly tick: Tick;
-  readonly entityCount: number;
-  readonly renderIds: Uint32Array;
-  readonly positions: Float32Array;
-  readonly rotations: Float32Array;
-  readonly stateFlags: Uint16Array;
-  readonly factionIndices: Uint8Array;
-  readonly visualTypeIndices: Uint16Array;
+  readonly groups: readonly RenderGroup[];
+  readonly members: readonly RenderMember[];
+  readonly platforms: readonly RenderPlatform[];
+  readonly objectives: readonly RenderObjective[];
+}
+
+interface RenderPlatform {
+  readonly id: PlatformId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly visibility: "own" | "known";
+  readonly observedAt?: Tick;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
+  readonly bodyFacing: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  readonly weaponFacing?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  readonly mobility: "mobile" | "immobilized";
+  readonly combat: "effective" | "ineffective";
+  readonly disposition: "crewed" | "abandoned" | "destroyed";
+  readonly damaged: boolean;
+  readonly visualTypeId: string;
 }
 ```
 
-表现层在前后两个逻辑帧之间插值。死亡、爆炸、射击等短事件通过事件批次驱动，不通过猜测位置变化生成。
+表现层在前后两个逻辑帧之间插值。Worker 可以把这些逻辑数组编码为 TypedArray，但编码层不得丢失稳定实体 ID、观察时间或状态轴。死亡、爆炸、射击等短事件通过事件批次驱动，不通过猜测位置变化生成。
+
+乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观和粗状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客或实时朝向。
+
+`EntityInspection` 增加 `PlatformInspection` 分支。本方或全知检查可以返回部件完整度、岗位占用/换岗进度、当前乘客编组和能力派生原因；敌方已知接触只返回最后已知的 `RenderPlatform` 粗状态，不能返回实时部件、岗位、乘员健康或乘客身份。
 
 ## 15. 战斗事件
 
@@ -587,6 +690,8 @@ type BattleEvent =
 
 每条事件至少带 `tick`、事件类型、来源实体和相关势力。视觉粒子、镜头选择和 UI 展开不属于战斗事件。
 
+阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
+
 ## 16. 战斗结果
 
 ```ts
@@ -603,9 +708,23 @@ interface BattleResult {
   readonly objectiveResults: readonly ObjectiveResult[];
   readonly statistics: BattleStatistics;
 }
+
+interface PlatformResult {
+  readonly id: PlatformId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly persistentId?: string;
+  readonly mobility: "mobile" | "immobilized";
+  readonly combat: "effective" | "ineffective";
+  readonly disposition: "crewed" | "abandoned" | "destroyed";
+  readonly damaged: boolean;
+  readonly components: readonly PlatformComponentResult[];
+  readonly finalCrewAssignments: readonly CrewAssignment[];
+  readonly finalPassengerGroupIds: readonly GroupId[];
+}
 ```
 
-成员结果必须区分受伤、失能、死亡、撤离和失散。平台结果必须区分受损、失去机动、失去作战能力、废弃和摧毁。外部系统根据这些事实决定医疗、俘获、维修或永久损失。
+成员结果必须区分受伤、失能、死亡、撤离和失散，并保存最终战术位置为徒步、具体平台岗位或具体平台乘客；该位置不能覆盖健康和在场状态。平台结果通过独立的 `mobility`、`combat`、`disposition`、`damaged` 和部件结果区分受损、失去机动、失去作战能力、废弃和摧毁。外部系统根据这些事实决定医疗、俘获、维修或永久损失。
 
 ## 17. 确定性要求
 
@@ -630,6 +749,13 @@ interface BattleResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-2.2`，规则为 `stage-2.5`，内容为 `content-1`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1` 输入补入等价默认内容和模板 ID；新的 `stage-2.2` 输入必须显式提供内容包、编组模板 ID 和成员模板 ID。`stage-2.5` 仍负责多势力关系及基于关系的目标、阻挡和终止语义。
+当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.0`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
+
+`VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
+
+- `stage-2.2` 输入显式迁移为空平台、空运输关系的等价 `stage-3` 输入，并把默认步兵内容转换为 `content-2`；不得在核心各处保留双版本字段判断。
+- `content-2` 的时代白名单增加平台模板 ID，平台/部件/岗位/运输容量和反载具效果全部进入规范内容哈希。
+- 新平台、乘员位置、换岗、运输动作、部件状态、接触快照和延迟消息中会影响未来 tick 的字段全部进入状态哈希。
+- 只有字段结构变化升级 schema；装甲、移动、岗位或运输结算语义变化升级 rules；纯内容数值变化升级 content。
 
 内容规范哈希参与 setup 哈希，因此固定 seed 回归比较“同输入同哈希”，不承诺跨 schema 的旧哈希字面值不变。版本不匹配、内容版本不支持、模板引用缺失或编制槽位不一致都会在创建运行时状态前明确拒绝。

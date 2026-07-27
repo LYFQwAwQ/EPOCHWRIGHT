@@ -1,7 +1,10 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2.2" as const;
-export const BATTLE_RULES_VERSION = "stage-2.5" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
+export const BATTLE_RULES_VERSION = "stage-3.0" as const;
+/** The final infantry-only contract migrates without changing stage-2 combat behavior. */
+export const PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION = "stage-2.2" as const;
+export const PRE_PLATFORM_BATTLE_RULES_VERSION = "stage-2.5" as const;
 /** Versions accepted by the input migration for the original two-faction slice. */
 export const LEGACY_BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
 export const LEGACY_BATTLE_RULES_VERSION = "stage-2.4" as const;
@@ -67,6 +70,7 @@ export type Tick = number;
 export type FactionId = string;
 export type GroupId = string;
 export type MemberId = string;
+export type PlatformId = string;
 export type ObjectiveId = string;
 export type TemplateId = string;
 
@@ -77,7 +81,7 @@ export interface GridCoord {
 
 export type SurfaceTypeId = (typeof SURFACE_TYPE_IDS)[keyof typeof SURFACE_TYPE_IDS];
 export type WaterDepthUnits = (typeof WATER_DEPTH_UNITS)[keyof typeof WATER_DEPTH_UNITS];
-export type MovementType = "foot";
+export type MovementType = "foot" | "wheeled" | "tracked";
 export type StaticObjectKind = keyof typeof STATIC_OBJECT_DEFINITIONS;
 export type StaticObjectFacing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type CoverSlotId = string;
@@ -191,6 +195,13 @@ export interface MemberSlotRule {
   readonly required: boolean;
 }
 
+export interface PlatformSlotRule {
+  readonly slotId: string;
+  readonly platformTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
+
 export interface WeaponSlotRule {
   readonly slotId: string;
   readonly weaponTemplateId: TemplateId;
@@ -204,7 +215,7 @@ export interface GroupTemplate {
   readonly eraTags: readonly string[];
   readonly techTags: readonly string[];
   readonly memberSlotRules: readonly MemberSlotRule[];
-  readonly platformSlotRules: readonly unknown[];
+  readonly platformSlotRules: readonly PlatformSlotRule[];
   readonly cohesionRadiusCells: number;
   readonly capturePowerScaleBps: number;
   readonly behaviorProfileId: string;
@@ -227,6 +238,7 @@ export interface MemberTemplate {
   readonly sensorTemplateId: TemplateId;
   readonly weaponSlotRules: readonly WeaponSlotRule[];
   readonly roleTags: readonly string[];
+  readonly transportOccupancyUnits: number;
   readonly silhouetteId: string;
   readonly protectionBps: number;
   readonly suppressionResistanceBps: number;
@@ -272,14 +284,56 @@ export interface EraTemplate {
   readonly tags: readonly string[];
   readonly allowedGroupTemplateIds: readonly TemplateId[];
   readonly allowedMemberTemplateIds: readonly TemplateId[];
+  readonly allowedPlatformTemplateIds: readonly TemplateId[];
   readonly allowedWeaponTemplateIds: readonly TemplateId[];
   readonly allowedSensorTemplateIds: readonly TemplateId[];
 }
 
-/** Reserved content namespaces remain structural, but are not enabled by CONTENT-001. */
+export type PlatformMovementType = Extract<MovementType, "wheeled" | "tracked">;
+export type ArmorFace = "front" | "side" | "rear" | "top";
+export type PlatformComponentKind =
+  | "structure"
+  | "powertrain"
+  | "running-gear"
+  | "weapon"
+  | "loader"
+  | "sensor";
+export type CrewStationKind = "driver" | "gunner" | "commander" | "loader" | "auxiliary";
+
+export interface PlatformComponentRule {
+  readonly id: string;
+  readonly kind: PlatformComponentKind;
+  readonly hitWeight: number;
+  readonly external: boolean;
+  readonly disabledAtBps: number;
+  readonly requiredStationIds: readonly string[];
+  readonly weaponTemplateId?: TemplateId;
+}
+
+export interface CrewStationRule {
+  readonly id: string;
+  readonly kind: CrewStationKind;
+  readonly requiredRoleTags: readonly string[];
+  readonly replacementTicks: Tick;
+  readonly substituteEfficiencyBps: number;
+}
+
 export interface PlatformTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly movementType: PlatformMovementType;
+  readonly visualTypeId: string;
+  readonly occupancyUnits: number;
+  readonly turnTicksPer45Degrees: Tick;
+  readonly armorRatingByFace: Readonly<Record<ArmorFace, number>>;
+  readonly componentRules: readonly PlatformComponentRule[];
+  readonly crewStationRules: readonly CrewStationRule[];
+  readonly transportCapacityUnits: number;
+  readonly embarkTicks: Tick;
+  readonly disembarkTicks: Tick;
+  readonly capturePowerBps: number;
 }
 
 export interface AbilityTemplate {
@@ -297,12 +351,32 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-1";
+  readonly contentVersion: "content-2";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
   readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
   readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
+  readonly weaponTemplates: Readonly<Record<TemplateId, WeaponTemplate>>;
+  readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
+  readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
+  readonly terrainCatalog: TerrainCatalog;
+}
+
+export type LegacyEraTemplate = Omit<EraTemplate, "allowedPlatformTemplateIds">;
+export type LegacyGroupTemplate = Omit<GroupTemplate, "platformSlotRules"> & {
+  readonly platformSlotRules: readonly unknown[];
+};
+export type LegacyMemberTemplate = Omit<MemberTemplate, "transportOccupancyUnits">;
+
+export interface LegacyBattleContentBundle {
+  readonly contentVersion: "content-1";
+  readonly eraId: TemplateId;
+  readonly eraTemplates: Readonly<Record<TemplateId, LegacyEraTemplate>>;
+  readonly groupTemplates: Readonly<Record<TemplateId, LegacyGroupTemplate>>;
+  readonly memberTemplates: Readonly<Record<TemplateId, LegacyMemberTemplate>>;
+  readonly platformTemplates: Readonly<Record<TemplateId, { readonly id: string; readonly tags: readonly string[] }>>;
   readonly weaponTemplates: Readonly<Record<TemplateId, WeaponTemplate>>;
   readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
   readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
@@ -316,6 +390,19 @@ export interface MemberSpawn {
   readonly initialHealth?: HealthState;
 }
 
+export interface CrewAssignment {
+  readonly stationId: string;
+  readonly memberId: MemberId;
+}
+
+export interface PlatformSpawn {
+  readonly id: PlatformId;
+  readonly platformTemplateId: TemplateId;
+  readonly initialFacing: StaticObjectFacing;
+  readonly crewAssignments: readonly CrewAssignment[];
+  readonly persistentId?: string;
+}
+
 export interface GroupSpawn {
   readonly id: GroupId;
   readonly factionId: FactionId;
@@ -323,6 +410,14 @@ export interface GroupSpawn {
   readonly spawn: GridCoord;
   readonly evacuation: GridCoord;
   readonly members: readonly MemberSpawn[];
+  readonly platforms: readonly PlatformSpawn[];
+}
+
+export interface TransportAssignment {
+  readonly id: string;
+  readonly platformId: PlatformId;
+  readonly passengerGroupId: GroupId;
+  readonly initiallyEmbarked: boolean;
 }
 
 export interface ReinforcementEntranceSetup {
@@ -350,9 +445,10 @@ export type MemberSpawnInput = Omit<MemberSpawn, "memberTemplateId"> & {
   readonly memberTemplateId?: TemplateId;
 };
 
-export type GroupSpawnInput = Omit<GroupSpawn, "groupTemplateId" | "members"> & {
+export type GroupSpawnInput = Omit<GroupSpawn, "groupTemplateId" | "members" | "platforms"> & {
   readonly groupTemplateId?: TemplateId;
   readonly members: readonly MemberSpawnInput[];
+  readonly platforms?: readonly PlatformSpawn[];
 };
 
 export type ReinforcementWaveSetupInput = Omit<ReinforcementWaveSetup, "groups"> & {
@@ -423,6 +519,7 @@ export interface BattleSetup {
   readonly factions: readonly FactionSetup[];
   readonly relations: readonly RelationSetup[];
   readonly groups: readonly GroupSpawn[];
+  readonly transportAssignments: readonly TransportAssignment[];
   readonly reinforcementEntrances: readonly ReinforcementEntranceSetup[];
   readonly reinforcements: readonly ReinforcementWaveSetup[];
   readonly mode: BattleModeSetup;
@@ -432,13 +529,14 @@ export interface BattleSetup {
 /** Wire-level input accepted by validation, including the legacy two-faction version. */
 export type BattleSetupInput = Omit<
   BattleSetup,
-  "schemaVersion" | "rulesVersion" | "relations" | "groups" | "reinforcementEntrances" | "reinforcements" | "content"
+  "schemaVersion" | "rulesVersion" | "relations" | "groups" | "transportAssignments" | "reinforcementEntrances" | "reinforcements" | "content"
 > & {
   readonly schemaVersion: string;
   readonly rulesVersion: string;
-  readonly content?: BattleContentBundle;
+  readonly content?: BattleContentBundle | LegacyBattleContentBundle;
   readonly relations?: readonly RelationSetup[];
   readonly groups: readonly GroupSpawnInput[];
+  readonly transportAssignments?: readonly TransportAssignment[];
   readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
   readonly reinforcements?: readonly ReinforcementWaveSetupInput[];
 };
@@ -450,6 +548,15 @@ export type HealthState =
   | "dead";
 
 export type PresenceState = "undeployed" | "deployed" | "evacuated";
+
+export type MemberPlacement =
+  | { readonly kind: "dismounted" }
+  | {
+      readonly kind: "crew";
+      readonly platformId: PlatformId;
+      readonly stationId: string;
+    }
+  | { readonly kind: "passenger"; readonly platformId: PlatformId };
 
 export type MoraleState = "steady" | "shaken" | "routing";
 
@@ -488,6 +595,28 @@ export interface RenderMember {
   readonly presence: PresenceState;
 }
 
+export type PlatformMobilityState = "mobile" | "immobilized";
+export type PlatformCombatState = "effective" | "ineffective";
+export type PlatformDisposition = "crewed" | "abandoned" | "destroyed";
+export type PlatformComponentState = "operational" | "damaged" | "disabled" | "destroyed";
+
+export interface RenderPlatform {
+  readonly id: PlatformId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly visibility?: "own" | "known";
+  readonly observedAt?: Tick;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
+  readonly headingRadians: number;
+  readonly mobility: PlatformMobilityState;
+  readonly combat: PlatformCombatState;
+  readonly disposition: PlatformDisposition;
+  readonly damaged: boolean;
+  readonly visualTypeId: string;
+}
+
 export type ObjectiveControlState =
   | "defender-controlled"
   | "capturing"
@@ -515,6 +644,7 @@ export interface RenderFrame {
   readonly tick: Tick;
   readonly groups: readonly RenderGroup[];
   readonly members: readonly RenderMember[];
+  readonly platforms: readonly RenderPlatform[];
   readonly objectives: readonly RenderObjective[];
 }
 
@@ -550,6 +680,35 @@ export interface GroupInspection {
   readonly assignedObjectiveId?: ObjectiveId;
   readonly currentCover?: CoverInspection;
   readonly coverEvaluation?: CoverEvaluationInspection;
+  readonly platforms: readonly PlatformSummaryInspection[];
+}
+
+export interface PlatformSummaryInspection {
+  readonly id: PlatformId;
+  readonly platformTemplateId: TemplateId;
+  readonly movementType: PlatformMovementType;
+  readonly facing: StaticObjectFacing;
+  readonly mobility: PlatformMobilityState;
+  readonly combat: PlatformCombatState;
+  readonly disposition: PlatformDisposition;
+  readonly crewCount: number;
+}
+
+export interface PlatformComponentInspection {
+  readonly id: string;
+  readonly kind: PlatformComponentKind;
+  readonly integrityBps: number;
+  readonly state: PlatformComponentState;
+}
+
+export interface PlatformInspection extends PlatformSummaryInspection {
+  readonly kind: "platform";
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly cell: GridCoord;
+  readonly visualTypeId: string;
+  readonly crewAssignments: readonly CrewAssignment[];
+  readonly components: readonly PlatformComponentInspection[];
 }
 
 export interface MemberInspection {
@@ -559,6 +718,7 @@ export interface MemberInspection {
   readonly factionId: FactionId;
   readonly health: HealthState;
   readonly presence: PresenceState;
+  readonly placement: MemberPlacement;
   readonly magazineRounds: number;
   readonly reloadTicksRemaining: Tick;
   readonly shotCooldownTicks: Tick;
@@ -578,7 +738,11 @@ export interface ObjectiveInspection {
   readonly unlocked?: boolean;
 }
 
-export type EntityInspection = GroupInspection | MemberInspection | ObjectiveInspection;
+export type EntityInspection =
+  | GroupInspection
+  | MemberInspection
+  | PlatformInspection
+  | ObjectiveInspection;
 
 interface BattleEventBase {
   readonly tick: Tick;
@@ -672,6 +836,7 @@ export interface MemberResult {
   readonly presence: PresenceState;
   readonly disposition: "present" | "evacuated" | "missing" | "undeployed";
   readonly deployment: "undeployed" | "deployed" | "evacuated";
+  readonly finalPlacement: MemberPlacement;
 }
 
 export interface GroupResult {
@@ -692,14 +857,31 @@ export interface ObjectiveResult {
   readonly unlocked?: boolean;
 }
 
+export interface PlatformComponentResult extends PlatformComponentInspection {}
+
+export interface PlatformResult {
+  readonly id: PlatformId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly persistentId?: string;
+  readonly mobility: PlatformMobilityState;
+  readonly combat: PlatformCombatState;
+  readonly disposition: PlatformDisposition;
+  readonly damaged: boolean;
+  readonly components: readonly PlatformComponentResult[];
+  readonly finalCrewAssignments: readonly CrewAssignment[];
+}
+
 export interface BattleResult {
   readonly battleId: string;
+  readonly rulesVersion: typeof BATTLE_RULES_VERSION;
   readonly finalTick: Tick;
   readonly outcome: "win" | "draw";
   readonly terminationReason: BattleTerminationReason;
   readonly winnerFactionIds: readonly FactionId[];
   readonly groups: readonly GroupResult[];
   readonly members: readonly MemberResult[];
+  readonly platforms: readonly PlatformResult[];
   readonly objectives: readonly ObjectiveResult[];
   readonly stateHash: string;
 }

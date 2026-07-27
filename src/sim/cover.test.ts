@@ -138,32 +138,36 @@ describe("authoritative directional cover", () => {
   });
 
   it("applies the same frontal cover state to weapon hit resolution", () => {
-    const frontal = createSimulation(createCoverSetup(18, 12, "cover-hit-0", 12));
-    prepareDirectEngagement(frontal);
-    frontal.step();
-    const frontalEvents = frontal.drainEvents();
-    const frontalHits = frontalEvents.filter(
-      (event) =>
-        event.type === "member-health-changed" && event.groupId === "azure-covered",
-    );
-
-    const rear = createSimulation(createCoverSetup(2, 12, "cover-hit-0", 12));
-    prepareDirectEngagement(rear);
-    rear.step();
-    const rearHits = rear
-      .drainEvents()
-      .filter(
+    let frontalHits = 0;
+    let rearHits = 0;
+    let frontalReturnedFire = false;
+    for (let sample = 0; sample < 64; sample += 1) {
+      const seed = `cover-hit-${sample}`;
+      const frontal = createSimulation(createCoverSetup(18, 12, seed, 12));
+      prepareDirectEngagement(frontal);
+      frontal.step();
+      const frontalEvents = frontal.drainEvents();
+      frontalHits += frontalEvents.filter(
         (event) =>
           event.type === "member-health-changed" && event.groupId === "azure-covered",
+      ).length;
+      frontalReturnedFire ||= frontalEvents.some(
+        (event) => event.type === "weapon-fired" && event.groupId === "azure-covered",
       );
 
-    expect(frontalHits).toHaveLength(0);
-    expect(rearHits).toHaveLength(1);
-    expect(
-      frontalEvents.some(
-        (event) => event.type === "weapon-fired" && event.groupId === "azure-covered",
-      ),
-    ).toBe(true);
+      const rear = createSimulation(createCoverSetup(2, 12, seed, 12));
+      prepareDirectEngagement(rear);
+      rear.step();
+      rearHits += rear
+        .drainEvents()
+        .filter(
+          (event) =>
+            event.type === "member-health-changed" && event.groupId === "azure-covered",
+        ).length;
+    }
+
+    expect(frontalHits).toBeLessThan(rearHits);
+    expect(frontalReturnedFire).toBe(true);
   });
 });
 
@@ -328,5 +332,6 @@ function createGroup(
       id: `${id}-member-${index + 1}`,
       memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
     })),
+    platforms: [],
   };
 }

@@ -12,17 +12,24 @@ export { migrateBattleSetup } from "./setup";
 export {
   BATTLE_CONTENT_VERSION,
   DEFAULT_ERA_ID,
+  DEFAULT_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_SENSOR_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
+  DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+  DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+  DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
+  DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
   cloneBattleContent,
   createDefaultBattleContent,
   getGroupTemplate,
   getMemberTemplate,
+  getPlatformTemplate,
   getPrimaryWeaponTemplate,
   getWeaponTemplate,
   hashBattleContent,
+  migrateBattleContent,
   validateBattleContent,
 } from "./content";
 export {
@@ -44,11 +51,14 @@ export {
   heightAt,
   isInsideMap,
   isWalkable,
+  MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS,
   movementCostAt,
   movementCostAtIndex,
   primaryAttackRouteCenterZ,
   squaredGridDistance,
+  TRACKED_MOVEMENT_COST_MATRIX,
   validateBattleMap,
+  WHEELED_MOVEMENT_COST_MATRIX,
 } from "./map";
 export { canTraverseStep, createPathfinder, movementStepCost } from "./pathfinder";
 export {
@@ -65,6 +75,8 @@ export {
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   MAP_CELL_FLAGS,
   SIMULATION_HZ,
   STATIC_OBJECT_DEFINITIONS,

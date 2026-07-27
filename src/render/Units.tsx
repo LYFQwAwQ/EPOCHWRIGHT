@@ -1,7 +1,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef } from "react";
-import { InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
-import type { RenderFrame, RenderMember } from "../sim/types";
+import { Group, InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
+import type { RenderFrame, RenderMember, RenderPlatform } from "../sim/types";
 import { visualWorldY } from "./elevation";
 
 interface UnitsProps {
@@ -82,6 +82,83 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
   );
 }
 
+function PlatformMesh({
+  platform,
+  color,
+  selected,
+  onSelectGroup,
+}: {
+  readonly platform: RenderPlatform;
+  readonly color: string;
+  readonly selected: boolean;
+  readonly onSelectGroup: (groupId: string) => void;
+}) {
+  const groupRef = useRef<Group>(null);
+  const currentPosition = useRef<Vector3 | undefined>(undefined);
+  const tracked = platform.visualTypeId.includes("tracked");
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) {
+      return;
+    }
+    const target = new Vector3(
+      platform.worldX,
+      visualWorldY(platform.worldY) + 0.72,
+      platform.worldZ,
+    );
+    currentPosition.current ??= target.clone();
+    currentPosition.current.lerp(target, 0.16);
+    group.position.copy(currentPosition.current);
+    group.rotation.y = platform.headingRadians;
+  });
+
+  return (
+    <group
+      ref={groupRef}
+      scale={selected ? 1.08 : 1}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onSelectGroup(platform.groupId);
+      }}
+    >
+      <mesh castShadow>
+        <boxGeometry args={[1.9, 0.78, 3.25]} />
+        <meshBasicMaterial color={selected ? "#f3c969" : color} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.58, -0.15]} castShadow>
+        <boxGeometry args={[1.45, 0.5, 1.65]} />
+        <meshBasicMaterial color={selected ? "#ffe09b" : color} toneMapped={false} />
+      </mesh>
+      {tracked ? (
+        <>
+          <mesh position={[-1.04, -0.23, 0]}>
+            <boxGeometry args={[0.28, 0.46, 3.35]} />
+            <meshBasicMaterial color="#252a2a" toneMapped={false} />
+          </mesh>
+          <mesh position={[1.04, -0.23, 0]}>
+            <boxGeometry args={[0.28, 0.46, 3.35]} />
+            <meshBasicMaterial color="#252a2a" toneMapped={false} />
+          </mesh>
+        </>
+      ) : (
+        [-1, 1].flatMap((side) =>
+          [-1.08, 1.08].map((z) => (
+            <mesh
+              key={`${side}:${z}`}
+              position={[side * 1.02, -0.25, z]}
+              rotation={[0, 0, Math.PI / 2]}
+            >
+              <cylinderGeometry args={[0.39, 0.39, 0.28, 12]} />
+              <meshBasicMaterial color="#252a2a" toneMapped={false} />
+            </mesh>
+          )),
+        )
+      )}
+    </group>
+  );
+}
+
 export function Units({ frame, factionColors, selectedGroupId, onSelectGroup }: UnitsProps) {
   const deployedMembers = useMemo(
     () => frame.members.filter((member) => member.presence === "deployed"),
@@ -96,6 +173,15 @@ export function Units({ frame, factionColors, selectedGroupId, onSelectGroup }: 
           members={deployedMembers.filter((member) => member.factionId === factionId)}
           color={color}
           selectedGroupId={selectedGroupId}
+          onSelectGroup={onSelectGroup}
+        />
+      ))}
+      {frame.platforms.map((platform) => (
+        <PlatformMesh
+          key={platform.id}
+          platform={platform}
+          color={factionColors[platform.factionId] ?? "#d6d7d2"}
+          selected={platform.groupId === selectedGroupId}
           onSelectGroup={onSelectGroup}
         />
       ))}

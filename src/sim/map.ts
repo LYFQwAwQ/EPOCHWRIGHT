@@ -74,8 +74,35 @@ export const FOOT_MOVEMENT_COST_MATRIX = [
   [8, 14, 0],
 ] as const;
 
+export const WHEELED_MOVEMENT_COST_MATRIX = [
+  // Wheeled vehicles strongly prefer paved ground and cannot cross wetlands.
+  [12, 24, 0],
+  [18, 28, 0],
+  [30, 0, 0],
+  [20, 0, 0],
+  [6, 16, 0],
+] as const;
+
+export const TRACKED_MOVEMENT_COST_MATRIX = [
+  // Tracked vehicles trade road speed for broader rough-terrain access.
+  [11, 16, 0],
+  [12, 17, 0],
+  [14, 20, 0],
+  [14, 19, 0],
+  [8, 14, 0],
+] as const;
+
+export const MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS = {
+  // Foot keeps the stage-2 behavior; vehicle limits apply per adjacent step.
+  foot: Number.POSITIVE_INFINITY,
+  wheeled: 2,
+  tracked: 4,
+} as const satisfies Readonly<Record<MovementType, number>>;
+
 const MOVEMENT_COST_MATRICES = {
   foot: FOOT_MOVEMENT_COST_MATRIX,
+  wheeled: WHEELED_MOVEMENT_COST_MATRIX,
+  tracked: TRACKED_MOVEMENT_COST_MATRIX,
 } as const satisfies Readonly<Record<MovementType, readonly (readonly number[])[]>>;
 
 export function cellIndex(map: Pick<BattleMap, "width">, coord: GridCoord): number {

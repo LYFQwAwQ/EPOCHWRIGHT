@@ -37,6 +37,7 @@ interface BattleTestApi {
   }[];
   getFactionIds(): readonly string[];
   getGroupIds(): readonly string[];
+  getPlatformIds(): readonly string[];
   getEventTypes(): readonly string[];
   getObservation(): string;
   getLayerVisibility(): {

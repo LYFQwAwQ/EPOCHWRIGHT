@@ -311,6 +311,9 @@ export function App() {
     return {
       ...state.frame,
       groups: state.frame.groups.filter((group) => group.visibility !== "known"),
+      platforms: state.frame.platforms.filter(
+        (platform) => platform.visibility !== "known",
+      ),
     };
   }, [observationLayers.contacts, observerFactionId, state.frame]);
   const displayedInspection =
@@ -443,6 +446,7 @@ export function App() {
       getObjectives: () => displayFrame?.objectives ?? [],
       getFactionIds: () => state.setup?.factions.map((faction) => faction.id) ?? [],
       getGroupIds: () => displayFrame?.groups.map((group) => group.id) ?? [],
+      getPlatformIds: () => displayFrame?.platforms.map((platform) => platform.id) ?? [],
       getEventTypes: () => state.events.map((event) => event.type),
       getObservation: () => observerFactionId ?? "omniscient",
       getLayerVisibility: () => ({ ...observationLayers }),

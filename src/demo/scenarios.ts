@@ -18,6 +18,7 @@ import type { DemoBattleSetupOptions } from "./setup";
 export type DemoScenarioId =
   | "alliance-conflict"
   | "duel-conflict"
+  | "vehicle-skirmish"
   | "single-defense"
   | "sequence-defense"
   | "reinforcement-conflict";
@@ -47,6 +48,7 @@ const ALLIANCE_RELATIONS = [
 export const DEMO_SCENARIOS: readonly DemoScenarioDefinition[] = [
   { id: "alliance-conflict", label: "三方同盟冲突", mode: "conflict" },
   { id: "duel-conflict", label: "双边正面冲突", mode: "conflict" },
+  { id: "vehicle-skirmish", label: "车辆遭遇战", mode: "conflict" },
   { id: "single-defense", label: "单目标防守", mode: "defense" },
   { id: "sequence-defense", label: "三段纵深防守", mode: "defense" },
   { id: "reinforcement-conflict", label: "增援波次冲突", mode: "conflict" },
@@ -101,6 +103,23 @@ export function createDemoScenarioOptions(
         height: 38,
         groupsPerFaction: 5,
         factions: TWO_FACTIONS,
+        mode: "conflict",
+      };
+    case "vehicle-skirmish":
+      return {
+        ...shared,
+        width: 56,
+        height: 36,
+        groupsPerFaction: 3,
+        vehicleGroupsPerFaction: 1,
+        factions: TWO_FACTIONS,
+        mountainDensity: 0,
+        roughness: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+        treeCoverage: 0,
+        rockCoverage: 0,
+        wallCoverage: 0,
         mode: "conflict",
       };
     case "single-defense":
@@ -253,5 +272,6 @@ function createReinforcementGroup(
       id: `${id}-member-${index + 1}`,
       memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
     })),
+    platforms: [],
   };
 }

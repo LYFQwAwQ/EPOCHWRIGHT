@@ -5,6 +5,7 @@ import type {
   EffectDefinition,
   EraTemplate,
   GroupTemplate,
+  LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
   SensorTemplate,
@@ -13,12 +14,17 @@ import type {
   WeaponTemplate,
 } from "./types";
 
-export const BATTLE_CONTENT_VERSION = "content-1" as const;
+export const BATTLE_CONTENT_VERSION = "content-2" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
 export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
 export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
+export const DEFAULT_CREW_MEMBER_TEMPLATE_ID = "vehicle-driver-v1" as const;
+export const DEFAULT_WHEELED_GROUP_TEMPLATE_ID = "vehicle-wheeled-scout-group-v1" as const;
+export const DEFAULT_TRACKED_GROUP_TEMPLATE_ID = "vehicle-tracked-scout-group-v1" as const;
+export const DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID = "vehicle-wheeled-scout-v1" as const;
+export const DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID = "vehicle-tracked-scout-v1" as const;
 
 const DEFAULT_CELL_SIZE_MM = 4_000;
 
@@ -40,8 +46,16 @@ export function createDefaultBattleContent(
     id: DEFAULT_ERA_ID,
     displayName: "默认时代",
     tags: ["default"],
-    allowedGroupTemplateIds: [DEFAULT_GROUP_TEMPLATE_ID],
-    allowedMemberTemplateIds: [DEFAULT_MEMBER_TEMPLATE_ID],
+    allowedGroupTemplateIds: [
+      DEFAULT_GROUP_TEMPLATE_ID,
+      DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
+      DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+    ],
+    allowedMemberTemplateIds: [DEFAULT_MEMBER_TEMPLATE_ID, DEFAULT_CREW_MEMBER_TEMPLATE_ID],
+    allowedPlatformTemplateIds: [
+      DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+      DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+    ],
     allowedWeaponTemplateIds: [DEFAULT_WEAPON_TEMPLATE_ID],
     allowedSensorTemplateIds: [DEFAULT_SENSOR_TEMPLATE_ID],
   };
@@ -79,11 +93,40 @@ export function createDefaultBattleContent(
       },
     ],
     roleTags: ["rifleman"],
+    transportOccupancyUnits: 1,
     silhouetteId: "infantry",
     protectionBps: 0,
     suppressionResistanceBps: 0,
     capturePowerBps: 10_000,
   };
+  const crewMember: MemberTemplate = {
+    ...member,
+    id: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+    tags: ["crew", "driver"],
+    roleTags: ["driver"],
+    silhouetteId: "vehicle-crew",
+    capturePowerBps: 0,
+  };
+  const wheeledPlatform = createDefaultPlatformTemplate(
+    DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+    "wheeled",
+    "vehicle-wheeled-scout",
+    2,
+  );
+  const trackedPlatform = createDefaultPlatformTemplate(
+    DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+    "tracked",
+    "vehicle-tracked-scout",
+    1,
+  );
+  const wheeledGroup = createDefaultVehicleGroupTemplate(
+    DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
+    DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+  );
+  const trackedGroup = createDefaultVehicleGroupTemplate(
+    DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+    DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+  );
   const sensor: SensorTemplate = {
     id: DEFAULT_SENSOR_TEMPLATE_ID,
     rangeMm: (options.sightRangeCells ?? 13) * cellSizeMm,
@@ -118,14 +161,164 @@ export function createDefaultBattleContent(
     contentVersion: BATTLE_CONTENT_VERSION,
     eraId: DEFAULT_ERA_ID,
     eraTemplates: { [era.id]: era },
-    groupTemplates: { [group.id]: group },
-    memberTemplates: { [member.id]: member },
-    platformTemplates: {},
+    groupTemplates: {
+      [group.id]: group,
+      [wheeledGroup.id]: wheeledGroup,
+      [trackedGroup.id]: trackedGroup,
+    },
+    memberTemplates: { [member.id]: member, [crewMember.id]: crewMember },
+    platformTemplates: {
+      [wheeledPlatform.id]: wheeledPlatform,
+      [trackedPlatform.id]: trackedPlatform,
+    },
     weaponTemplates: { [weapon.id]: weapon },
     sensorTemplates: { [sensor.id]: sensor },
     abilityTemplates: {},
     statusTemplates: {},
     terrainCatalog: { version: "map-2" },
+  };
+}
+
+function createDefaultVehicleGroupTemplate(
+  id: string,
+  platformTemplateId: string,
+): GroupTemplate {
+  return {
+    id,
+    tags: ["vehicle", "scout"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-vehicles"],
+    memberSlotRules: [
+      {
+        slotId: "driver",
+        memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    platformSlotRules: [
+      { slotId: "vehicle", platformTemplateId, count: 1, required: true },
+    ],
+    cohesionRadiusCells: 0,
+    capturePowerScaleBps: 10_000,
+    behaviorProfileId: "vehicle-basic",
+  };
+}
+
+function createDefaultPlatformTemplate(
+  id: string,
+  movementType: PlatformTemplate["movementType"],
+  visualTypeId: string,
+  turnTicksPer45Degrees: number,
+): PlatformTemplate {
+  return {
+    id,
+    tags: ["vehicle", "scout", movementType],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-vehicles"],
+    movementType,
+    visualTypeId,
+    occupancyUnits: 8,
+    turnTicksPer45Degrees,
+    armorRatingByFace: { front: 0, side: 0, rear: 0, top: 0 },
+    componentRules: [
+      {
+        id: "structure",
+        kind: "structure",
+        hitWeight: 1,
+        external: false,
+        disabledAtBps: 0,
+        requiredStationIds: [],
+      },
+      {
+        id: "powertrain",
+        kind: "powertrain",
+        hitWeight: 1,
+        external: false,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["driver"],
+      },
+      {
+        id: "running-gear",
+        kind: "running-gear",
+        hitWeight: 1,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["driver"],
+      },
+    ],
+    crewStationRules: [
+      {
+        id: "driver",
+        kind: "driver",
+        requiredRoleTags: ["driver"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+    ],
+    transportCapacityUnits: 0,
+    embarkTicks: 0,
+    disembarkTicks: 0,
+    capturePowerBps: 0,
+  };
+}
+
+export function migrateBattleContent(
+  content: BattleContentBundle | LegacyBattleContentBundle,
+): BattleContentBundle {
+  if (content.contentVersion === BATTLE_CONTENT_VERSION) {
+    return cloneBattleContent(content);
+  }
+  if (
+    Object.keys(content.platformTemplates).length > 0 ||
+    Object.values(content.groupTemplates).some(
+      (template) => template.platformSlotRules.length > 0,
+    )
+  ) {
+    throw new Error("content-1 cannot migrate referenced platform templates.");
+  }
+  return {
+    ...content,
+    contentVersion: BATTLE_CONTENT_VERSION,
+    eraTemplates: Object.fromEntries(
+      Object.entries(content.eraTemplates).map(([id, era]) => [
+        id,
+        { ...era, tags: [...era.tags], allowedPlatformTemplateIds: [] },
+      ]),
+    ),
+    groupTemplates: Object.fromEntries(
+      Object.entries(content.groupTemplates).map(([id, template]) => [
+        id,
+        {
+          ...template,
+          tags: [...template.tags],
+          eraTags: [...template.eraTags],
+          techTags: [...template.techTags],
+          memberSlotRules: template.memberSlotRules.map((slot) => ({ ...slot })),
+          platformSlotRules: [],
+        },
+      ]),
+    ),
+    memberTemplates: Object.fromEntries(
+      Object.entries(content.memberTemplates).map(([id, template]) => [
+        id,
+        {
+          ...template,
+          tags: [...template.tags],
+          eraTags: [...template.eraTags],
+          techTags: [...template.techTags],
+          weaponSlotRules: template.weaponSlotRules.map((slot) => ({ ...slot })),
+          roleTags: [...template.roleTags],
+          transportOccupancyUnits: 1,
+        },
+      ]),
+    ),
+    platformTemplates: {},
+    weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
+    sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
+    abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+    statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
+    terrainCatalog: { ...content.terrainCatalog },
   };
 }
 
@@ -135,7 +328,7 @@ export function cloneBattleContent(content: BattleContentBundle): BattleContentB
     eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
     groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
     memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
-    platformTemplates: cloneRecord(content.platformTemplates, cloneSimpleTemplate),
+    platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
     weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
     sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
     abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
@@ -156,7 +349,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
   validateRecord(content.memberTemplates, "member", validateMemberTemplate);
   validateRecord(content.weaponTemplates, "weapon", validateWeaponTemplate);
   validateRecord(content.sensorTemplates, "sensor", validateSensorTemplate);
-  validateRecord(content.platformTemplates, "platform", validateSimpleTemplate);
+  validateRecord(content.platformTemplates, "platform", validatePlatformTemplate);
   validateRecord(content.abilityTemplates, "ability", validateSimpleTemplate);
   validateRecord(content.statusTemplates, "status", validateSimpleTemplate);
   if (!content.terrainCatalog.version) {
@@ -167,6 +360,11 @@ export function validateBattleContent(content: BattleContentBundle): void {
     for (const slot of group.memberSlotRules) {
       if (!content.memberTemplates[slot.memberTemplateId]) {
         throw new Error(`Group template ${group.id} references an unknown member template.`);
+      }
+    }
+    for (const slot of group.platformSlotRules) {
+      if (!content.platformTemplates[slot.platformTemplateId]) {
+        throw new Error(`Group template ${group.id} references an unknown platform template.`);
       }
     }
   }
@@ -184,6 +382,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
   const era = content.eraTemplates[content.eraId]!;
   validateAllowedIds(era.allowedGroupTemplateIds, content.groupTemplates, "group", era.id);
   validateAllowedIds(era.allowedMemberTemplateIds, content.memberTemplates, "member", era.id);
+  validateAllowedIds(era.allowedPlatformTemplateIds, content.platformTemplates, "platform", era.id);
   validateAllowedIds(era.allowedWeaponTemplateIds, content.weaponTemplates, "weapon", era.id);
   validateAllowedIds(era.allowedSensorTemplateIds, content.sensorTemplates, "sensor", era.id);
   for (const weaponId of era.allowedWeaponTemplateIds) {
@@ -195,15 +394,21 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.shotsPerAction !== 1 ||
       weapon.aimTicks !== 0
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-1.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-2.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
     if (!era.allowedGroupTemplateIds.includes(group.id)) {
       continue;
     }
-    if (group.behaviorProfileId !== "infantry-basic") {
+    const expectedBehavior = group.platformSlotRules.length > 0 ? "vehicle-basic" : "infantry-basic";
+    if (group.behaviorProfileId !== expectedBehavior) {
       throw new Error(`Group template ${group.id} uses an unsupported behavior profile.`);
+    }
+    for (const slot of group.platformSlotRules) {
+      if (!era.allowedPlatformTemplateIds.includes(slot.platformTemplateId)) {
+        throw new Error(`Group template ${group.id} references a platform outside era ${era.id}.`);
+      }
     }
     for (const slot of group.memberSlotRules) {
       if (!era.allowedMemberTemplateIds.includes(slot.memberTemplateId)) {
@@ -216,7 +421,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-1 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-2 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -224,6 +429,19 @@ export function validateBattleContent(content: BattleContentBundle): void {
     for (const slot of member.weaponSlotRules) {
       if (!era.allowedWeaponTemplateIds.includes(slot.weaponTemplateId)) {
         throw new Error(`Member template ${member.id} references a weapon outside era ${era.id}.`);
+      }
+    }
+  }
+  for (const platform of Object.values(content.platformTemplates)) {
+    if (!era.allowedPlatformTemplateIds.includes(platform.id)) {
+      continue;
+    }
+    for (const component of platform.componentRules) {
+      if (
+        component.weaponTemplateId &&
+        !era.allowedWeaponTemplateIds.includes(component.weaponTemplateId)
+      ) {
+        throw new Error(`Platform template ${platform.id} references a weapon outside era ${era.id}.`);
       }
     }
   }
@@ -236,7 +454,7 @@ export function hashBattleContent(content: BattleContentBundle): string {
   hashRecord(hasher, "era", content.eraTemplates, hashEraTemplate);
   hashRecord(hasher, "group", content.groupTemplates, hashGroupTemplate);
   hashRecord(hasher, "member", content.memberTemplates, hashMemberTemplate);
-  hashRecord(hasher, "platform", content.platformTemplates, hashSimpleTemplate);
+  hashRecord(hasher, "platform", content.platformTemplates, hashPlatformTemplate);
   hashRecord(hasher, "weapon", content.weaponTemplates, hashWeaponTemplate);
   hashRecord(hasher, "sensor", content.sensorTemplates, hashSensorTemplate);
   hashRecord(hasher, "ability", content.abilityTemplates, hashSimpleTemplate);
@@ -257,6 +475,10 @@ export function getMemberTemplate(content: BattleContentBundle, id?: TemplateId)
 
 export function getWeaponTemplate(content: BattleContentBundle, id: TemplateId): WeaponTemplate {
   return content.weaponTemplates[id] ?? missingTemplate("weapon", id);
+}
+
+export function getPlatformTemplate(content: BattleContentBundle, id: TemplateId): PlatformTemplate {
+  return content.platformTemplates[id] ?? missingTemplate("platform", id);
 }
 
 export function getPrimaryWeaponTemplate(
@@ -291,6 +513,7 @@ function validateEraTemplate(template: EraTemplate): void {
   for (const ids of [
     template.allowedGroupTemplateIds,
     template.allowedMemberTemplateIds,
+    template.allowedPlatformTemplateIds,
     template.allowedWeaponTemplateIds,
     template.allowedSensorTemplateIds,
   ]) {
@@ -309,10 +532,8 @@ function validateGroupTemplate(template: GroupTemplate): void {
   if (!template.behaviorProfileId) {
     throw new Error(`Group template ${template.id} requires a behavior profile.`);
   }
-  if (template.platformSlotRules.length > 0) {
-    throw new Error(`Group template ${template.id} references unsupported platform slots.`);
-  }
   validateSlotRules(template.id, template.memberSlotRules, "member");
+  validateSlotRules(template.id, template.platformSlotRules, "platform");
 }
 
 function validateMemberTemplate(template: MemberTemplate): void {
@@ -322,6 +543,9 @@ function validateMemberTemplate(template: MemberTemplate): void {
   }
   if (!template.sensorTemplateId || !template.silhouetteId) {
     throw new Error(`Member template ${template.id} requires sensor and silhouette IDs.`);
+  }
+  if (!Number.isInteger(template.transportOccupancyUnits) || template.transportOccupancyUnits < 1) {
+    throw new Error(`Member template ${template.id} has invalid transport occupancy.`);
   }
   validateBps(template.protectionBps, `Member template ${template.id}`);
   validateBps(template.suppressionResistanceBps, `Member template ${template.id}`);
@@ -396,6 +620,80 @@ function validateSensorTemplate(template: SensorTemplate): void {
   }
 }
 
+function validatePlatformTemplate(template: PlatformTemplate): void {
+  validateTags(template.id, template.tags, template.eraTags, template.techTags);
+  if (
+    (template.movementType !== "wheeled" && template.movementType !== "tracked") ||
+    !template.visualTypeId ||
+    !Number.isInteger(template.occupancyUnits) ||
+    template.occupancyUnits < 1 ||
+    !Number.isInteger(template.turnTicksPer45Degrees) ||
+    template.turnTicksPer45Degrees < 0 ||
+    !Number.isInteger(template.transportCapacityUnits) ||
+    template.transportCapacityUnits < 0 ||
+    !Number.isInteger(template.embarkTicks) ||
+    template.embarkTicks < 0 ||
+    !Number.isInteger(template.disembarkTicks) ||
+    template.disembarkTicks < 0
+  ) {
+    throw new Error(`Platform template ${template.id} has invalid movement or capacity fields.`);
+  }
+  for (const face of ["front", "side", "rear", "top"] as const) {
+    const rating = template.armorRatingByFace[face];
+    if (!Number.isInteger(rating) || rating < 0) {
+      throw new Error(`Platform template ${template.id} has invalid armor ratings.`);
+    }
+  }
+  validateBps(template.capturePowerBps, `Platform template ${template.id}`);
+  const stationIds = new Set(template.crewStationRules.map((station) => station.id));
+  if (
+    stationIds.size !== template.crewStationRules.length ||
+    template.crewStationRules.some(
+      (station) =>
+        !station.id ||
+        !["driver", "gunner", "commander", "loader", "auxiliary"].includes(station.kind) ||
+        new Set(station.requiredRoleTags).size !== station.requiredRoleTags.length ||
+        station.requiredRoleTags.some((tag) => !tag) ||
+        !Number.isInteger(station.replacementTicks) ||
+        station.replacementTicks < 0 ||
+        !Number.isInteger(station.substituteEfficiencyBps) ||
+        station.substituteEfficiencyBps < 0 ||
+        station.substituteEfficiencyBps > 10_000,
+    )
+  ) {
+    throw new Error(`Platform template ${template.id} has invalid crew stations.`);
+  }
+  const componentIds = new Set(template.componentRules.map((component) => component.id));
+  if (
+    componentIds.size !== template.componentRules.length ||
+    template.componentRules.filter((component) => component.kind === "structure").length !== 1 ||
+    !template.componentRules.some((component) => component.kind === "powertrain") ||
+    !template.componentRules.some((component) => component.kind === "running-gear") ||
+    !template.crewStationRules.some((station) => station.kind === "driver")
+  ) {
+    throw new Error(`Platform template ${template.id} requires unique core components and a driver.`);
+  }
+  for (const component of template.componentRules) {
+    if (
+      !component.id ||
+      !["structure", "powertrain", "running-gear", "weapon", "loader", "sensor"].includes(
+        component.kind,
+      ) ||
+      typeof component.external !== "boolean" ||
+      !Number.isInteger(component.hitWeight) ||
+      component.hitWeight < 1 ||
+      !Number.isInteger(component.disabledAtBps) ||
+      component.disabledAtBps < 0 ||
+      component.disabledAtBps > 10_000 ||
+      new Set(component.requiredStationIds).size !== component.requiredStationIds.length ||
+      component.requiredStationIds.some((stationId) => !stationIds.has(stationId)) ||
+      (component.kind === "weapon") !== (component.weaponTemplateId !== undefined)
+    ) {
+      throw new Error(`Platform template ${template.id} has an invalid component.`);
+    }
+  }
+}
+
 function validateSimpleTemplate(template: { readonly id: string; readonly tags: readonly string[] }): void {
   if (!template.id || new Set(template.tags).size !== template.tags.length || template.tags.some((tag) => !tag)) {
     throw new Error(`Template ${template.id} has invalid tags.`);
@@ -458,6 +756,7 @@ function hashEraTemplate(hasher: StateHasher, template: EraTemplate): void {
   addSortedStrings(hasher, template.tags);
   addSortedStrings(hasher, template.allowedGroupTemplateIds);
   addSortedStrings(hasher, template.allowedMemberTemplateIds);
+  addSortedStrings(hasher, template.allowedPlatformTemplateIds);
   addSortedStrings(hasher, template.allowedWeaponTemplateIds);
   addSortedStrings(hasher, template.allowedSensorTemplateIds);
 }
@@ -470,6 +769,12 @@ function hashGroupTemplate(hasher: StateHasher, template: GroupTemplate): void {
   for (const slot of template.memberSlotRules) {
     hasher.addString(slot.slotId);
     hasher.addString(slot.memberTemplateId);
+    hasher.addNumber(slot.count);
+    hasher.addNumber(slot.required ? 1 : 0);
+  }
+  for (const slot of template.platformSlotRules) {
+    hasher.addString(slot.slotId);
+    hasher.addString(slot.platformTemplateId);
     hasher.addNumber(slot.count);
     hasher.addNumber(slot.required ? 1 : 0);
   }
@@ -492,9 +797,44 @@ function hashMemberTemplate(hasher: StateHasher, template: MemberTemplate): void
     hasher.addNumber(slot.required ? 1 : 0);
   }
   addSortedStrings(hasher, template.roleTags);
+  hasher.addNumber(template.transportOccupancyUnits);
   hasher.addString(template.silhouetteId);
   hasher.addNumber(template.protectionBps);
   hasher.addNumber(template.suppressionResistanceBps);
+  hasher.addNumber(template.capturePowerBps);
+}
+
+function hashPlatformTemplate(hasher: StateHasher, template: PlatformTemplate): void {
+  hasher.addString(template.id);
+  addSortedStrings(hasher, template.tags);
+  addSortedStrings(hasher, template.eraTags);
+  addSortedStrings(hasher, template.techTags);
+  hasher.addString(template.movementType);
+  hasher.addString(template.visualTypeId);
+  hasher.addNumber(template.occupancyUnits);
+  hasher.addNumber(template.turnTicksPer45Degrees);
+  for (const face of ["front", "side", "rear", "top"] as const) {
+    hasher.addNumber(template.armorRatingByFace[face]);
+  }
+  for (const component of template.componentRules) {
+    hasher.addString(component.id);
+    hasher.addString(component.kind);
+    hasher.addNumber(component.hitWeight);
+    hasher.addNumber(component.external ? 1 : 0);
+    hasher.addNumber(component.disabledAtBps);
+    addStrings(hasher, component.requiredStationIds);
+    hasher.addString(component.weaponTemplateId ?? "");
+  }
+  for (const station of template.crewStationRules) {
+    hasher.addString(station.id);
+    hasher.addString(station.kind);
+    addSortedStrings(hasher, station.requiredRoleTags);
+    hasher.addNumber(station.replacementTicks);
+    hasher.addNumber(station.substituteEfficiencyBps);
+  }
+  hasher.addNumber(template.transportCapacityUnits);
+  hasher.addNumber(template.embarkTicks);
+  hasher.addNumber(template.disembarkTicks);
   hasher.addNumber(template.capturePowerBps);
 }
 
@@ -559,6 +899,7 @@ function cloneEraTemplate(template: EraTemplate): EraTemplate {
     tags: [...template.tags],
     allowedGroupTemplateIds: [...template.allowedGroupTemplateIds],
     allowedMemberTemplateIds: [...template.allowedMemberTemplateIds],
+    allowedPlatformTemplateIds: [...template.allowedPlatformTemplateIds],
     allowedWeaponTemplateIds: [...template.allowedWeaponTemplateIds],
     allowedSensorTemplateIds: [...template.allowedSensorTemplateIds],
   };
@@ -571,7 +912,25 @@ function cloneGroupTemplate(template: GroupTemplate): GroupTemplate {
     eraTags: [...template.eraTags],
     techTags: [...template.techTags],
     memberSlotRules: template.memberSlotRules.map((slot) => ({ ...slot })),
-    platformSlotRules: [...template.platformSlotRules],
+    platformSlotRules: template.platformSlotRules.map((slot) => ({ ...slot })),
+  };
+}
+
+function clonePlatformTemplate(template: PlatformTemplate): PlatformTemplate {
+  return {
+    ...template,
+    tags: [...template.tags],
+    eraTags: [...template.eraTags],
+    techTags: [...template.techTags],
+    armorRatingByFace: { ...template.armorRatingByFace },
+    componentRules: template.componentRules.map((component) => ({
+      ...component,
+      requiredStationIds: [...component.requiredStationIds],
+    })),
+    crewStationRules: template.crewStationRules.map((station) => ({
+      ...station,
+      requiredRoleTags: [...station.requiredRoleTags],
+    })),
   };
 }
 

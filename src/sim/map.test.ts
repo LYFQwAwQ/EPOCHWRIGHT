@@ -17,12 +17,17 @@ import {
   hasLineOfSight,
   isWalkable,
   movementCostAt,
+  MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS,
   movementStepCost,
+  TRACKED_MOVEMENT_COST_MATRIX,
   validateBattleMap,
   validateBattleSetup,
+  WHEELED_MOVEMENT_COST_MATRIX,
   type BattleMap,
   type BattleSetup,
   type StaticMapObject,
+  type SurfaceTypeId,
+  type WaterDepthUnits,
 } from "./index";
 
 describe("standard terrain layers", () => {
@@ -367,6 +372,125 @@ describe("standard terrain layers", () => {
     expect(movementStepCost(map, { x: 0, z: 0 }, { x: 1, z: 0 })).toBe(1_300);
     expect(movementCostAt(map, { x: 5, z: 0 })).toBe(0);
     expect(isWalkable(map, { x: 5, z: 0 })).toBe(false);
+  });
+
+  it("defines distinct wheel and track terrain costs without changing foot costs", () => {
+    const map = createFlatMap(5, 2);
+    setTerrain(map, { x: 0, z: 0 }, SURFACE_TYPE_IDS.grass, WATER_DEPTH_UNITS.none);
+    setTerrain(map, { x: 1, z: 0 }, SURFACE_TYPE_IDS.mud, WATER_DEPTH_UNITS.none);
+    setTerrain(map, { x: 2, z: 0 }, SURFACE_TYPE_IDS.mud, WATER_DEPTH_UNITS.shallow);
+    setTerrain(map, { x: 3, z: 0 }, SURFACE_TYPE_IDS.paved, WATER_DEPTH_UNITS.none);
+    setTerrain(map, { x: 4, z: 0 }, SURFACE_TYPE_IDS.grass, WATER_DEPTH_UNITS.deep);
+
+    expect(WHEELED_MOVEMENT_COST_MATRIX).toEqual([
+      [12, 24, 0],
+      [18, 28, 0],
+      [30, 0, 0],
+      [20, 0, 0],
+      [6, 16, 0],
+    ]);
+    expect(TRACKED_MOVEMENT_COST_MATRIX).toEqual([
+      [11, 16, 0],
+      [12, 17, 0],
+      [14, 20, 0],
+      [14, 19, 0],
+      [8, 14, 0],
+    ]);
+    expect({
+      footMud: movementCostAt(map, { x: 1, z: 0 }, "foot"),
+      wheeledMud: movementCostAt(map, { x: 1, z: 0 }, "wheeled"),
+      trackedMud: movementCostAt(map, { x: 1, z: 0 }, "tracked"),
+      wheeledWetland: movementCostAt(map, { x: 2, z: 0 }, "wheeled"),
+      trackedWetland: movementCostAt(map, { x: 2, z: 0 }, "tracked"),
+      wheeledPaved: movementCostAt(map, { x: 3, z: 0 }, "wheeled"),
+      trackedPaved: movementCostAt(map, { x: 3, z: 0 }, "tracked"),
+    }).toEqual({
+      footMud: 16,
+      wheeledMud: 30,
+      trackedMud: 14,
+      wheeledWetland: 0,
+      trackedWetland: 20,
+      wheeledPaved: 6,
+      trackedPaved: 8,
+    });
+    for (const movementType of ["foot", "wheeled", "tracked"] as const) {
+      expect(movementCostAt(map, { x: 4, z: 0 }, movementType)).toBe(0);
+    }
+  });
+
+  it("applies vehicle slope limits consistently to steps and A*", () => {
+    const slopeMap = createFlatMap(2, 2);
+    slopeMap.layers.heightUnits[cellIndex(slopeMap, { x: 1, z: 0 })] = 3;
+
+    expect(MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS).toEqual({
+      foot: Number.POSITIVE_INFINITY,
+      wheeled: 2,
+      tracked: 4,
+    });
+    expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "foot")).toBe(true);
+    expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "wheeled"))
+      .toBe(false);
+    expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "tracked"))
+      .toBe(true);
+    expect(createPathfinder(slopeMap, "wheeled").findPath(
+      { x: 0, z: 0 },
+      { x: 1, z: 0 },
+    )).toEqual([]);
+    expect(createPathfinder(slopeMap, "tracked").findPath(
+      { x: 0, z: 0 },
+      { x: 1, z: 0 },
+    )).toEqual([{ x: 0, z: 0 }, { x: 1, z: 0 }]);
+
+    slopeMap.layers.heightUnits[cellIndex(slopeMap, { x: 1, z: 0 })] = 5;
+    expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "tracked"))
+      .toBe(false);
+    expect(() =>
+      movementStepCost(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "tracked"),
+    ).toThrow(/illegal movement step/i);
+  });
+
+  it("selects deterministic foot, wheeled, and tracked routes on one map", () => {
+    const map = createFlatMap(11, 11);
+    map.layers.cellFlags.fill(MAP_CELL_FLAGS.groundBlocked);
+    const open = (
+      x: number,
+      z: number,
+      surfaceTypeId: SurfaceTypeId = SURFACE_TYPE_IDS.grass,
+      waterDepthUnits: WaterDepthUnits = WATER_DEPTH_UNITS.none,
+      heightUnits = 0,
+    ) => {
+      const index = cellIndex(map, { x, z });
+      map.layers.cellFlags[index] = 0;
+      map.layers.surfaceTypeIds[index] = surfaceTypeId;
+      map.layers.waterDepthUnits[index] = waterDepthUnits;
+      map.layers.heightUnits[index] = heightUnits;
+    };
+
+    for (let x = 0; x < map.width; x += 1) {
+      open(x, 0);
+      open(x, 5, SURFACE_TYPE_IDS.mud, WATER_DEPTH_UNITS.shallow);
+      open(x, 6, SURFACE_TYPE_IDS.grass, WATER_DEPTH_UNITS.none, 8);
+    }
+    for (let z = 0; z <= 5; z += 1) {
+      open(0, z);
+      open(map.width - 1, z);
+    }
+
+    const start = { x: 0, z: 5 };
+    const goal = { x: 10, z: 5 };
+    const footPath = createPathfinder(map, "foot").findPath(start, goal);
+    const wheeledPath = createPathfinder(map, "wheeled").findPath(start, goal);
+    const trackedPath = createPathfinder(map, "tracked").findPath(start, goal);
+
+    expect(footPath.slice(1, -1).some((coord) => coord.z === 6)).toBe(true);
+    expect(wheeledPath.some((coord) => coord.z === 0)).toBe(true);
+    expect(trackedPath.slice(1, -1).every((coord) => coord.z === 5)).toBe(true);
+    expect(new Set([footPath, wheeledPath, trackedPath].map((path) => JSON.stringify(path))).size)
+      .toBe(3);
+
+    expect(createPathfinder(map, "foot").findPath(start, goal)).toEqual(footPath);
+    expect(createPathfinder(map, "wheeled").findPath(start, goal)).toEqual(wheeledPath);
+    expect(createPathfinder(map, "tracked").findPath(start, goal)).toEqual(trackedPath);
   });
 
   it("routes around expensive marsh and treats deep water as impassable", () => {

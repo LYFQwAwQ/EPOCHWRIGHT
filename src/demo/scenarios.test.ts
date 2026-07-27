@@ -30,6 +30,19 @@ describe("manual demo scenarios", () => {
     expect(setup.mode.kind === "defense" ? setup.mode.objectives : []).toHaveLength(3);
   });
 
+  it("exposes one wheeled and one tracked platform in the vehicle scenario", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("vehicle-skirmish", "scenario-vehicles"),
+    );
+    const movementTypes = setup.groups.flatMap((group) =>
+      group.platforms.map(
+        (platform) => setup.content.platformTemplates[platform.platformTemplateId]!.movementType,
+      ),
+    );
+
+    expect(movementTypes.sort()).toEqual(["tracked", "wheeled"]);
+  });
+
   it("drives both reinforcement waves through the normal simulation events", () => {
     const setup = createDemoBattleSetup(
       createDemoScenarioOptions("reinforcement-conflict", "scenario-reinforcement"),

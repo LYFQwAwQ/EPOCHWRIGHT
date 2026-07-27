@@ -1,6 +1,29 @@
 import * as EasyStar from "easystarjs";
-import { cellIndex, isWalkable, movementCostAtIndex } from "./map";
+import {
+  cellIndex,
+  isInsideMap,
+  isWalkable,
+  MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS,
+  movementCostAtIndex,
+} from "./map";
 import type { BattleMap, GridCoord, MovementType } from "./types";
+
+type EasyStarDirection = Parameters<EasyStar.js["setDirectionalCondition"]>[2][number];
+
+const MOVEMENT_DIRECTIONS: readonly {
+  readonly sourceDx: number;
+  readonly sourceDz: number;
+  readonly direction: EasyStarDirection;
+}[] = [
+  { sourceDx: 0, sourceDz: -1, direction: EasyStar.TOP },
+  { sourceDx: 1, sourceDz: -1, direction: EasyStar.TOP_RIGHT },
+  { sourceDx: 1, sourceDz: 0, direction: EasyStar.RIGHT },
+  { sourceDx: 1, sourceDz: 1, direction: EasyStar.BOTTOM_RIGHT },
+  { sourceDx: 0, sourceDz: 1, direction: EasyStar.BOTTOM },
+  { sourceDx: -1, sourceDz: 1, direction: EasyStar.BOTTOM_LEFT },
+  { sourceDx: -1, sourceDz: 0, direction: EasyStar.LEFT },
+  { sourceDx: -1, sourceDz: -1, direction: EasyStar.TOP_LEFT },
+] as const;
 
 export interface Pathfinder {
   findPath(
@@ -30,7 +53,8 @@ export function canTraverseStep(
     dz > 1 ||
     (dx === 0 && dz === 0) ||
     !isWalkable(map, from, movementType) ||
-    !isWalkable(map, to, movementType)
+    !isWalkable(map, to, movementType) ||
+    !isWithinSlopeLimit(map, from, to, movementType)
   ) {
     return false;
   }
@@ -129,9 +153,52 @@ class EasyStarPathfinder implements Pathfinder {
     for (const tile of sortedTiles) {
       easyStar.setTileCost(tile, tile / minimumCost);
     }
+    this.applySlopeConditions(easyStar, grid);
     easyStar.enableDiagonals();
     easyStar.disableCornerCutting();
     easyStar.enableSync();
     return easyStar;
   }
+
+  private applySlopeConditions(easyStar: EasyStar.js, grid: readonly number[][]): void {
+    if (!Number.isFinite(MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS[this.movementType])) {
+      return;
+    }
+    for (let z = 0; z < this.map.height; z += 1) {
+      for (let x = 0; x < this.map.width; x += 1) {
+        if ((grid[z]?.[x] ?? 0) <= 0) {
+          continue;
+        }
+        const destination = { x, z };
+        const allowedDirections: EasyStarDirection[] = [];
+        for (const candidate of MOVEMENT_DIRECTIONS) {
+          const source = {
+            x: x + candidate.sourceDx,
+            z: z + candidate.sourceDz,
+          };
+          if (
+            isInsideMap(this.map, source) &&
+            (grid[source.z]?.[source.x] ?? 0) > 0 &&
+            isWithinSlopeLimit(this.map, source, destination, this.movementType)
+          ) {
+            allowedDirections.push(candidate.direction);
+          }
+        }
+        easyStar.setDirectionalCondition(x, z, allowedDirections);
+      }
+    }
+  }
+}
+
+function isWithinSlopeLimit(
+  map: BattleMap,
+  from: GridCoord,
+  to: GridCoord,
+  movementType: MovementType,
+): boolean {
+  const fromHeight = map.layers.heightUnits[cellIndex(map, from)] ?? 0;
+  const toHeight = map.layers.heightUnits[cellIndex(map, to)] ?? 0;
+  return (
+    Math.abs(toHeight - fromHeight) <= MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS[movementType]
+  );
 }

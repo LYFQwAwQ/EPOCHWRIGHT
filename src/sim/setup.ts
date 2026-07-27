@@ -10,9 +10,10 @@ import {
   BATTLE_CONTENT_VERSION,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
-  cloneBattleContent,
   createDefaultBattleContent,
+  getPlatformTemplate,
   hashBattleContent,
+  migrateBattleContent,
   validateBattleContent,
 } from "./content";
 import {
@@ -20,6 +21,8 @@ import {
   BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
   SIMULATION_HZ,
 } from "./types";
@@ -35,6 +38,7 @@ import type {
   ReinforcementEntranceSetup,
   ReinforcementWaveSetup,
   ReinforcementWaveSetupInput,
+  MovementType,
 } from "./types";
 
 export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
@@ -45,21 +49,46 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     candidate.factions?.length === 2;
   const isPreContent =
     candidate.schemaVersion === PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION &&
-    candidate.rulesVersion === BATTLE_RULES_VERSION;
+    candidate.rulesVersion === PRE_PLATFORM_BATTLE_RULES_VERSION;
+  const isPrePlatform =
+    candidate.schemaVersion === PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_PLATFORM_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
+  const migratePlatformFields = injectDefaults || isPrePlatform;
+  const isCurrent =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === BATTLE_RULES_VERSION;
+  if (isCurrent) {
+    if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
+      throw new Error("stage-3 battle setup requires a content-2 content bundle.");
+    }
+    if (candidate.transportAssignments === undefined) {
+      throw new Error("stage-3 battle setup requires transportAssignments.");
+    }
+    if (
+      candidate.groups.some((group) => group.platforms === undefined) ||
+      (candidate.reinforcements ?? []).some((wave) =>
+        wave.groups.some((group) => group.platforms === undefined),
+      )
+    ) {
+      throw new Error("stage-3 group spawns require explicit platforms.");
+    }
+  }
   const normalizedContent = candidate.content
-    ? shouldGenerateDefaultContent(candidate.content)
-      ? createContentForSetup(candidate)
-      : cloneBattleContent(candidate.content)
+    ? migrateBattleContent(candidate.content)
     : injectDefaults
       ? createContentForSetup(candidate)
       : undefined;
-  const normalizedGroups = candidate.groups.map((group) => normalizeGroup(group, injectDefaults));
+  const normalizedGroups = candidate.groups.map((group) =>
+    normalizeGroup(group, injectDefaults, migratePlatformFields),
+  );
   const normalizedReinforcements = (candidate.reinforcements ?? []).map((wave) => ({
     ...cloneWave(wave),
-    groups: wave.groups.map((group) => normalizeGroup(group, injectDefaults)),
+    groups: wave.groups.map((group) =>
+      normalizeGroup(group, injectDefaults, migratePlatformFields),
+    ),
   }));
-  if (isLegacyTwoFaction) {
+  if (isLegacyTwoFaction || isPreContent || isPrePlatform) {
     return {
       ...inputSetup,
       schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
@@ -69,18 +98,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       relations: inputSetup.relations?.map((relation) => ({ ...relation })) ??
         createDefaultRelations(inputSetup.factions),
       groups: normalizedGroups,
-      reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
-      reinforcements: normalizedReinforcements,
-    } as BattleSetup;
-  }
-  if (isPreContent) {
-    return {
-      ...inputSetup,
-      schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
-      rulesVersion: BATTLE_RULES_VERSION,
-      content: normalizedContent,
-      groups: normalizedGroups,
-      relations: inputSetup.relations?.map((relation) => ({ ...relation })) ?? [],
+      transportAssignments: [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
       reinforcements: normalizedReinforcements,
     } as BattleSetup;
@@ -89,6 +107,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     ...inputSetup,
     content: normalizedContent,
     groups: normalizedGroups,
+    transportAssignments: candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? [],
     relations: inputSetup.relations?.map((relation) => ({ ...relation })) ?? [],
     reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
     reinforcements: normalizedReinforcements,
@@ -103,14 +122,6 @@ function createContentForSetup(setup: BattleSetupInput): ReturnType<typeof creat
     preferredRangeCells: setup.rules.preferredRangeCells,
     contactForgetTicks: setup.rules.contactForgetTicks,
   });
-}
-
-function shouldGenerateDefaultContent(content: NonNullable<BattleSetupInput["content"]>): boolean {
-  try {
-    return JSON.stringify(content) === JSON.stringify(createDefaultBattleContent());
-  } catch {
-    return false;
-  }
 }
 
 export function validateBattleSetup(inputSetup: BattleSetupInput): void {
@@ -225,7 +236,11 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
         throw new Error(`Member ${member.id} has an invalid initial health state.`);
       }
     }
-    if (!isLegalDeployment(setup.map, group.spawn)) {
+    for (const platform of group.platforms) {
+      claimUniqueId(platform.id, entityIds);
+    }
+    const movementType = movementTypeForGroup(setup, group);
+    if (!isLegalDeployment(setup.map, group.spawn, movementType)) {
       throw new Error(`Group ${group.id} has an illegal spawn cell.`);
     }
     const spawnIndex = group.spawn.z * setup.map.width + group.spawn.x;
@@ -233,13 +248,17 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
       throw new Error(`Multiple groups cannot share initial cell ${spawnIndex}.`);
     }
     occupiedSpawnCells.add(spawnIndex);
-    if (!isLegalDeployment(setup.map, group.evacuation)) {
+    if (!isLegalDeployment(setup.map, group.evacuation, movementType)) {
       throw new Error(`Group ${group.id} has an illegal evacuation cell.`);
     }
     factionGroupCounts.set(
       group.factionId,
       (factionGroupCounts.get(group.factionId) ?? 0) + 1,
     );
+  }
+
+  if (setup.transportAssignments.length > 0) {
+    throw new Error("Transport assignments are not supported until VEHICLE-006.");
   }
 
   if ([...factionGroupCounts.values()].some((count) => count === 0)) {
@@ -298,6 +317,7 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
       hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
       hasher.addString(member.initialHealth ?? "healthy");
     }
+    hashPlatformSpawns(hasher, group.platforms);
   }
 
   for (const entrance of [...normalized.reinforcementEntrances].sort((a, b) =>
@@ -334,7 +354,17 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
         hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
         hasher.addString(member.initialHealth ?? "healthy");
       }
+      hashPlatformSpawns(hasher, group.platforms);
     }
+  }
+
+  for (const assignment of [...normalized.transportAssignments].sort((a, b) =>
+    compareStrings(a.id, b.id),
+  )) {
+    hasher.addString(assignment.id);
+    hasher.addString(assignment.passengerGroupId);
+    hasher.addString(assignment.platformId);
+    hasher.addNumber(assignment.initiallyEmbarked ? 1 : 0);
   }
 
   hasher.addString(normalized.mode.kind);
@@ -443,7 +473,14 @@ function validateReinforcements(
           throw new Error(`Member ${member.id} has an invalid initial health state.`);
         }
       }
-      if (!isLegalDeployment(setup.map, group.spawn) || !isLegalDeployment(setup.map, group.evacuation)) {
+      for (const platform of group.platforms) {
+        claimUniqueId(platform.id, entityIds);
+      }
+      const movementType = movementTypeForGroup(setup, group);
+      if (
+        !isLegalDeployment(setup.map, group.spawn, movementType) ||
+        !isLegalDeployment(setup.map, group.evacuation, movementType)
+      ) {
         throw new Error(`Reinforcement group ${group.id} has an illegal template position.`);
       }
     }
@@ -483,6 +520,7 @@ function cloneWave(wave: ReinforcementWaveSetupInput): ReinforcementWaveSetupInp
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
       members: group.members.map((member) => ({ ...member })),
+      platforms: group.platforms?.map(clonePlatformSpawn),
     })),
   };
 }
@@ -490,6 +528,7 @@ function cloneWave(wave: ReinforcementWaveSetupInput): ReinforcementWaveSetupInp
 function normalizeGroup(
   group: GroupSpawnInput,
   injectDefaults: boolean,
+  injectPlatformDefaults: boolean,
 ): BattleSetup["groups"][number] {
   const groupTemplateId = group.groupTemplateId ??
     (injectDefaults ? DEFAULT_GROUP_TEMPLATE_ID : undefined);
@@ -509,6 +548,16 @@ function normalizeGroup(
       }
       return { ...member, memberTemplateId };
     }),
+    platforms: (group.platforms ?? (injectPlatformDefaults ? [] : undefined))?.map(
+      clonePlatformSpawn,
+    ) ?? [],
+  };
+}
+
+function clonePlatformSpawn(platform: NonNullable<GroupSpawnInput["platforms"]>[number]) {
+  return {
+    ...platform,
+    crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
   };
 }
 
@@ -565,6 +614,97 @@ function validateGroupRoster(
       );
     }
   }
+
+  const expectedPlatforms = new Map<string, number>();
+  for (const slot of groupTemplate.platformSlotRules) {
+    expectedPlatforms.set(
+      slot.platformTemplateId,
+      (expectedPlatforms.get(slot.platformTemplateId) ?? 0) + slot.count,
+    );
+  }
+  const expectedPlatformCount = [...expectedPlatforms.values()].reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  if (group.platforms.length !== expectedPlatformCount) {
+    throw new Error(`Group ${group.id} does not match template ${groupTemplateId} platform count.`);
+  }
+  if (group.platforms.length > 1) {
+    throw new Error(`Group ${group.id} exceeds the single-platform stage-3 capability.`);
+  }
+  const actualPlatforms = new Map<string, number>();
+  const assignedMemberIds = new Set<string>();
+  for (const platform of group.platforms) {
+    const template = setup.content.platformTemplates[platform.platformTemplateId];
+    if (!template) {
+      throw new Error(`Platform ${platform.id} references an unknown platform template.`);
+    }
+    if (!era.allowedPlatformTemplateIds.includes(template.id)) {
+      throw new Error(`Platform ${platform.id} references a template outside era ${era.id}.`);
+    }
+    if (
+      !Number.isInteger(platform.initialFacing) ||
+      platform.initialFacing < 0 ||
+      platform.initialFacing > 7
+    ) {
+      throw new Error(`Platform ${platform.id} has an invalid initial facing.`);
+    }
+    const stationIds = new Set<string>();
+    for (const assignment of platform.crewAssignments) {
+      if (stationIds.has(assignment.stationId) || assignedMemberIds.has(assignment.memberId)) {
+        throw new Error(`Platform ${platform.id} has duplicate crew assignments.`);
+      }
+      const station = template.crewStationRules.find(
+        (candidate) => candidate.id === assignment.stationId,
+      );
+      const member = group.members.find((candidate) => candidate.id === assignment.memberId);
+      if (!station || !member) {
+        throw new Error(`Platform ${platform.id} references an invalid crew station or member.`);
+      }
+      const memberTemplate = setup.content.memberTemplates[member.memberTemplateId];
+      const qualified = station.requiredRoleTags.every((tag) =>
+        memberTemplate?.roleTags.includes(tag),
+      );
+      if (!qualified && station.substituteEfficiencyBps === 0) {
+        throw new Error(`Member ${member.id} is not qualified for station ${station.id}.`);
+      }
+      stationIds.add(station.id);
+      assignedMemberIds.add(member.id);
+    }
+    const driver = template.crewStationRules.find((station) => station.kind === "driver");
+    const driverAssignment = platform.crewAssignments.find(
+      (assignment) => assignment.stationId === driver?.id,
+    );
+    const driverMember = group.members.find(
+      (member) => member.id === driverAssignment?.memberId,
+    );
+    if (
+      !driverAssignment ||
+      !driverMember ||
+      driverMember.initialHealth === "incapacitated" ||
+      driverMember.initialHealth === "dead"
+    ) {
+      throw new Error(`Platform ${platform.id} requires an active assigned driver.`);
+    }
+    actualPlatforms.set(template.id, (actualPlatforms.get(template.id) ?? 0) + 1);
+  }
+  for (const [platformTemplateId, expectedCount] of expectedPlatforms) {
+    if ((actualPlatforms.get(platformTemplateId) ?? 0) !== expectedCount) {
+      throw new Error(
+        `Group ${group.id} has an invalid count for platform template ${platformTemplateId}.`,
+      );
+    }
+  }
+}
+
+export function movementTypeForGroup(
+  setup: Pick<BattleSetup, "content">,
+  group: Pick<BattleSetup["groups"][number], "platforms">,
+): MovementType {
+  const platform = group.platforms[0];
+  return platform
+    ? getPlatformTemplate(setup.content, platform.platformTemplateId).movementType
+    : "foot";
 }
 
 function compareStrings(a: string, b: string): number {
@@ -658,7 +798,11 @@ function claimUniqueId(id: string, ids: Set<string>): void {
   ids.add(id);
 }
 
-function isLegalDeployment(map: BattleMap, coord: GridCoord): boolean {
+function isLegalDeployment(
+  map: BattleMap,
+  coord: GridCoord,
+  movementType: MovementType = "foot",
+): boolean {
   if (
     !Number.isInteger(coord.x) ||
     !Number.isInteger(coord.z) ||
@@ -669,15 +813,29 @@ function isLegalDeployment(map: BattleMap, coord: GridCoord): boolean {
   ) {
     return false;
   }
-  return isWalkable(map, coord);
+  return isWalkable(map, coord, movementType);
 }
 
 function validateRequiredRoutes(setup: BattleSetup): void {
-  const pathfinder = createPathfinder(setup.map);
-  const hasRoute = (from: GridCoord, to: GridCoord): boolean =>
-    (from.x === to.x && from.z === to.z) || pathfinder.findPath(from, to).length > 0;
+  const pathfinders = new Map<MovementType, ReturnType<typeof createPathfinder>>();
+  const hasRoute = (
+    from: GridCoord,
+    to: GridCoord,
+    movementType: MovementType,
+  ): boolean => {
+    let pathfinder = pathfinders.get(movementType);
+    if (!pathfinder) {
+      pathfinder = createPathfinder(setup.map, movementType);
+      pathfinders.set(movementType, pathfinder);
+    }
+    return (
+      (from.x === to.x && from.z === to.z) ||
+      pathfinder.findPath(from, to).length > 0
+    );
+  };
   const evacuationBlocked = setup.groups.find(
-    (group) => !hasRoute(group.spawn, group.evacuation),
+    (group) =>
+      !hasRoute(group.spawn, group.evacuation, movementTypeForGroup(setup, group)),
   );
   if (evacuationBlocked) {
     throw new Error(`Group ${evacuationBlocked.id} has no legal route to its evacuation cell.`);
@@ -691,7 +849,10 @@ function validateRequiredRoutes(setup: BattleSetup): void {
       (entranceId) => entrancesById.get(entranceId)?.cells ?? [],
     );
     const blockedGroup = wave.groups.find(
-      (group) => !entranceCells.some((cell) => hasRoute(cell, group.evacuation)),
+      (group) =>
+        !entranceCells.some((cell) =>
+          hasRoute(cell, group.evacuation, movementTypeForGroup(setup, group)),
+        ),
     );
     if (blockedGroup) {
       throw new Error(
@@ -705,7 +866,14 @@ function validateRequiredRoutes(setup: BattleSetup): void {
     const objectives = defenseObjectives(mode);
     const missionBlocked = setup.groups.find((group) =>
       (group.factionId === mode.attackerFactionId || group.factionId === mode.defenderFactionId) &&
-      objectives.some((objective) => !hasRoute(group.spawn, objective.center)),
+      objectives.some(
+        (objective) =>
+          !hasRoute(
+            group.spawn,
+            objective.center,
+            movementTypeForGroup(setup, group),
+          ),
+      ),
     );
     if (missionBlocked) {
       const routeKind =
@@ -728,12 +896,40 @@ function validateRequiredRoutes(setup: BattleSetup): void {
       (group) => group.factionId === relation.b,
     );
     const hasHostileRoute = firstFactionGroups.some((first) =>
-      secondFactionGroups.some((second) => hasRoute(first.spawn, second.spawn)),
+      secondFactionGroups.some(
+        (second) =>
+          hasRoute(
+            first.spawn,
+            second.spawn,
+            movementTypeForGroup(setup, first),
+          ) ||
+          hasRoute(
+            second.spawn,
+            first.spawn,
+            movementTypeForGroup(setup, second),
+          ),
+      ),
     );
     if (!hasHostileRoute) {
       throw new Error(
         `Conflict mode requires at least one legal cross-map attack route between ${relation.a} and ${relation.b}.`,
       );
+    }
+  }
+}
+
+function hashPlatformSpawns(
+  hasher: StateHasher,
+  platforms: BattleSetup["groups"][number]["platforms"],
+): void {
+  for (const platform of platforms) {
+    hasher.addString(platform.id);
+    hasher.addString(platform.platformTemplateId);
+    hasher.addNumber(platform.initialFacing);
+    hasher.addString(platform.persistentId ?? "");
+    for (const assignment of platform.crewAssignments) {
+      hasher.addString(assignment.stationId);
+      hasher.addString(assignment.memberId);
     }
   }
 }

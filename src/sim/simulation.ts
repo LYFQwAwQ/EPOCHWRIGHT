@@ -35,6 +35,7 @@ import type {
   IntelMessage,
   MemberState,
   ObjectiveRuntimeState,
+  PlatformState,
   ReinforcementRuntimeState,
   RuntimeState,
   ShotIntent,
@@ -58,11 +59,13 @@ import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
 import {
   getGroupTemplate,
   getMemberTemplate,
+  getPlatformTemplate,
   getWeaponTemplate,
 } from "./content";
 import {
   hashBattleSetup,
   migrateBattleSetup,
+  movementTypeForGroup,
   validateBattleSetup,
 } from "./setup";
 import {
@@ -88,12 +91,18 @@ import type {
   GroupInspection,
   HealthState,
   MemberInspection,
+  MemberPlacement,
+  MovementType,
   ObjectiveInspection,
+  PlatformInspection,
+  PlatformSummaryInspection,
   RenderFrame,
   RenderGroup,
   RenderMember,
   RenderObjective,
+  RenderPlatform,
   SimulationStatus,
+  StaticObjectFacing,
 } from "./types";
 
 const MOVE_POINTS_PER_TICK = 52;
@@ -169,8 +178,10 @@ class StageOneBattleSimulation implements BattleSimulation {
   private readonly state: RuntimeState;
   private readonly coverSlots: readonly CoverSlot[];
   private readonly coverSlotsByCell: ReadonlyMap<number, CoverSlot>;
+  /** Foot pathfinder compatibility alias for focused simulation tests. */
   private readonly pathfinder: Pathfinder;
-  private readonly walkableComponentIds: Int32Array;
+  private readonly pathfinders: ReadonlyMap<MovementType, Pathfinder>;
+  private readonly walkableComponentIds: ReadonlyMap<MovementType, Int32Array>;
   private readonly setupHash: string;
 
   constructor(inputSetup: BattleSetupInput) {
@@ -183,8 +194,22 @@ class StageOneBattleSimulation implements BattleSimulation {
       this.coverSlots.map((slot) => [cellIndex(this.setup.map, slot.cell), slot]),
     );
     this.state = createRuntimeState(this.setup, this.coverSlotsByCell);
-    this.pathfinder = createPathfinder(this.setup.map);
-    this.walkableComponentIds = buildWalkableComponentIds(this.setup.map);
+    this.pathfinder = createPathfinder(this.setup.map, "foot");
+    const movementTypes: readonly MovementType[] = ["foot", "wheeled", "tracked"];
+    this.pathfinders = new Map(
+      movementTypes.map((movementType) => [
+        movementType,
+        movementType === "foot"
+          ? this.pathfinder
+          : createPathfinder(this.setup.map, movementType),
+      ]),
+    );
+    this.walkableComponentIds = new Map(
+      movementTypes.map((movementType) => [
+        movementType,
+        buildWalkableComponentIds(this.setup.map, movementType),
+      ]),
+    );
     this.assignDefenseSlots();
     this.initializePaths();
   }
@@ -213,6 +238,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   getRenderFrame(observerFactionId?: FactionId): RenderFrame {
     const groups: RenderGroup[] = [];
     const members: RenderMember[] = [];
+    const platforms: RenderPlatform[] = [];
     const objectives: RenderObjective[] = [];
     const cellSizeMeters = this.setup.map.cellSizeMm / 1_000;
     const heightUnitMeters = this.setup.map.heightUnitMm / 1_000;
@@ -250,12 +276,33 @@ class StageOneBattleSimulation implements BattleSimulation {
         activeMembers: contact ? 0 : activeMemberCount(group),
       });
 
+      for (const platform of group.platforms) {
+        platforms.push({
+          id: platform.id,
+          groupId: group.id,
+          factionId: group.factionId,
+          ...(observerFactionId === undefined
+            ? {}
+            : { visibility: ownGroup ? ("own" as const) : ("known" as const) }),
+          ...(contact ? { observedAt: contact.observedAt } : {}),
+          worldX: renderPosition.x * cellSizeMeters,
+          worldY: renderPosition.height * heightUnitMeters,
+          worldZ: renderPosition.z * cellSizeMeters,
+          headingRadians: contact ? 0 : group.headingRadians,
+          mobility: platform.mobility,
+          combat: platform.combat,
+          disposition: platform.disposition,
+          damaged: platform.components.some((component) => component.integrityBps < 10_000),
+          visualTypeId: platform.visualTypeId,
+        });
+      }
+
       if (contact) {
         continue;
       }
       const memberStates = [...group.members].sort(compareById);
       memberStates.forEach((member, memberIndex) => {
-        if (member.presence === "evacuated") {
+        if (member.presence === "evacuated" || member.placement.kind !== "dismounted") {
           return;
         }
         const offset = GROUP_SLOT_OFFSETS[memberIndex % GROUP_SLOT_OFFSETS.length] ?? [0, 0];
@@ -289,7 +336,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       });
     }
 
-    return { tick: this.state.tick, groups, members, objectives };
+    return { tick: this.state.tick, groups, members, platforms, objectives };
   }
 
   inspect(entityId: string, observerFactionId?: FactionId): EntityInspection | undefined {
@@ -308,6 +355,27 @@ class StageOneBattleSimulation implements BattleSimulation {
     if (objective) {
       return this.inspectObjective(objective);
     }
+    const platform = this.state.platformsById.get(entityId);
+    if (platform) {
+      if (observerFactionId !== undefined && platform.factionId !== observerFactionId) {
+        return undefined;
+      }
+      const group = this.state.groupsById.get(platform.groupId);
+      if (!group) {
+        return undefined;
+      }
+      const inspection: PlatformInspection = {
+        kind: "platform",
+        ...this.platformSummary(platform),
+        groupId: platform.groupId,
+        factionId: platform.factionId,
+        cell: { ...group.cell },
+        visualTypeId: platform.visualTypeId,
+        crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+        components: platform.components.map((component) => ({ ...component })),
+      };
+      return inspection;
+    }
     const member = this.state.membersById.get(entityId);
     if (!member || (observerFactionId !== undefined && member.factionId !== observerFactionId)) {
       return undefined;
@@ -319,6 +387,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       factionId: member.factionId,
       health: member.health,
       presence: member.presence,
+      placement: { ...member.placement },
       magazineRounds: member.magazineRounds,
       reloadTicksRemaining: member.reloadTicksRemaining,
       shotCooldownTicks: member.shotCooldownTicks,
@@ -377,6 +446,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(group.movingTo?.z ?? -1);
       hasher.addNumber(group.moveProgress);
       hasher.addNumber(group.moveCost);
+      hasher.addNumber(group.turnTicksRemaining);
+      hasher.addString(group.movementType);
       hasher.addString(group.action);
       hasher.addNumber(group.moraleBps);
       hasher.addString(group.moraleState);
@@ -410,9 +481,31 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(member.weaponTemplateId);
         hasher.addString(member.health);
         hasher.addString(member.presence);
+        hasher.addString(member.placement.kind);
+        hasher.addString(member.placement.kind === "dismounted" ? "" : member.placement.platformId);
+        hasher.addString(member.placement.kind === "crew" ? member.placement.stationId : "");
         hasher.addNumber(member.magazineRounds);
         hasher.addNumber(member.reloadTicksRemaining);
         hasher.addNumber(member.shotCooldownTicks);
+      }
+      for (const platform of group.platforms) {
+        hasher.addString(platform.id);
+        hasher.addString(platform.platformTemplateId);
+        hasher.addString(platform.persistentPlatformId ?? "");
+        hasher.addNumber(platform.facing);
+        hasher.addString(platform.mobility);
+        hasher.addString(platform.combat);
+        hasher.addString(platform.disposition);
+        for (const assignment of platform.crewAssignments) {
+          hasher.addString(assignment.stationId);
+          hasher.addString(assignment.memberId);
+        }
+        for (const component of platform.components) {
+          hasher.addString(component.id);
+          hasher.addString(component.kind);
+          hasher.addNumber(component.integrityBps);
+          hasher.addString(component.state);
+        }
       }
       for (const contact of sortedContacts(group.localContacts)) {
         addContactToHash(hasher, contact);
@@ -553,7 +646,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           const candidate = { x, z };
           const distance = squaredGridDistance(candidate, objective.center);
           if (
-            isWalkable(this.setup.map, candidate) &&
+            isWalkable(this.setup.map, candidate, group.movementType) &&
             distance <= maximumRadius ** 2 &&
             (role !== "reserve" || distance >= (objective.radiusCells + 1) ** 2)
           ) {
@@ -578,7 +671,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         ) {
           return false;
         }
-        return this.pathfinder.findPath(group.cell, candidate).length > 0;
+        return this.pathfinderFor(group).findPath(group.cell, candidate).length > 0;
       });
       reachable.sort((a, b) => {
         const scoreDifference =
@@ -663,7 +756,13 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (this.isEnemyControlledEntrance(entrance)) {
         return false;
       }
-      return this.openEntranceCells(entrance).length > 0;
+      return remainingGroups.some(
+        (group) =>
+          this.openEntranceCells(
+            entrance,
+            movementTypeForGroup(this.setup, group),
+          ).length > 0,
+      );
     });
     if (!selected) {
       if (wave.blockedPolicy === "cancel") {
@@ -691,25 +790,33 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
 
-    const openCells = this.openEntranceCells(selected);
-    const deploymentCount = Math.min(
-      selected.capacityPerTick,
-      openCells.length,
-      remainingGroups.length,
-    );
     const deployedGroups: GroupState[] = [];
-    for (let index = 0; index < deploymentCount; index += 1) {
-      const spawn = remainingGroups[index]!;
-      const group = createGroupState(spawn, openCells[index]!, this.setup.content!);
+    const usedCells = new Set<number>();
+    for (const spawn of remainingGroups) {
+      if (deployedGroups.length >= selected.capacityPerTick) {
+        break;
+      }
+      const openCell = this.openEntranceCells(
+        selected,
+        movementTypeForGroup(this.setup, spawn),
+      ).find((cell) => !usedCells.has(cellIndex(this.setup.map, cell)));
+      if (!openCell) {
+        continue;
+      }
+      usedCells.add(cellIndex(this.setup.map, openCell));
+      const group = createGroupState(spawn, openCell, this.setup.content!);
       deployedGroups.push(group);
       wave.deployedGroupIds.push(group.id);
       this.state.groupsById.set(group.id, group);
       for (const member of group.members) {
         this.state.membersById.set(member.id, member);
       }
+      for (const platform of group.platforms) {
+        this.state.platformsById.set(platform.id, platform);
+      }
       this.state.occupancy.set(cellIndex(this.setup.map, group.cell), group.id);
       const coverSlot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
-      if (coverSlot && activeMemberCount(group) > 0) {
+      if (coverSlot && activeMemberCount(group) > 0 && group.platforms.length === 0) {
         claimCoverSlot(this.state.coverOccupancy, coverSlot, group.id);
       }
     }
@@ -741,11 +848,16 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private openEntranceCells(
     entrance: BattleSetup["reinforcementEntrances"][number],
+    movementType: MovementType = "foot",
   ): readonly GridCoord[] {
     return entrance.cells
       .filter((cell) => {
         const index = cellIndex(this.setup.map, cell);
-        return !this.state.occupancy.has(index) && !this.state.reservations.has(index);
+        return (
+          isWalkable(this.setup.map, cell, movementType) &&
+          !this.state.occupancy.has(index) &&
+          !this.state.reservations.has(index)
+        );
       })
       .sort((a, b) => cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b));
   }
@@ -1205,7 +1317,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       .filter((objective) => objective.unlocked && objective.state !== "attacker-controlled")
       .map((objective) => ({
         objective,
-        pathLength: this.pathfinder.findPath(group.cell, objective.center).length ||
+        pathLength: this.pathfinderFor(group).findPath(group.cell, objective.center).length ||
           Number.MAX_SAFE_INTEGER,
       }))
       .sort((a, b) => {
@@ -1294,7 +1406,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private assignGoal(group: GroupState, desiredGoal: GridCoord): void {
-    const goal = this.findNearestWalkable(desiredGoal, group.cell);
+    const goal = this.findNearestWalkable(desiredGoal, group.cell, group.movementType);
     const goalChanged = !group.goal || !sameCoord(group.goal, goal);
     if (!goalChanged && group.path.length > 0) {
       group.goal = goal;
@@ -1305,7 +1417,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
     group.goal = goal;
     group.pathGoal = goal;
-    const path = this.pathfinder.findPath(group.movingTo ?? group.cell, goal);
+    const path = this.pathfinderFor(group).findPath(group.movingTo ?? group.cell, goal);
     group.path = path.map((coord) => ({ ...coord }));
   }
 
@@ -1336,6 +1448,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     return this.findNearestWalkable(
       { x, z: Math.min(this.setup.map.height - 2, z) },
       group.cell,
+      group.movementType,
     );
   }
 
@@ -1350,16 +1463,20 @@ class StageOneBattleSimulation implements BattleSimulation {
     return 0.12 + deploymentFraction * 0.76;
   }
 
-  private findNearestWalkable(origin: GridCoord, reachableFrom: GridCoord): GridCoord {
+  private findNearestWalkable(
+    origin: GridCoord,
+    reachableFrom: GridCoord,
+    movementType: MovementType,
+  ): GridCoord {
     const clamped = {
       x: Math.min(this.setup.map.width - 1, Math.max(0, Math.round(origin.x))),
       z: Math.min(this.setup.map.height - 1, Math.max(0, Math.round(origin.z))),
     };
-    const reachableComponent =
-      this.walkableComponentIds[cellIndex(this.setup.map, reachableFrom)] ?? -1;
+    const componentIds = this.walkableComponentIds.get(movementType)!;
+    const reachableComponent = componentIds[cellIndex(this.setup.map, reachableFrom)] ?? -1;
     const isReachable = (candidate: GridCoord): boolean =>
-      isWalkable(this.setup.map, candidate) &&
-      this.walkableComponentIds[cellIndex(this.setup.map, candidate)] === reachableComponent;
+      isWalkable(this.setup.map, candidate, movementType) &&
+      componentIds[cellIndex(this.setup.map, candidate)] === reachableComponent;
     if (isReachable(clamped)) {
       return clamped;
     }
@@ -1424,7 +1541,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           z: desiredGoal.z + dz,
         })).filter(
           (candidate) =>
-            isWalkable(this.setup.map, candidate) &&
+            isWalkable(this.setup.map, candidate, group.movementType) &&
             !sameCoord(candidate, group.cell) &&
             !this.state.occupancy.has(cellIndex(this.setup.map, candidate)) &&
             !this.state.reservations.has(cellIndex(this.setup.map, candidate)),
@@ -1433,12 +1550,12 @@ class StageOneBattleSimulation implements BattleSimulation {
     const options = candidateGoals
       .map((goal) => ({
         goal,
-        path: this.pathfinder.findPath(group.cell, goal, blocked),
+        path: this.pathfinderFor(group).findPath(group.cell, goal, blocked),
       }))
       .filter((option) => option.path.length > 1)
       .map((option) => ({
         ...option,
-        cost: pathMovementCost(this.setup.map, option.path),
+        cost: pathMovementCost(this.setup.map, option.path, group.movementType),
       }))
       .sort(
         (a, b) =>
@@ -1479,7 +1596,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           const occupyingGroupId = this.state.occupancy.get(candidateIndex);
           const reservingGroupId = this.state.reservations.get(candidateIndex);
           if (
-            !isWalkable(this.setup.map, candidate) ||
+            !isWalkable(this.setup.map, candidate, group.movementType) ||
             (occupyingGroupId !== undefined && occupyingGroupId !== group.id) ||
             (reservingGroupId !== undefined && reservingGroupId !== group.id) ||
             squaredGridDistance(candidate, target.cell) >
@@ -1491,14 +1608,16 @@ class StageOneBattleSimulation implements BattleSimulation {
           }
           const path = sameCoord(pathStart, candidate)
             ? [{ ...candidate }]
-            : this.pathfinder.findPath(pathStart, candidate, blocked);
+            : this.pathfinderFor(group).findPath(pathStart, candidate, blocked);
           if (path.length === 0) {
             continue;
           }
           options.push({
             goal: candidate,
             path,
-            cost: path.length === 1 ? 0 : pathMovementCost(this.setup.map, path),
+            cost: path.length === 1
+              ? 0
+              : pathMovementCost(this.setup.map, path, group.movementType),
           });
         }
       }
@@ -1522,7 +1641,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         const candidate = { x: group.cell.x + dx, z: group.cell.z + dz };
         if (
           (dx !== 0 || dz !== 0) &&
-          canTraverseStep(this.setup.map, group.cell, candidate) &&
+          canTraverseStep(this.setup.map, group.cell, candidate, group.movementType) &&
           !this.state.occupancy.has(cellIndex(this.setup.map, candidate)) &&
           (!constraint ||
             squaredGridDistance(candidate, constraint.center) <= constraint.radiusCells ** 2)
@@ -1543,6 +1662,13 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!group.movingTo) {
         continue;
       }
+      if (group.turnTicksRemaining > 0) {
+        group.turnTicksRemaining -= 1;
+        if (group.turnTicksRemaining === 0) {
+          this.applyMovementFacing(group, group.movingTo);
+        }
+        continue;
+      }
       group.moveProgress +=
         group.action === "routing" ? ROUTING_MOVE_POINTS_PER_TICK : MOVE_POINTS_PER_TICK;
       if (group.moveProgress < group.moveCost) {
@@ -1553,10 +1679,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       this.releaseCover(group);
       this.state.occupancy.delete(oldIndex);
       this.state.reservations.delete(destinationIndex);
-      group.headingRadians = Math.atan2(
-        group.movingTo.x - group.cell.x,
-        group.movingTo.z - group.cell.z,
-      );
+      if (group.platforms.length === 0) {
+        group.headingRadians = Math.atan2(
+          group.movingTo.x - group.cell.x,
+          group.movingTo.z - group.cell.z,
+        );
+      }
       group.cell = group.movingTo;
       group.movingTo = undefined;
       group.moveProgress = 0;
@@ -1575,6 +1703,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         group.action === "engaging" ||
         group.action === "evacuated" ||
         group.action === "combat-ineffective" ||
+        group.platforms.some(
+          (platform) => platform.mobility !== "mobile" || platform.disposition !== "crewed",
+        ) ||
         group.path.length === 0
       ) {
         continue;
@@ -1586,7 +1717,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!destination) {
         continue;
       }
-      if (!canTraverseStep(this.setup.map, group.cell, destination)) {
+      if (!canTraverseStep(this.setup.map, group.cell, destination, group.movementType)) {
         group.path = [];
         group.pathGoal = undefined;
         continue;
@@ -1617,7 +1748,21 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.setup.map,
         proposal.group.cell,
         proposal.destination,
+        proposal.group.movementType,
       );
+      const platform = proposal.group.platforms[0];
+      if (platform) {
+        const desiredFacing = facingForStep(proposal.group.cell, proposal.destination);
+        const turnSteps = shortestFacingSteps(platform.facing, desiredFacing);
+        const template = getPlatformTemplate(
+          this.setup.content,
+          platform.platformTemplateId,
+        );
+        proposal.group.turnTicksRemaining = turnSteps * template.turnTicksPer45Degrees;
+        if (proposal.group.turnTicksRemaining === 0) {
+          this.applyMovementFacing(proposal.group, proposal.destination);
+        }
+      }
       proposal.group.waitAge = 0;
       this.state.reservations.set(destinationIndex, proposal.group.id);
     }
@@ -1629,6 +1774,9 @@ class StageOneBattleSimulation implements BattleSimulation {
     for (const group of this.state.groups) {
       for (const member of group.members) {
         updateWeaponTimer(member, this.weaponForMember(member));
+      }
+      if (group.platforms.length > 0) {
+        continue;
       }
       const advancingAttacker =
         this.setup.mode.kind === "defense" &&
@@ -1643,6 +1791,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       const target = this.state.groupsById.get(group.currentTargetId);
       if (
         !target ||
+        target.platforms.length > 0 ||
         !this.isHostile(group.factionId, target.factionId) ||
         activeMemberCount(target) === 0 ||
         !this.hasFreshDirectContact(group, target)
@@ -1664,7 +1813,7 @@ class StageOneBattleSimulation implements BattleSimulation {
 
       let shotOrdinal = 0;
       for (const member of group.members) {
-        if (!canMemberFight(member)) {
+        if (!canMemberFight(member) || member.placement.kind !== "dismounted") {
           continue;
         }
         const weapon = this.weaponForMember(member);
@@ -1725,7 +1874,11 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!target) {
         continue;
       }
-      const eligibleTargets = target.members.filter(canMemberFight).sort(compareById);
+      const eligibleTargets = target.members
+        .filter(
+          (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+        )
+        .sort(compareById);
       if (eligibleTargets.length === 0) {
         continue;
       }
@@ -2141,12 +2294,14 @@ class StageOneBattleSimulation implements BattleSimulation {
     const stateHash = this.getStateHash();
     this.state.result = {
       battleId: this.setup.battleId,
+      rulesVersion: this.setup.rulesVersion,
       finalTick: resultTick,
       outcome: winnerFactionIds.length > 0 ? "win" : "draw",
       terminationReason,
       winnerFactionIds: [...winnerFactionIds],
       groups: this.buildGroupResults(),
       members: this.buildMemberResults(),
+      platforms: this.buildPlatformResults(),
       objectives: this.state.objectives.map((objective) => ({
         id: objective.id,
         state: objective.state,
@@ -2198,6 +2353,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         factionId: group.factionId,
         health: member.health,
         presence: member.presence,
+        finalPlacement: { ...member.placement },
         disposition:
           member.presence === "evacuated"
             ? "evacuated" as const
@@ -2217,12 +2373,34 @@ class StageOneBattleSimulation implements BattleSimulation {
             factionId: group.factionId,
             health: member.initialHealth ?? "healthy" as const,
             presence: "undeployed" as const,
+            finalPlacement: placementForSpawnMember(group, member.id),
             disposition: "undeployed" as const,
             deployment: "undeployed" as const,
           })),
         ),
     );
     return [...deployed, ...undeployed].sort((a, b) => compareStrings(a.id, b.id));
+  }
+
+  private buildPlatformResults(): BattleResult["platforms"] {
+    return this.state.groups
+      .flatMap((group) =>
+        group.platforms.map((platform) => ({
+          id: platform.id,
+          groupId: platform.groupId,
+          factionId: platform.factionId,
+          persistentId: platform.persistentPlatformId,
+          mobility: platform.mobility,
+          combat: platform.combat,
+          disposition: platform.disposition,
+          damaged: platform.components.some((component) => component.integrityBps < 10_000),
+          components: platform.components.map((component) => ({ ...component })),
+          finalCrewAssignments: platform.crewAssignments.map((assignment) => ({
+            ...assignment,
+          })),
+        })),
+      )
+      .sort((a, b) => compareStrings(a.id, b.id));
   }
 
   private hasFreshDirectContact(observer: GroupState, target: GroupState): boolean {
@@ -2303,11 +2481,13 @@ class StageOneBattleSimulation implements BattleSimulation {
 
       const path = sameCoord(pathStart, slot.cell)
         ? [{ ...slot.cell }]
-        : this.pathfinder.findPath(pathStart, slot.cell, blocked);
+        : this.pathfinderFor(group).findPath(pathStart, slot.cell, blocked);
       if (path.length === 0) {
         continue;
       }
-      const pathCost = path.length === 1 ? 0 : pathMovementCost(this.setup.map, path);
+      const pathCost = path.length === 1
+        ? 0
+        : pathMovementCost(this.setup.map, path, group.movementType);
       options.push({
         slot,
         path,
@@ -2459,7 +2639,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private claimCover(group: GroupState): void {
-    if (activeMemberCount(group) === 0) {
+    if (activeMemberCount(group) === 0 || group.platforms.length > 0) {
       return;
     }
     const slot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
@@ -2482,6 +2662,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.movingTo = undefined;
     group.moveProgress = 0;
     group.moveCost = 0;
+    group.turnTicksRemaining = 0;
     group.waitAge = 0;
     group.path = [];
     group.pathGoal = undefined;
@@ -2598,6 +2779,7 @@ class StageOneBattleSimulation implements BattleSimulation {
               : undefined,
           }
         : undefined,
+      platforms: group.platforms.map((platform) => this.platformSummary(platform)),
     };
   }
 
@@ -2620,6 +2802,23 @@ class StageOneBattleSimulation implements BattleSimulation {
       deadMembers: 0,
       contacts: [],
       path: [],
+      platforms: [],
+    };
+  }
+
+  private platformSummary(platform: PlatformState): PlatformSummaryInspection {
+    return {
+      id: platform.id,
+      platformTemplateId: platform.platformTemplateId,
+      movementType: platform.movementType,
+      facing: platform.facing,
+      mobility: platform.mobility,
+      combat: platform.combat,
+      disposition: platform.disposition,
+      crewCount: platform.crewAssignments.filter((assignment) => {
+        const member = this.state.membersById.get(assignment.memberId);
+        return member ? canMemberFight(member) : false;
+      }).length,
     };
   }
 
@@ -2659,8 +2858,13 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private groupWeaponRangeCells(group: GroupState): number {
+    if (group.platforms.length > 0) {
+      return 0;
+    }
     const maximum = group.members
-      .filter(canMemberFight)
+      .filter(
+        (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+      )
       .reduce(
         (range, member) => Math.max(range, this.weaponRangeCells(this.weaponForMember(member))),
         0,
@@ -2684,7 +2888,9 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private groupExposureOnFireBps(group: GroupState): number {
     return group.members
-      .filter(canMemberFight)
+      .filter(
+        (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+      )
       .reduce(
         (exposure, member) => Math.max(exposure, this.weaponForMember(member).exposureOnFireBps),
         0,
@@ -2706,7 +2912,9 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private groupCapturePower(group: GroupState): number {
     const memberPowerBps = group.members
-      .filter(canMemberFight)
+      .filter(
+        (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+      )
       .reduce(
         (sum, member) =>
           sum + getMemberTemplate(this.setup.content!, member.memberTemplateId).capturePowerBps,
@@ -2716,7 +2924,18 @@ class StageOneBattleSimulation implements BattleSimulation {
       this.setup.content!,
       group.groupTemplateId,
     ).capturePowerScaleBps;
-    return Math.floor((memberPowerBps * groupScaleBps) / 100_000_000);
+    const platformPowerBps = group.platforms.reduce(
+      (sum, platform) =>
+        sum +
+        (platform.disposition === "crewed" && platform.mobility === "mobile"
+          ? getPlatformTemplate(
+              this.setup.content,
+              platform.platformTemplateId,
+            ).capturePowerBps
+          : 0),
+      0,
+    );
+    return Math.floor(((memberPowerBps + platformPowerBps) * groupScaleBps) / 100_000_000);
   }
 
   private markMeaningfulProgress(): void {
@@ -2725,6 +2944,18 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private isHostile(a: FactionId, b: FactionId): boolean {
     return areHostile(this.setup.relations, a, b);
+  }
+
+  private pathfinderFor(group: GroupState): Pathfinder {
+    return this.pathfinders.get(group.movementType)!;
+  }
+
+  private applyMovementFacing(group: GroupState, destination: GridCoord): void {
+    const facing = facingForStep(group.cell, destination);
+    group.headingRadians = facing * (Math.PI / 4);
+    for (const platform of group.platforms) {
+      platform.facing = facing;
+    }
   }
 
   private emit(
@@ -2746,13 +2977,33 @@ function confidenceAtAge(age: number, forgetTicks: number): number {
   return Math.max(0, Math.round(10_000 * (1 - age / forgetTicks)));
 }
 
+function placementForSpawnMember(
+  group: BattleSetup["groups"][number],
+  memberId: string,
+): MemberPlacement {
+  for (const platform of group.platforms) {
+    const assignment = platform.crewAssignments.find(
+      (candidate) => candidate.memberId === memberId,
+    );
+    if (assignment) {
+      return {
+        kind: "crew",
+        platformId: platform.id,
+        stationId: assignment.stationId,
+      };
+    }
+  }
+  return { kind: "dismounted" };
+}
+
 function pathMovementCost(
   map: BattleSetup["map"],
   path: readonly GridCoord[],
+  movementType: MovementType,
 ): number {
   let cost = 0;
   for (let index = 1; index < path.length; index += 1) {
-    cost += movementStepCost(map, path[index - 1]!, path[index]!);
+    cost += movementStepCost(map, path[index - 1]!, path[index]!, movementType);
   }
   return cost;
 }
@@ -2765,7 +3016,10 @@ function shouldRetryMovementPath(waitAge: number): boolean {
   );
 }
 
-function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
+function buildWalkableComponentIds(
+  map: BattleSetup["map"],
+  movementType: MovementType,
+): Int32Array {
   const componentIds = new Int32Array(map.width * map.height).fill(-1);
   let nextComponentId = 0;
 
@@ -2777,7 +3031,7 @@ function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
       x: startIndex % map.width,
       z: Math.floor(startIndex / map.width),
     };
-    if (!isWalkable(map, start)) {
+    if (!isWalkable(map, start, movementType)) {
       continue;
     }
 
@@ -2797,7 +3051,7 @@ function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
         const neighborIndex = cellIndex(map, neighbor);
         if (
           componentIds[neighborIndex] !== -1 ||
-          !canTraverseStep(map, current, neighbor)
+          !canTraverseStep(map, current, neighbor, movementType)
         ) {
           continue;
         }
@@ -2813,6 +3067,21 @@ function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
 
 function sameCoord(a: GridCoord, b: GridCoord): boolean {
   return a.x === b.x && a.z === b.z;
+}
+
+function facingForStep(from: GridCoord, to: GridCoord): StaticObjectFacing {
+  const octant = Math.round(
+    Math.atan2(to.x - from.x, to.z - from.z) / (Math.PI / 4),
+  );
+  return ((octant + 8) % 8) as StaticObjectFacing;
+}
+
+function shortestFacingSteps(
+  from: StaticObjectFacing,
+  to: StaticObjectFacing,
+): number {
+  const difference = Math.abs(from - to);
+  return Math.min(difference, 8 - difference);
 }
 
 function addContactToHash(hasher: StateHasher, contact: ContactState): void {

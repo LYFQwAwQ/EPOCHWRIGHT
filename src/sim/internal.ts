@@ -12,10 +12,20 @@ import type {
   GroupSpawn,
   HealthState,
   MemberId,
+  MemberPlacement,
+  MovementType,
   MoraleState,
   ObjectiveControlState,
   ObjectiveId,
   PresenceState,
+  PlatformCombatState,
+  PlatformComponentKind,
+  PlatformComponentState,
+  PlatformDisposition,
+  PlatformId,
+  PlatformMobilityState,
+  PlatformMovementType,
+  StaticObjectFacing,
   ReinforcementBlockedPolicy,
   Tick,
 } from "./types";
@@ -31,6 +41,30 @@ export interface MemberState {
   magazineRounds: number;
   reloadTicksRemaining: Tick;
   shotCooldownTicks: Tick;
+  placement: MemberPlacement;
+}
+
+export interface PlatformComponentStateValue {
+  readonly id: string;
+  readonly kind: PlatformComponentKind;
+  integrityBps: number;
+  state: PlatformComponentState;
+}
+
+export interface PlatformState {
+  readonly id: PlatformId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly platformTemplateId: string;
+  readonly persistentPlatformId?: string;
+  readonly movementType: PlatformMovementType;
+  readonly visualTypeId: string;
+  facing: StaticObjectFacing;
+  mobility: PlatformMobilityState;
+  combat: PlatformCombatState;
+  disposition: PlatformDisposition;
+  readonly crewAssignments: { readonly stationId: string; readonly memberId: MemberId }[];
+  readonly components: PlatformComponentStateValue[];
 }
 
 export interface DetectionState {
@@ -70,12 +104,15 @@ export interface GroupState {
   readonly id: GroupId;
   readonly factionId: FactionId;
   readonly groupTemplateId: string;
+  readonly movementType: MovementType;
   readonly evacuation: GridCoord;
   readonly members: MemberState[];
+  readonly platforms: PlatformState[];
   cell: GridCoord;
   movingTo?: GridCoord;
   moveProgress: number;
   moveCost: number;
+  turnTicksRemaining: Tick;
   waitAge: number;
   headingRadians: number;
   path: GridCoord[];
@@ -145,6 +182,7 @@ export interface RuntimeState {
   readonly groups: GroupState[];
   readonly groupsById: Map<GroupId, GroupState>;
   readonly membersById: Map<MemberId, MemberState>;
+  readonly platformsById: Map<PlatformId, PlatformState>;
   readonly factionKnowledge: Map<FactionId, FactionKnowledgeState>;
   readonly intelQueue: IntelMessage[];
   readonly events: BattleEvent[];

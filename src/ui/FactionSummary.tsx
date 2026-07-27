@@ -22,7 +22,14 @@ export function FactionSummary({ factions, frame }: FactionSummaryProps) {
         const losses = members.filter(
           (member) => member.health === "dead" || member.health === "incapacitated",
         ).length;
-        const total = Math.max(1, members.length);
+        const platforms = frame.platforms.filter(
+          (platform) => platform.factionId === faction.id,
+        );
+        const readyPlatforms = platforms.filter(
+          (platform) => platform.disposition === "crewed" && platform.mobility === "mobile",
+        ).length;
+        const effective = ready + readyPlatforms;
+        const total = Math.max(1, members.length + platforms.length);
         const routing = frame.groups.filter(
           (group) => group.factionId === faction.id && group.action === "routing",
         ).length;
@@ -33,18 +40,19 @@ export function FactionSummary({ factions, frame }: FactionSummaryProps) {
             <div className="faction-main">
               <div className="faction-label">
                 <strong>{faction.displayName}</strong>
-                <span>{ready} 有效</span>
+                <span>{effective} 有效单位</span>
               </div>
               <div className="strength-track" aria-hidden="true">
                 <span
                   style={{
-                    width: `${(ready / total) * 100}%`,
+                    width: `${(effective / total) * 100}%`,
                     backgroundColor: faction.color,
                   }}
                 />
               </div>
               <div className="faction-meta">
                 <span>{losses} 伤亡</span>
+                <span>{readyPlatforms} 可机动平台</span>
                 <span>{routing} 溃散编组</span>
               </div>
             </div>

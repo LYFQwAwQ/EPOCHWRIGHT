@@ -191,6 +191,7 @@ function createGroup(
       memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
       initialHealth,
     })),
+    platforms: [],
   };
 }
 

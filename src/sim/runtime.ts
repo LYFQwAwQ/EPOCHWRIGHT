@@ -3,12 +3,14 @@ import {
   cloneBattleContent,
   getGroupTemplate,
   getMemberTemplate,
+  getPlatformTemplate,
   getPrimaryWeaponTemplate,
 } from "./content";
 import { claimCoverSlot } from "./cover";
 import type {
   GroupState,
   MemberState,
+  PlatformState,
   ReinforcementRuntimeState,
   RuntimeState,
 } from "./internal";
@@ -31,10 +33,15 @@ export function createRuntimeState(
   const membersById = new Map(
     groups.flatMap((group) => group.members.map((member) => [member.id, member] as const)),
   );
+  const platformsById = new Map(
+    groups.flatMap((group) =>
+      group.platforms.map((platform) => [platform.id, platform] as const),
+    ),
+  );
   const coverOccupancy = new Map<string, GroupId>();
   for (const group of groups) {
     const slot = coverSlotsByCell.get(cellIndex(setup.map, group.cell));
-    if (slot && activeMemberCount(group) > 0) {
+    if (slot && activeMemberCount(group) > 0 && group.platforms.length === 0) {
       claimCoverSlot(coverOccupancy, slot, group.id);
     }
   }
@@ -66,6 +73,7 @@ export function createRuntimeState(
         spawn: { ...group.spawn },
         evacuation: { ...group.evacuation },
         members: group.members.map((member) => ({ ...member })),
+        platforms: group.platforms.map(clonePlatformSpawn),
       })),
       blockedPolicy: wave.blockedPolicy,
       status: "pending",
@@ -76,6 +84,7 @@ export function createRuntimeState(
     groups,
     groupsById,
     membersById,
+    platformsById,
     factionKnowledge: new Map(
       setup.factions.map((faction) => [
         faction.id,
@@ -103,10 +112,48 @@ export function createGroupState(
   content: BattleSetup["content"],
 ): GroupState {
   const groupTemplate = getGroupTemplate(content, spawn.groupTemplateId);
+  const platforms = spawn.platforms.map<PlatformState>((platform) => {
+    const template = getPlatformTemplate(content, platform.platformTemplateId);
+    return {
+      id: platform.id,
+      groupId: spawn.id,
+      factionId: spawn.factionId,
+      platformTemplateId: template.id,
+      persistentPlatformId: platform.persistentId,
+      movementType: template.movementType,
+      visualTypeId: template.visualTypeId,
+      facing: platform.initialFacing,
+      mobility: "mobile",
+      combat: template.componentRules.some((component) => component.kind === "weapon")
+        ? "effective"
+        : "ineffective",
+      disposition: platform.crewAssignments.length > 0 ? "crewed" : "abandoned",
+      crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+      components: template.componentRules.map((component) => ({
+        id: component.id,
+        kind: component.kind,
+        integrityBps: 10_000,
+        state: "operational",
+      })),
+    };
+  });
+  const crewPlacementByMemberId = new Map(
+    platforms.flatMap((platform) =>
+      platform.crewAssignments.map((assignment) => [
+        assignment.memberId,
+        {
+          kind: "crew" as const,
+          platformId: platform.id,
+          stationId: assignment.stationId,
+        },
+      ]),
+    ),
+  );
   return {
     id: spawn.id,
     factionId: spawn.factionId,
     groupTemplateId: groupTemplate.id,
+    movementType: platforms[0]?.movementType ?? "foot",
     evacuation: { ...spawn.evacuation },
     members: [...spawn.members]
       .sort(compareById)
@@ -124,13 +171,16 @@ export function createGroupState(
           magazineRounds: weapon.magazineSize,
           reloadTicksRemaining: 0,
           shotCooldownTicks: 0,
+          placement: crewPlacementByMemberId.get(member.id) ?? { kind: "dismounted" },
         };
       }),
+    platforms,
     cell: { ...cell },
     moveProgress: 0,
     moveCost: 0,
+    turnTicksRemaining: 0,
     waitAge: 0,
-    headingRadians: 0,
+    headingRadians: platforms[0] ? platforms[0].facing * (Math.PI / 4) : 0,
     path: [],
     action: "searching",
     decisionReason: "search-sector",
@@ -177,6 +227,7 @@ export function cloneBattleSetup(setup: BattleSetup): BattleSetup {
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
       members: group.members.map((member) => ({ ...member })),
+      platforms: group.platforms.map(clonePlatformSpawn),
     })),
     reinforcementEntrances: setup.reinforcementEntrances.map((entrance) => ({
       ...entrance,
@@ -191,6 +242,7 @@ export function cloneBattleSetup(setup: BattleSetup): BattleSetup {
         spawn: { ...group.spawn },
         evacuation: { ...group.evacuation },
         members: group.members.map((member) => ({ ...member })),
+        platforms: group.platforms.map(clonePlatformSpawn),
       })),
     })),
     mode:
@@ -208,5 +260,17 @@ export function cloneBattleSetup(setup: BattleSetup): BattleSetup {
           }
         : { kind: "conflict" },
     rules: { ...setup.rules },
+    transportAssignments: setup.transportAssignments.map((assignment) => ({
+      ...assignment,
+    })),
+  };
+}
+
+function clonePlatformSpawn(
+  platform: BattleSetup["groups"][number]["platforms"][number],
+): BattleSetup["groups"][number]["platforms"][number] {
+  return {
+    ...platform,
+    crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
   };
 }

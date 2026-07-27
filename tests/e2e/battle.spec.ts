@@ -276,6 +276,38 @@ test("quality changes stay in the renderer and preserve the battle hash", async 
   expect(errors).toEqual([]);
 });
 
+test("vehicle scenario renders platforms and exposes crewed platform inspection", async ({
+  page,
+}, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=vehicle-skirmish&seed=e2e-vehicles",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      (window.__battleTest?.getPlatformIds().length ?? 0) === 2,
+  );
+
+  expect(await page.evaluate(() => window.__battleTest?.getPlatformIds())).toEqual([
+    "azure-tracked-1-platform",
+    "ember-wheeled-1-platform",
+  ]);
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-wheeled-1"));
+  await expect(page.getByTestId("platform-status")).toContainText("轮式可机动");
+
+  const metrics = await readCanvasMetrics(page);
+  expect(metrics.opaqueRatio).toBeGreaterThan(0.98);
+  expect(metrics.luminanceRange).toBeGreaterThan(70);
+  expect(metrics.quantizedColors).toBeGreaterThan(24);
+  expect(errors).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("vehicle-skirmish.png"),
+    fullPage: true,
+  });
+});
+
 test("faction observation projects only authorized groups and independent layers", async ({ page }) => {
   const errors = collectErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });

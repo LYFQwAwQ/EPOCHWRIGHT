@@ -150,8 +150,11 @@ describe("defense mode", () => {
     );
     const simulation = createSimulation(setup);
 
-    simulation.step(10);
-    const before = simulation.inspect("azure-shooter") as GroupInspection;
+    let before = simulation.inspect("azure-shooter") as GroupInspection;
+    for (let tick = 0; tick < 30 && before.decisionReason !== "clear-line-of-fire"; tick += 1) {
+      simulation.step();
+      before = simulation.inspect("azure-shooter") as GroupInspection;
+    }
     expect(before).toMatchObject({
       cell: { x: 20, z: 12 },
       destination: { x: 20, z: 13 },
@@ -549,6 +552,7 @@ function createGroup(
       memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
       initialHealth,
     })),
+    platforms: [],
   };
 }
 

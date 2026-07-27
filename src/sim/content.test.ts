@@ -5,6 +5,7 @@ import {
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
+  PRE_PLATFORM_BATTLE_RULES_VERSION,
   cloneBattleContent,
   createDefaultBattleContent,
   createSimulation,
@@ -16,11 +17,12 @@ import {
 import type { BattleSetupInput, MemberInspection } from "./types";
 
 describe("battle content templates", () => {
-  it("migrates pre-content setup input to stage-2.2 with explicit template references", () => {
+  it("migrates pre-content setup input to stage-3 with explicit template references", () => {
     const current = createDemoBattleSetup({ seed: "content-migration", groupsPerFaction: 1 });
     const legacy = {
       ...current,
       schemaVersion: "stage-2.1",
+      rulesVersion: PRE_PLATFORM_BATTLE_RULES_VERSION,
       content: undefined,
       groups: current.groups.map((group) => ({
         ...group,
@@ -35,7 +37,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-1");
+    expect(migrated.content?.contentVersion).toBe("content-2");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(
