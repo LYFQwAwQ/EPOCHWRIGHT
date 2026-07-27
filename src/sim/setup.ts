@@ -7,10 +7,20 @@ import { createPathfinder } from "./pathfinder";
 import { areHostile, defaultRelation, relationKey, sortRelations } from "./relations";
 import { StateHasher } from "./rng";
 import {
+  BATTLE_CONTENT_VERSION,
+  DEFAULT_GROUP_TEMPLATE_ID,
+  DEFAULT_MEMBER_TEMPLATE_ID,
+  cloneBattleContent,
+  createDefaultBattleContent,
+  hashBattleContent,
+  validateBattleContent,
+} from "./content";
+import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
   SIMULATION_HZ,
 } from "./types";
 import type {
@@ -20,35 +30,87 @@ import type {
   DefenseObjectiveSetup,
   FactionSetup,
   GridCoord,
+  GroupSpawnInput,
   RelationSetup,
   ReinforcementEntranceSetup,
   ReinforcementWaveSetup,
+  ReinforcementWaveSetupInput,
 } from "./types";
 
 export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const candidate = inputSetup;
-  if (
+  const isLegacyTwoFaction =
     candidate.schemaVersion === LEGACY_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === LEGACY_BATTLE_RULES_VERSION &&
-    candidate.factions?.length === 2
-  ) {
+    candidate.factions?.length === 2;
+  const isPreContent =
+    candidate.schemaVersion === PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === BATTLE_RULES_VERSION;
+  const injectDefaults = isLegacyTwoFaction || isPreContent;
+  const normalizedContent = candidate.content
+    ? shouldGenerateDefaultContent(candidate.content)
+      ? createContentForSetup(candidate)
+      : cloneBattleContent(candidate.content)
+    : injectDefaults
+      ? createContentForSetup(candidate)
+      : undefined;
+  const normalizedGroups = candidate.groups.map((group) => normalizeGroup(group, injectDefaults));
+  const normalizedReinforcements = (candidate.reinforcements ?? []).map((wave) => ({
+    ...cloneWave(wave),
+    groups: wave.groups.map((group) => normalizeGroup(group, injectDefaults)),
+  }));
+  if (isLegacyTwoFaction) {
     return {
       ...inputSetup,
       schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: BATTLE_RULES_VERSION,
+      content: normalizedContent,
       factions: inputSetup.factions.map((faction) => ({ ...faction })),
       relations: inputSetup.relations?.map((relation) => ({ ...relation })) ??
         createDefaultRelations(inputSetup.factions),
+      groups: normalizedGroups,
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
-      reinforcements: (inputSetup.reinforcements ?? []).map(cloneWave),
+      reinforcements: normalizedReinforcements,
+    } as BattleSetup;
+  }
+  if (isPreContent) {
+    return {
+      ...inputSetup,
+      schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
+      rulesVersion: BATTLE_RULES_VERSION,
+      content: normalizedContent,
+      groups: normalizedGroups,
+      relations: inputSetup.relations?.map((relation) => ({ ...relation })) ?? [],
+      reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
+      reinforcements: normalizedReinforcements,
     } as BattleSetup;
   }
   return {
     ...inputSetup,
+    content: normalizedContent,
+    groups: normalizedGroups,
     relations: inputSetup.relations?.map((relation) => ({ ...relation })) ?? [],
     reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
-    reinforcements: (inputSetup.reinforcements ?? []).map(cloneWave),
+    reinforcements: normalizedReinforcements,
   } as BattleSetup;
+}
+
+function createContentForSetup(setup: BattleSetupInput): ReturnType<typeof createDefaultBattleContent> {
+  return createDefaultBattleContent({
+    cellSizeMm: setup.map.cellSizeMm,
+    sightRangeCells: setup.rules.sightRangeCells,
+    weaponRangeCells: setup.rules.weaponRangeCells,
+    preferredRangeCells: setup.rules.preferredRangeCells,
+    contactForgetTicks: setup.rules.contactForgetTicks,
+  });
+}
+
+function shouldGenerateDefaultContent(content: NonNullable<BattleSetupInput["content"]>): boolean {
+  try {
+    return JSON.stringify(content) === JSON.stringify(createDefaultBattleContent());
+  } catch {
+    return false;
+  }
 }
 
 export function validateBattleSetup(inputSetup: BattleSetupInput): void {
@@ -59,6 +121,10 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
   ) {
     throw new Error("Unsupported battle setup version.");
   }
+  if (!setup.content || setup.content.contentVersion !== BATTLE_CONTENT_VERSION) {
+    throw new Error("Battle setup requires a supported content bundle.");
+  }
+  validateBattleContent(setup.content);
   if (setup.rules.ticksPerSecond !== SIMULATION_HZ) {
     throw new Error(`The simulation must run at ${SIMULATION_HZ} Hz.`);
   }
@@ -147,9 +213,7 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     if (!factionIds.has(group.factionId)) {
       throw new Error(`Group ${group.id} references an unknown faction.`);
     }
-    if (group.members.length !== 8) {
-      throw new Error(`Group ${group.id} must contain exactly eight members.`);
-    }
+    validateGroupRoster(setup, group);
     for (const member of group.members) {
       claimUniqueId(member.id, entityIds);
       if (
@@ -201,6 +265,10 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
   hasher.addString(normalized.rulesVersion);
   hasher.addString(normalized.battleId);
   hasher.addString(normalized.seed);
+  if (!normalized.content) {
+    throw new Error("Battle setup requires content before hashing.");
+  }
+  hasher.addString(hashBattleContent(normalized.content));
   hasher.addString(hashBattleMap(normalized.map));
 
   for (const faction of normalized.factions) {
@@ -220,12 +288,14 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
   for (const group of normalized.groups) {
     hasher.addString(group.id);
     hasher.addString(group.factionId);
+    hasher.addString(requireTemplateId(group.groupTemplateId, `Group ${group.id}`));
     hasher.addNumber(group.spawn.x);
     hasher.addNumber(group.spawn.z);
     hasher.addNumber(group.evacuation.x);
     hasher.addNumber(group.evacuation.z);
     for (const member of group.members) {
       hasher.addString(member.id);
+      hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
       hasher.addString(member.initialHealth ?? "healthy");
     }
   }
@@ -254,12 +324,14 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
     for (const group of wave.groups) {
       hasher.addString(group.id);
       hasher.addString(group.factionId);
+      hasher.addString(requireTemplateId(group.groupTemplateId, `Group ${group.id}`));
       hasher.addNumber(group.spawn.x);
       hasher.addNumber(group.spawn.z);
       hasher.addNumber(group.evacuation.x);
       hasher.addNumber(group.evacuation.z);
       for (const member of group.members) {
         hasher.addString(member.id);
+        hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
         hasher.addString(member.initialHealth ?? "healthy");
       }
     }
@@ -358,9 +430,10 @@ function validateReinforcements(
     }
     for (const group of wave.groups) {
       claimUniqueId(group.id, entityIds);
-      if (group.factionId !== wave.factionId || group.members.length !== 8) {
-        throw new Error(`Reinforcement group ${group.id} has an invalid faction or roster.`);
+      if (group.factionId !== wave.factionId) {
+        throw new Error(`Reinforcement group ${group.id} has an invalid faction.`);
       }
+      validateGroupRoster(setup, group);
       for (const member of group.members) {
         claimUniqueId(member.id, entityIds);
         if (
@@ -400,7 +473,7 @@ function cloneEntrance(entrance: ReinforcementEntranceSetup): ReinforcementEntra
   };
 }
 
-function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
+function cloneWave(wave: ReinforcementWaveSetupInput): ReinforcementWaveSetupInput {
   return {
     ...wave,
     entranceIds: wave.entranceIds ? [...wave.entranceIds] : undefined,
@@ -414,8 +487,95 @@ function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
   };
 }
 
+function normalizeGroup(
+  group: GroupSpawnInput,
+  injectDefaults: boolean,
+): BattleSetup["groups"][number] {
+  const groupTemplateId = group.groupTemplateId ??
+    (injectDefaults ? DEFAULT_GROUP_TEMPLATE_ID : undefined);
+  if (!groupTemplateId) {
+    throw new Error(`Group ${group.id} requires a group template ID.`);
+  }
+  return {
+    ...group,
+    groupTemplateId,
+    spawn: { ...group.spawn },
+    evacuation: { ...group.evacuation },
+    members: group.members.map((member) => {
+      const memberTemplateId = member.memberTemplateId ??
+        (injectDefaults ? DEFAULT_MEMBER_TEMPLATE_ID : undefined);
+      if (!memberTemplateId) {
+        throw new Error(`Member ${member.id} requires a member template ID.`);
+      }
+      return { ...member, memberTemplateId };
+    }),
+  };
+}
+
+function validateGroupRoster(
+  setup: BattleSetup,
+  group: BattleSetup["groups"][number],
+): void {
+  const groupTemplateId = group.groupTemplateId;
+  if (!groupTemplateId) {
+    throw new Error(`Group ${group.id} requires a group template ID.`);
+  }
+  const groupTemplate = setup.content?.groupTemplates[groupTemplateId];
+  if (!groupTemplate) {
+    throw new Error(`Group ${group.id} references an unknown group template: ${groupTemplateId}.`);
+  }
+  const era = setup.content?.eraTemplates[setup.content.eraId];
+  if (!era?.allowedGroupTemplateIds.includes(groupTemplateId)) {
+    throw new Error(`Group ${group.id} references a template outside era ${setup.content?.eraId}.`);
+  }
+  const expected = new Map<string, number>();
+  for (const slot of groupTemplate.memberSlotRules) {
+    expected.set(
+      slot.memberTemplateId,
+      (expected.get(slot.memberTemplateId) ?? 0) + slot.count,
+    );
+  }
+  if (group.members.length !== [...expected.values()].reduce((sum, count) => sum + count, 0)) {
+    throw new Error(`Group ${group.id} does not match template ${groupTemplateId} roster size.`);
+  }
+  const actual = new Map<string, number>();
+  for (const member of group.members) {
+    const memberTemplateId = member.memberTemplateId;
+    if (!memberTemplateId) {
+      throw new Error(`Member ${member.id} requires a member template ID.`);
+    }
+    if (!setup.content?.memberTemplates[memberTemplateId]) {
+      throw new Error(
+        `Member ${member.id} references an unknown member template: ${memberTemplateId}.`,
+      );
+    }
+    actual.set(memberTemplateId, (actual.get(memberTemplateId) ?? 0) + 1);
+  }
+  for (const [memberTemplateId, expectedCount] of expected) {
+    if ((actual.get(memberTemplateId) ?? 0) !== expectedCount) {
+      throw new Error(
+        `Group ${group.id} has an invalid count for member template ${memberTemplateId}.`,
+      );
+    }
+  }
+  for (const memberTemplateId of actual.keys()) {
+    if (!expected.has(memberTemplateId)) {
+      throw new Error(
+        `Group ${group.id} references member template ${memberTemplateId} outside its roster.`,
+      );
+    }
+  }
+}
+
 function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function requireTemplateId(id: string | undefined, owner: string): string {
+  if (!id) {
+    throw new Error(`${owner} requires a template ID before hashing.`);
+  }
+  return id;
 }
 
 function validateRelations(

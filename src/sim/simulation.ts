@@ -38,6 +38,13 @@ import { resolveObjectiveTick } from "./objective";
 import { areHostile, findRelation } from "./relations";
 import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
 import {
+  cloneBattleContent,
+  getGroupTemplate,
+  getMemberTemplate,
+  getPrimaryWeaponTemplate,
+  getWeaponTemplate,
+} from "./content";
+import {
   defenseObjectives,
   hashBattleSetup,
   migrateBattleSetup,
@@ -48,6 +55,7 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
+  BattleSetupInput,
   BattleSimulation,
   BattleTerminationReason,
   CoverEvaluationReason,
@@ -69,9 +77,6 @@ import type {
   SimulationStatus,
 } from "./types";
 
-const MAGAZINE_SIZE = 12;
-const RELOAD_TICKS = 36;
-const SHOT_COOLDOWN_TICKS = 7;
 const MOVE_POINTS_PER_TICK = 52;
 const ROUTING_MOVE_POINTS_PER_TICK = 68;
 const AI_INTERVAL_TICKS = 5;
@@ -116,8 +121,8 @@ interface MovementProposal {
 }
 
 interface SuppressionImpact {
-  shots: number;
-  hits: number;
+  suppressionBps: number;
+  hitSuppressionBps: number;
 }
 
 interface CoverOption {
@@ -134,7 +139,7 @@ type PendingBattleEvent = BattleEvent extends infer Event
     : never
   : never;
 
-export function createSimulation(setup: BattleSetup): BattleSimulation {
+export function createSimulation(setup: BattleSetupInput): BattleSimulation {
   return new StageOneBattleSimulation(setup);
 }
 
@@ -149,7 +154,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private readonly walkableComponentIds: Int32Array;
   private readonly setupHash: string;
 
-  constructor(inputSetup: BattleSetup) {
+  constructor(inputSetup: BattleSetupInput) {
     const normalizedSetup = migrateBattleSetup(inputSetup);
     validateBattleSetup(normalizedSetup);
     this.setup = cloneSetup(normalizedSetup);
@@ -346,6 +351,7 @@ class StageOneBattleSimulation implements BattleSimulation {
 
     for (const group of this.state.groups) {
       hasher.addString(group.id);
+      hasher.addString(group.groupTemplateId);
       hasher.addNumber(group.cell.x);
       hasher.addNumber(group.cell.z);
       hasher.addNumber(group.movingTo?.x ?? -1);
@@ -381,6 +387,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addString(group.coverDecision?.threat?.source ?? "");
       for (const member of group.members) {
         hasher.addString(member.id);
+        hasher.addString(member.memberTemplateId);
+        hasher.addString(member.weaponTemplateId);
         hasher.addString(member.health);
         hasher.addString(member.presence);
         hasher.addNumber(member.magazineRounds);
@@ -673,7 +681,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     const deployedGroups: GroupState[] = [];
     for (let index = 0; index < deploymentCount; index += 1) {
       const spawn = remainingGroups[index]!;
-      const group = createGroupState(spawn, openCells[index]!);
+      const group = createGroupState(spawn, openCells[index]!, this.setup.content!);
       deployedGroups.push(group);
       wave.deployedGroupIds.push(group.id);
       this.state.groupsById.set(group.id, group);
@@ -769,11 +777,11 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private updateSensing(): void {
-    const sightRangeSquared = this.setup.rules.sightRangeCells ** 2;
     for (const observer of this.state.groups) {
       if (!isGroupSpatiallyActive(observer)) {
         continue;
       }
+      const sightRangeSquared = this.groupSightRangeCells(observer) ** 2;
       for (const target of this.state.groups) {
         if (
           observer.factionId === target.factionId ||
@@ -801,7 +809,9 @@ class StageOneBattleSimulation implements BattleSimulation {
 
         if (candidate) {
           const exposureBonus =
-            this.state.tick - target.lastFiredTick <= this.setup.rules.ticksPerSecond ? 1_100 : 0;
+            this.state.tick - target.lastFiredTick <= this.setup.rules.ticksPerSecond
+              ? this.groupExposureOnFireBps(target)
+              : 0;
           const distanceBonus = Math.max(0, sightRangeSquared - distanceSquared) * 7;
           const detectionGain = applyBasisPointReduction(
             480 + distanceBonus + exposureBonus,
@@ -1072,7 +1082,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.assignGoal(group, objective.center);
         return;
       }
-      if (distanceSquared <= this.setup.rules.weaponRangeCells ** 2) {
+      if (distanceSquared <= this.groupWeaponRangeCells(group) ** 2) {
         if (this.hasFriendlyBlocker(group, directTarget)) {
           const firingOption = this.findClearFiringOption(group, directTarget);
           if (firingOption) {
@@ -1454,7 +1464,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             (occupyingGroupId !== undefined && occupyingGroupId !== group.id) ||
             (reservingGroupId !== undefined && reservingGroupId !== group.id) ||
             squaredGridDistance(candidate, target.cell) >
-              this.setup.rules.weaponRangeCells ** 2 ||
+              this.groupWeaponRangeCells(group) ** 2 ||
             !hasLineOfSight(this.setup.map, candidate, target.cell) ||
             this.hasFriendlyBlockerFrom(group, candidate, target)
           ) {
@@ -1599,7 +1609,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     const shotCounts = new Map<string, number>();
     for (const group of this.state.groups) {
       for (const member of group.members) {
-        updateWeaponTimer(member);
+        updateWeaponTimer(member, this.weaponForMember(member));
       }
       const advancingAttacker =
         this.setup.mode.kind === "defense" &&
@@ -1624,7 +1634,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       const cover = this.getDirectionalCover(target, group.cell);
       const shooterCover = this.getDirectionalCover(group, target.cell);
       if (
-        distanceSquared > this.setup.rules.weaponRangeCells ** 2 ||
+        distanceSquared > this.groupWeaponRangeCells(group) ** 2 ||
         !hasLineOfSight(this.setup.map, group.cell, target.cell, {
           ignoredStaticObjectCells: this.activeCoverObjectCells(shooterCover, cover),
         }) ||
@@ -1638,9 +1648,16 @@ class StageOneBattleSimulation implements BattleSimulation {
         if (!canMemberFight(member)) {
           continue;
         }
+        const weapon = this.weaponForMember(member);
+        if (
+          distanceSquared > this.weaponRangeCells(weapon) ** 2 ||
+          distanceSquared < this.weaponMinimumRangeCells(weapon) ** 2
+        ) {
+          continue;
+        }
         if (member.magazineRounds === 0) {
           if (member.reloadTicksRemaining === 0) {
-            member.reloadTicksRemaining = RELOAD_TICKS;
+            member.reloadTicksRemaining = weapon.reloadTicks;
           }
           continue;
         }
@@ -1648,16 +1665,21 @@ class StageOneBattleSimulation implements BattleSimulation {
           continue;
         }
         member.magazineRounds -= 1;
-        member.shotCooldownTicks = SHOT_COOLDOWN_TICKS;
+        member.shotCooldownTicks = weapon.shotIntervalTicks;
+        const damageBps = firstEffectAmount(weapon, "damage", 0);
+        const hitSuppressionBps = firstEffectAmount(weapon, "suppression", 0);
         shotIntents.push({
           shooterGroupId: group.id,
           shooterMemberId: member.id,
           targetGroupId: target.id,
           shotOrdinal,
           hitChanceBps: applyBasisPointReduction(
-            calculateHitChance(group, member, target, this.setup.rules.preferredRangeCells),
+            calculateHitChance(group, member, target, this.weaponPreferredRangeCells(weapon)),
             cover?.effect.protectionBps ?? 0,
           ),
+          damageBps,
+          suppressionBps: weapon.suppressionBps,
+          hitSuppressionBps,
         });
         shotOrdinal += 1;
       }
@@ -1700,17 +1722,23 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (targetMember) {
         hits.push({
           shooterGroupId: shot.shooterGroupId,
+          shooterMemberId: shot.shooterMemberId,
           targetGroupId: shot.targetGroupId,
           targetMemberId: targetMember.id,
           shotOrdinal: shot.shotOrdinal,
+          damageBps: shot.damageBps,
+          hitSuppressionBps: shot.hitSuppressionBps,
         });
       }
     }
 
     const impacts = new Map<GroupId, SuppressionImpact>();
     for (const shot of shotIntents) {
-      const impact = impacts.get(shot.targetGroupId) ?? { shots: 0, hits: 0 };
-      impact.shots += 1;
+      const impact = impacts.get(shot.targetGroupId) ?? {
+        suppressionBps: 0,
+        hitSuppressionBps: 0,
+      };
+      impact.suppressionBps += shot.suppressionBps;
       impacts.set(shot.targetGroupId, impact);
     }
     hits.sort(
@@ -1725,8 +1753,11 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!member || !targetGroup || !canMemberFight(member)) {
         continue;
       }
-      const impact = impacts.get(hit.targetGroupId) ?? { shots: 0, hits: 0 };
-      impact.hits += 1;
+      const impact = impacts.get(hit.targetGroupId) ?? {
+        suppressionBps: 0,
+        hitSuppressionBps: 0,
+      };
+      impact.hitSuppressionBps += hit.hitSuppressionBps;
       impacts.set(hit.targetGroupId, impact);
       this.applyHit(member, targetGroup, hit);
     }
@@ -1750,11 +1781,31 @@ class StageOneBattleSimulation implements BattleSimulation {
       `${hit.shooterGroupId}:${member.id}`,
       hit.shotOrdinal,
     );
+    const memberTemplate = getMemberTemplate(this.setup.content!, member.memberTemplateId);
+    const damageScale = applyBasisPointReduction(
+      Math.max(0, Math.min(20_000, hit.damageBps)),
+      memberTemplate.protectionBps,
+    );
+    if (damageScale === 0) {
+      return;
+    }
+    const deadThreshold = Math.floor((1_200 * damageScale) / 10_000);
+    const incapacitatedThreshold = Math.floor((3_800 * damageScale) / 10_000);
     let next: HealthState = previous;
     if (previous === "healthy") {
-      next = severityRoll < 1_200 ? "dead" : severityRoll < 3_800 ? "incapacitated" : "wounded";
+      next = severityRoll < deadThreshold
+        ? "dead"
+        : severityRoll < incapacitatedThreshold
+          ? "incapacitated"
+          : "wounded";
     } else if (previous === "wounded") {
-      next = severityRoll < 2_600 ? "dead" : severityRoll < 7_200 ? "incapacitated" : "wounded";
+      const woundedDeadThreshold = Math.floor((2_600 * damageScale) / 10_000);
+      const woundedIncapacitatedThreshold = Math.floor((7_200 * damageScale) / 10_000);
+      next = severityRoll < woundedDeadThreshold
+        ? "dead"
+        : severityRoll < woundedIncapacitatedThreshold
+          ? "incapacitated"
+          : "wounded";
     }
     if (next === previous) {
       return;
@@ -1781,9 +1832,13 @@ class StageOneBattleSimulation implements BattleSimulation {
     for (const group of this.state.groups) {
       const impact = impacts.get(group.id);
       if (impact) {
+        const incomingSuppression = applyBasisPointReduction(
+          impact.suppressionBps + impact.hitSuppressionBps,
+          this.groupSuppressionResistanceBps(group),
+        );
         group.suppressionBps = Math.min(
           10_000,
-          group.suppressionBps + impact.shots * 22 + impact.hits * 90,
+          group.suppressionBps + incomingSuppression,
         );
       }
       group.suppressionBps = Math.max(
@@ -1869,9 +1924,9 @@ class StageOneBattleSimulation implements BattleSimulation {
           continue;
         }
         if (group.factionId === objective.attackerFactionId) {
-          attackerPower += activeMemberCount(group);
+          attackerPower += this.groupCapturePower(group);
         } else if (group.factionId === objective.defenderFactionId) {
-          defenderPower += activeMemberCount(group);
+          defenderPower += this.groupCapturePower(group);
         }
       }
       objective.attackerPower = attackerPower;
@@ -2219,7 +2274,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (
         requireWeaponRange &&
         (squaredGridDistance(slot.cell, threat.lastKnown) >
-          this.setup.rules.weaponRangeCells ** 2 ||
+          this.groupWeaponRangeCells(group) ** 2 ||
           !hasLineOfSight(this.setup.map, slot.cell, threat.lastKnown, {
             ignoredStaticObjectCells: [slot.objectCell],
           }))
@@ -2565,6 +2620,86 @@ class StageOneBattleSimulation implements BattleSimulation {
     };
   }
 
+  private weaponForMember(member: MemberState): ReturnType<typeof getWeaponTemplate> {
+    return getWeaponTemplate(this.setup.content!, member.weaponTemplateId);
+  }
+
+  private weaponRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
+    return Math.max(0, Math.floor(weapon.maximumRangeMm / this.setup.map.cellSizeMm));
+  }
+
+  private weaponMinimumRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
+    return Math.max(0, Math.ceil(weapon.minimumRangeMm / this.setup.map.cellSizeMm));
+  }
+
+  private weaponPreferredRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
+    return Math.min(
+      this.setup.rules.preferredRangeCells,
+      Math.max(0, Math.floor(weapon.optimalRangeMm / this.setup.map.cellSizeMm)),
+    );
+  }
+
+  private groupWeaponRangeCells(group: GroupState): number {
+    const maximum = group.members
+      .filter(canMemberFight)
+      .reduce(
+        (range, member) => Math.max(range, this.weaponRangeCells(this.weaponForMember(member))),
+        0,
+      );
+    return Math.min(this.setup.rules.weaponRangeCells, maximum);
+  }
+
+  private groupSightRangeCells(group: GroupState): number {
+    const maximum = group.members
+      .filter(canMemberFight)
+      .reduce((range, member) => {
+        const memberTemplate = getMemberTemplate(this.setup.content!, member.memberTemplateId);
+        const sensor = this.setup.content!.sensorTemplates[memberTemplate.sensorTemplateId];
+        return Math.max(
+          range,
+          sensor ? Math.floor(sensor.rangeMm / this.setup.map.cellSizeMm) : 0,
+        );
+      }, 0);
+    return Math.min(this.setup.rules.sightRangeCells, maximum);
+  }
+
+  private groupExposureOnFireBps(group: GroupState): number {
+    return group.members
+      .filter(canMemberFight)
+      .reduce(
+        (exposure, member) => Math.max(exposure, this.weaponForMember(member).exposureOnFireBps),
+        0,
+      );
+  }
+
+  private groupSuppressionResistanceBps(group: GroupState): number {
+    const activeMembers = group.members.filter(canMemberFight);
+    if (activeMembers.length === 0) {
+      return 0;
+    }
+    const total = activeMembers.reduce(
+      (sum, member) =>
+        sum + getMemberTemplate(this.setup.content!, member.memberTemplateId).suppressionResistanceBps,
+      0,
+    );
+    return Math.floor(total / activeMembers.length);
+  }
+
+  private groupCapturePower(group: GroupState): number {
+    const memberPowerBps = group.members
+      .filter(canMemberFight)
+      .reduce(
+        (sum, member) =>
+          sum + getMemberTemplate(this.setup.content!, member.memberTemplateId).capturePowerBps,
+        0,
+      );
+    const groupScaleBps = getGroupTemplate(
+      this.setup.content!,
+      group.groupTemplateId,
+    ).capturePowerScaleBps;
+    return Math.floor((memberPowerBps * groupScaleBps) / 100_000_000);
+  }
+
   private markMeaningfulProgress(): void {
     this.state.lastMeaningfulProgressTick = this.state.tick;
   }
@@ -2591,7 +2726,7 @@ function createRuntimeState(
 ): RuntimeState {
   const groups = [...setup.groups]
     .sort(compareById)
-    .map((spawn) => createGroupState(spawn, spawn.spawn));
+    .map((spawn) => createGroupState(spawn, spawn.spawn, setup.content!));
   const groupsById = new Map(groups.map((group) => [group.id, group]));
   const membersById = new Map(
     groups.flatMap((group) => group.members.map((member) => [member.id, member] as const)),
@@ -2666,23 +2801,35 @@ function createRuntimeState(
   };
 }
 
-function createGroupState(spawn: BattleSetup["groups"][number], cell: GridCoord): GroupState {
+function createGroupState(
+  spawn: BattleSetup["groups"][number],
+  cell: GridCoord,
+  content: NonNullable<BattleSetup["content"]>,
+): GroupState {
+  const groupTemplate = getGroupTemplate(content, spawn.groupTemplateId);
   return {
     id: spawn.id,
     factionId: spawn.factionId,
+    groupTemplateId: groupTemplate.id,
     evacuation: { ...spawn.evacuation },
     members: [...spawn.members]
       .sort(compareById)
-      .map<MemberState>((member) => ({
-        id: member.id,
-        groupId: spawn.id,
-        factionId: spawn.factionId,
-        health: member.initialHealth ?? "healthy",
-        presence: "deployed",
-        magazineRounds: MAGAZINE_SIZE,
-        reloadTicksRemaining: 0,
-        shotCooldownTicks: 0,
-      })),
+      .map<MemberState>((member) => {
+        const memberTemplate = getMemberTemplate(content, member.memberTemplateId);
+        const weapon = getPrimaryWeaponTemplate(content, memberTemplate.id);
+        return {
+          id: member.id,
+          groupId: spawn.id,
+          factionId: spawn.factionId,
+          memberTemplateId: memberTemplate.id,
+          weaponTemplateId: weapon.id,
+          health: member.initialHealth ?? "healthy",
+          presence: "deployed",
+          magazineRounds: weapon.magazineSize,
+          reloadTicksRemaining: 0,
+          shotCooldownTicks: 0,
+        };
+      }),
     cell: { ...cell },
     moveProgress: 0,
     moveCost: 0,
@@ -2712,6 +2859,7 @@ function countSpawnActiveMembers(group: BattleSetup["groups"][number]): number {
 function cloneSetup(setup: BattleSetup): BattleSetup {
   return {
     ...setup,
+    content: cloneBattleContent(setup.content),
     map: {
       ...setup.map,
       layers: {
@@ -2767,16 +2915,27 @@ function cloneSetup(setup: BattleSetup): BattleSetup {
   };
 }
 
-function updateWeaponTimer(member: MemberState): void {
+function updateWeaponTimer(
+  member: MemberState,
+  weapon: ReturnType<typeof getWeaponTemplate>,
+): void {
   if (member.shotCooldownTicks > 0) {
     member.shotCooldownTicks -= 1;
   }
   if (member.reloadTicksRemaining > 0) {
     member.reloadTicksRemaining -= 1;
     if (member.reloadTicksRemaining === 0) {
-      member.magazineRounds = MAGAZINE_SIZE;
+      member.magazineRounds = weapon.magazineSize;
     }
   }
+}
+
+function firstEffectAmount(
+  weapon: ReturnType<typeof getWeaponTemplate>,
+  kind: "damage" | "suppression",
+  fallback: number,
+): number {
+  return weapon.damageEffects.find((effect) => effect.kind === kind)?.amountBps ?? fallback;
 }
 
 function calculateHitChance(

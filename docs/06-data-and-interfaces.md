@@ -73,6 +73,8 @@ interface BattleSetup {
 ```ts
 interface BattleContentBundle {
   readonly contentVersion: string;
+  readonly eraId: TemplateId;
+  readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
   readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
   readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
@@ -85,6 +87,20 @@ interface BattleContentBundle {
 ```
 
 每个模板可以带 `eraTags`、`techTags` 和任意内容标签。核心只按能力字段和通用标签工作，不按时代名称推断规则。
+
+### 4.1 `CONTENT-001` 内容解析边界
+
+`BattleContentBundle` 是进入模拟的**已解析快照**，不是内容文件目录。内容加载器属于模拟外部的组合层，负责读取文件、选择时代、展开引用并生成快照；模拟只接收快照，不读取网络、文件系统或 UI 状态。
+
+本任务采用以下边界：
+
+- `contentVersion` 使用独立的 `content-1` 版本；`BattleSetup` schema 在实现接入时从 `stage-2.1` 升为 `stage-2.2`，`rulesVersion` 保持 `stage-2.5`。模板替换当前等价常量时不改变规则语义。
+- `BattleContentBundle.eraId` 标识本场已选择的时代，`eraTemplates` 保存时代元数据和允许的模板 ID。时代选择发生在外部内容解析层；模拟不根据 `eraId`、`displayName` 或时代标签分支。
+- `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 是本切片的必需集合；`sensorTemplates` 至少包含每个成员引用的传感器。平台、能力和状态模板保留接口，但在本切片中可以为空且不能被 spawn 引用。
+- 不引入模板继承、运行时脚本或任意字段覆盖。模板之间使用显式 ID 引用；成员 spawn 只允许引用模板并提供健康、持久化 ID 等边界字段。这样可以避免继承环、字符串特判和不可复现的内容脚本。
+- 每个模板的数值在初始化时一次性验证，随后运行时只使用不可变的解析结果。模板引用缺失、时代白名单不匹配、槽位数量不匹配或不支持的移动/目标域必须在初始化阶段拒绝。
+
+内容解析的顺序固定为：解析版本和 ID -> 校验时代白名单 -> 校验模板引用和槽位 -> 将距离从毫米转换为地图格的整数运行参数 -> 生成规范内容哈希 -> 克隆到 `BattleSetup`。内容哈希必须进入 setup 哈希；不允许依赖 `Record` 的插入顺序。
 
 ## 5. 地图格式
 
@@ -296,6 +312,8 @@ interface CrewAssignment {
 interface GroupTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
   readonly memberSlotRules: readonly MemberSlotRule[];
   readonly platformSlotRules: readonly PlatformSlotRule[];
   readonly cohesionRadiusCells: number;
@@ -304,12 +322,57 @@ interface GroupTemplate {
 }
 ```
 
+### 9.1.1 成员、传感器和槽位
+
+```ts
+interface MemberTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly movementType: "foot";
+  readonly sensorTemplateId: TemplateId;
+  readonly weaponSlotRules: readonly WeaponSlotRule[];
+  readonly roleTags: readonly string[];
+  readonly silhouetteId: string;
+  readonly protectionBps: BasisPoints;
+  readonly suppressionResistanceBps: BasisPoints;
+  readonly capturePowerBps: BasisPoints;
+}
+
+interface SensorTemplate {
+  readonly id: TemplateId;
+  readonly rangeMm: number;
+  readonly acquisitionTicks: Tick;
+  readonly contactForgetTicks: Tick;
+  readonly tags: readonly string[];
+}
+
+interface MemberSlotRule {
+  readonly slotId: string;
+  readonly memberTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
+
+interface WeaponSlotRule {
+  readonly slotId: string;
+  readonly weaponTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
+```
+
+`GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额。`MemberTemplate.weaponSlotRules` 决定成员的默认装备，首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员名称推导。
+
 ### 9.2 武器模板
 
 ```ts
 interface WeaponTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
   readonly targetDomains: readonly ("ground" | "air")[];
   readonly minimumRangeMm: number;
   readonly optimalRangeMm: number;
@@ -317,11 +380,12 @@ interface WeaponTemplate {
   readonly aimTicks: Tick;
   readonly magazineSize: number;
   readonly reloadTicks: Tick;
+  readonly shotIntervalTicks: Tick;
   readonly firePattern: FirePattern;
   readonly trajectory: "resolved" | "logical-projectile";
   readonly damageEffects: readonly EffectDefinition[];
-  readonly suppression: number;
-  readonly exposureOnFire: number;
+  readonly suppressionBps: BasisPoints;
+  readonly exposureOnFireBps: BasisPoints;
 }
 ```
 
@@ -344,6 +408,48 @@ interface AbilityTemplate {
 ```
 
 标准效果使用判别联合，例如伤害、治疗、状态、属性修正、区域效果和情报效果。`handlerId` 只能引用构建时注册且具有确定性测试的代码，禁止 `eval` 或从内容包执行任意脚本。
+
+### 9.4 时代模板与内容选择
+
+```ts
+interface EraTemplate {
+  readonly id: TemplateId;
+  readonly displayName: string;
+  readonly tags: readonly string[];
+  readonly allowedGroupTemplateIds: readonly TemplateId[];
+  readonly allowedMemberTemplateIds: readonly TemplateId[];
+  readonly allowedWeaponTemplateIds: readonly TemplateId[];
+  readonly allowedSensorTemplateIds: readonly TemplateId[];
+}
+```
+
+`BattleContentBundle` 增加 `eraId` 和 `eraTemplates` 字段。解析器先选择一个 `EraTemplate`，再把允许的单位、成员、武器和传感器模板收集到 bundle；核心只验证 `eraId` 与引用的一致性。时代模板本身不修改伤害、射程或 AI 行为，也不提供名称到规则的映射。未来需要科技解锁时，由外部系统生成不同的已解析 bundle，而不是在模拟中加入 `if (eraId === ...)`。
+
+`CONTENT-001` 的默认内容映射如下，目标是让现有演示在迁移后逐项表达而不改变固定 seed 行为：
+
+| 当前演示常量 | 内容 ID / 字段 | 迁移语义 |
+| --- | --- | --- |
+| 八名同质成员 | `infantry-rifle-squad-v1` + `infantry-rifleman-v1` | 编组槽位为 8 个步枪手；spawn 为每名成员填写成员模板 ID |
+| `MAGAZINE_SIZE = 12` | `rifle-standard-v1.magazineSize` | 每名可操作成员初始 12 发 |
+| `RELOAD_TICKS = 36` | `rifle-standard-v1.reloadTicks` | 换弹仍为 36 tick |
+| `SHOT_COOLDOWN_TICKS = 7` | `rifle-standard-v1.shotIntervalTicks` | 连续射击间隔仍为 7 tick |
+| `weaponRangeCells = 11` | `maximumRangeMm = 44_000` | 按当前 `map.cellSizeMm = 4_000` 转换为 11 格 |
+| `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
+| `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
+
+首个内容包只提供 `foot`、`ground`、`resolved` 这组已实现能力。`air`、平台、逻辑飞行体和能力效果可以在 bundle 中预留，但在没有对应规则实现前，验证器应拒绝被引用的配置。
+
+### 9.5 内容验证和哈希要求
+
+初始化验证至少包括：
+
+1. 所有模板 ID 在各自命名空间内唯一且非空；`contentVersion`、`eraId` 和模板引用存在。
+2. 槽位 `count`、距离、tick、基点和弹匣值均为有限整数；最小/最佳/最大射程满足 `minimum <= optimal <= maximum`。
+3. 编组 spawn 的成员数量与 `GroupTemplate` 槽位总数一致，成员模板和默认武器槽位均可解析；增强波次使用相同规则。
+4. 成员传感器和武器的目标域、移动类型、弹道类型都在当前规则支持集合内。
+5. 时代白名单覆盖所有被引用的编组、成员和武器模板；未使用模板可以存在，但不会进入运行时。
+
+规范内容哈希按命名空间和模板 ID 排序，覆盖所有会影响模拟的字段（包括时代 ID、标签、槽位顺序、武器效果和传感器参数）。`displayName`、颜色和其他纯观察元数据不参与战斗哈希；但完整 setup 快照仍必须可克隆并通过 Worker 结构化克隆。
 
 ## 10. 模式配置
 
@@ -524,4 +630,6 @@ interface BattleResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前 `BattleSetup` schema 为 `stage-2.1`，规则为 `stage-2.5`，地图为 `map-2`。`stage-2.5` 加入多势力关系矩阵及基于关系的目标、阻挡和终止语义；旧 `stage-2`/`stage-2.4` 两势力输入会先迁移为默认敌对关系，其他版本仍明确拒绝。
+当前运行代码的 `BattleSetup` schema 为 `stage-2.2`，规则为 `stage-2.5`，内容为 `content-1`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1` 输入补入等价默认内容和模板 ID；新的 `stage-2.2` 输入必须显式提供内容包、编组模板 ID 和成员模板 ID。`stage-2.5` 仍负责多势力关系及基于关系的目标、阻挡和终止语义。
+
+内容规范哈希参与 setup 哈希，因此固定 seed 回归比较“同输入同哈希”，不承诺跨 schema 的旧哈希字面值不变。版本不匹配、内容版本不支持、模板引用缺失或编制槽位不一致都会在创建运行时状态前明确拒绝。

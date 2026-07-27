@@ -1,10 +1,12 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2.1" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-2.2" as const;
 export const BATTLE_RULES_VERSION = "stage-2.5" as const;
 /** Versions accepted by the input migration for the original two-faction slice. */
 export const LEGACY_BATTLE_SETUP_SCHEMA_VERSION = "stage-2" as const;
 export const LEGACY_BATTLE_RULES_VERSION = "stage-2.4" as const;
+/** The pre-content setup version is migrated to the current content contract. */
+export const PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION = "stage-2.1" as const;
 export const BATTLE_MAP_SCHEMA_VERSION = "map-2" as const;
 
 export const SURFACE_TYPE_IDS = {
@@ -66,6 +68,7 @@ export type FactionId = string;
 export type GroupId = string;
 export type MemberId = string;
 export type ObjectiveId = string;
+export type TemplateId = string;
 
 export interface GridCoord {
   readonly x: number;
@@ -181,14 +184,142 @@ export interface RelationSetup {
   readonly intelUpdateIntervalTicks: Tick;
 }
 
+export interface MemberSlotRule {
+  readonly slotId: string;
+  readonly memberTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
+
+export interface WeaponSlotRule {
+  readonly slotId: string;
+  readonly weaponTemplateId: TemplateId;
+  readonly count: number;
+  readonly required: boolean;
+}
+
+export interface GroupTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly memberSlotRules: readonly MemberSlotRule[];
+  readonly platformSlotRules: readonly unknown[];
+  readonly cohesionRadiusCells: number;
+  readonly capturePowerScaleBps: number;
+  readonly behaviorProfileId: string;
+}
+
+export interface SensorTemplate {
+  readonly id: TemplateId;
+  readonly rangeMm: number;
+  readonly acquisitionTicks: Tick;
+  readonly contactForgetTicks: Tick;
+  readonly tags: readonly string[];
+}
+
+export interface MemberTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly movementType: MovementType;
+  readonly sensorTemplateId: TemplateId;
+  readonly weaponSlotRules: readonly WeaponSlotRule[];
+  readonly roleTags: readonly string[];
+  readonly silhouetteId: string;
+  readonly protectionBps: number;
+  readonly suppressionResistanceBps: number;
+  readonly capturePowerBps: number;
+}
+
+export type WeaponTargetDomain = "ground" | "air";
+export type WeaponTrajectory = "resolved" | "logical-projectile";
+
+export interface FirePattern {
+  readonly kind: "single" | "burst";
+  readonly shotsPerAction: number;
+}
+
+export interface EffectDefinition {
+  readonly kind: "damage" | "suppression";
+  readonly amountBps: number;
+}
+
+export interface WeaponTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly targetDomains: readonly WeaponTargetDomain[];
+  readonly minimumRangeMm: number;
+  readonly optimalRangeMm: number;
+  readonly maximumRangeMm: number;
+  readonly aimTicks: Tick;
+  readonly magazineSize: number;
+  readonly reloadTicks: Tick;
+  readonly shotIntervalTicks: Tick;
+  readonly firePattern: FirePattern;
+  readonly trajectory: WeaponTrajectory;
+  readonly damageEffects: readonly EffectDefinition[];
+  readonly suppressionBps: number;
+  readonly exposureOnFireBps: number;
+}
+
+export interface EraTemplate {
+  readonly id: TemplateId;
+  readonly displayName: string;
+  readonly tags: readonly string[];
+  readonly allowedGroupTemplateIds: readonly TemplateId[];
+  readonly allowedMemberTemplateIds: readonly TemplateId[];
+  readonly allowedWeaponTemplateIds: readonly TemplateId[];
+  readonly allowedSensorTemplateIds: readonly TemplateId[];
+}
+
+/** Reserved content namespaces remain structural, but are not enabled by CONTENT-001. */
+export interface PlatformTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+}
+
+export interface AbilityTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+}
+
+export interface StatusTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+}
+
+export interface TerrainCatalog {
+  readonly version: string;
+}
+
+export interface BattleContentBundle {
+  readonly contentVersion: "content-1";
+  readonly eraId: TemplateId;
+  readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
+  readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
+  readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
+  readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
+  readonly weaponTemplates: Readonly<Record<TemplateId, WeaponTemplate>>;
+  readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
+  readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
+  readonly terrainCatalog: TerrainCatalog;
+}
+
 export interface MemberSpawn {
   readonly id: MemberId;
+  readonly memberTemplateId: TemplateId;
   readonly initialHealth?: HealthState;
 }
 
 export interface GroupSpawn {
   readonly id: GroupId;
   readonly factionId: FactionId;
+  readonly groupTemplateId: TemplateId;
   readonly spawn: GridCoord;
   readonly evacuation: GridCoord;
   readonly members: readonly MemberSpawn[];
@@ -214,6 +345,19 @@ export interface ReinforcementWaveSetup {
   readonly groups: readonly GroupSpawn[];
   readonly blockedPolicy: ReinforcementBlockedPolicy;
 }
+
+export type MemberSpawnInput = Omit<MemberSpawn, "memberTemplateId"> & {
+  readonly memberTemplateId?: TemplateId;
+};
+
+export type GroupSpawnInput = Omit<GroupSpawn, "groupTemplateId" | "members"> & {
+  readonly groupTemplateId?: TemplateId;
+  readonly members: readonly MemberSpawnInput[];
+};
+
+export type ReinforcementWaveSetupInput = Omit<ReinforcementWaveSetup, "groups"> & {
+  readonly groups: readonly GroupSpawnInput[];
+};
 
 export interface BattleRules {
   readonly ticksPerSecond: typeof SIMULATION_HZ;
@@ -274,6 +418,7 @@ export interface BattleSetup {
   readonly rulesVersion: typeof BATTLE_RULES_VERSION;
   readonly battleId: string;
   readonly seed: string;
+  readonly content: BattleContentBundle;
   readonly map: BattleMap;
   readonly factions: readonly FactionSetup[];
   readonly relations: readonly RelationSetup[];
@@ -287,13 +432,15 @@ export interface BattleSetup {
 /** Wire-level input accepted by validation, including the legacy two-faction version. */
 export type BattleSetupInput = Omit<
   BattleSetup,
-  "schemaVersion" | "rulesVersion" | "relations" | "reinforcementEntrances" | "reinforcements"
+  "schemaVersion" | "rulesVersion" | "relations" | "groups" | "reinforcementEntrances" | "reinforcements" | "content"
 > & {
   readonly schemaVersion: string;
   readonly rulesVersion: string;
+  readonly content?: BattleContentBundle;
   readonly relations?: readonly RelationSetup[];
+  readonly groups: readonly GroupSpawnInput[];
   readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
-  readonly reinforcements?: readonly ReinforcementWaveSetup[];
+  readonly reinforcements?: readonly ReinforcementWaveSetupInput[];
 };
 
 export type HealthState =

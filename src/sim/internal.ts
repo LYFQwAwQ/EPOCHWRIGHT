@@ -24,6 +24,8 @@ export interface MemberState {
   readonly id: MemberId;
   readonly groupId: GroupId;
   readonly factionId: FactionId;
+  readonly memberTemplateId: string;
+  readonly weaponTemplateId: string;
   health: HealthState;
   presence: PresenceState;
   magazineRounds: number;
@@ -67,6 +69,7 @@ export interface CoverDecisionState {
 export interface GroupState {
   readonly id: GroupId;
   readonly factionId: FactionId;
+  readonly groupTemplateId: string;
   readonly evacuation: GridCoord;
   readonly members: MemberState[];
   cell: GridCoord;
@@ -167,11 +170,17 @@ export interface ShotIntent {
   readonly targetGroupId: GroupId;
   readonly shotOrdinal: number;
   readonly hitChanceBps: number;
+  readonly damageBps: number;
+  readonly suppressionBps: number;
+  readonly hitSuppressionBps: number;
 }
 
 export interface HitIntent {
   readonly shooterGroupId: GroupId;
+  readonly shooterMemberId: MemberId;
   readonly targetGroupId: GroupId;
   readonly targetMemberId: MemberId;
   readonly shotOrdinal: number;
+  readonly damageBps: number;
+  readonly hitSuppressionBps: number;
 }

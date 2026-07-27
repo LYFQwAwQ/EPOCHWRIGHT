@@ -10,6 +10,22 @@ export {
 } from "./setup";
 export { migrateBattleSetup } from "./setup";
 export {
+  BATTLE_CONTENT_VERSION,
+  DEFAULT_ERA_ID,
+  DEFAULT_GROUP_TEMPLATE_ID,
+  DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_SENSOR_TEMPLATE_ID,
+  DEFAULT_WEAPON_TEMPLATE_ID,
+  cloneBattleContent,
+  createDefaultBattleContent,
+  getGroupTemplate,
+  getMemberTemplate,
+  getPrimaryWeaponTemplate,
+  getWeaponTemplate,
+  hashBattleContent,
+  validateBattleContent,
+} from "./content";
+export {
   areAllied,
   areHostile,
   defaultRelation,
@@ -48,6 +64,7 @@ export {
   BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
   MAP_CELL_FLAGS,
   SIMULATION_HZ,
   STATIC_OBJECT_DEFINITIONS,

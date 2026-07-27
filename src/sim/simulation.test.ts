@@ -3,6 +3,8 @@ import { createDemoBattleSetup } from "../demo";
 import {
   canTraverseStep,
   BATTLE_MAP_SCHEMA_VERSION,
+  DEFAULT_GROUP_TEMPLATE_ID,
+  DEFAULT_MEMBER_TEMPLATE_ID,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   createPathfinder,
@@ -307,8 +309,12 @@ function createGroup(
   return {
     id,
     factionId,
+    groupTemplateId: DEFAULT_GROUP_TEMPLATE_ID,
     spawn: { x, z },
     evacuation: { x, z },
-    members: Array.from({ length: 8 }, (_, index) => ({ id: `${id}-member-${index + 1}` })),
+    members: Array.from({ length: 8 }, (_, index) => ({
+      id: `${id}-member-${index + 1}`,
+      memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+    })),
   };
 }

@@ -1,7 +1,10 @@
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_GROUP_TEMPLATE_ID,
+  DEFAULT_MEMBER_TEMPLATE_ID,
   SIMULATION_HZ,
+  createDefaultBattleContent,
   defaultRelation,
   generateBattleMap,
   isWalkable,
@@ -120,6 +123,7 @@ export function createDemoBattleSetup(
     rulesVersion: BATTLE_RULES_VERSION,
     battleId: options.battleId ?? `battle-${seed}`,
     seed,
+    content: createDefaultBattleContent(),
     map,
     factions,
     relations,
@@ -241,10 +245,12 @@ function createGroupSpawns(
       groups.push({
         id: groupId,
         factionId: faction.id,
+        groupTemplateId: DEFAULT_GROUP_TEMPLATE_ID,
         spawn,
         evacuation: { ...spawn },
         members: Array.from({ length: 8 }, (_, memberIndex) => ({
           id: `${groupId}-member-${memberIndex + 1}`,
+          memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
         })),
       });
     }
