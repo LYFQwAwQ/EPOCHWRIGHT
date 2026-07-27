@@ -33,6 +33,7 @@ import type {
   RelationSetup,
   ReinforcementEntranceSetup,
   ReinforcementWaveSetup,
+  TransportAssignment,
 } from "../sim/types";
 
 export interface DemoBattleSetupOptions {
@@ -42,6 +43,7 @@ export interface DemoBattleSetupOptions {
   readonly height?: number;
   readonly groupsPerFaction?: number;
   readonly vehicleGroupsPerFaction?: number;
+  readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
   readonly mountainDensity?: number;
@@ -74,6 +76,7 @@ export function createDemoBattleSetup(
   const height = options.height ?? 36;
   const groupsPerFaction = options.groupsPerFaction ?? 3;
   const vehicleGroupsPerFaction = options.vehicleGroupsPerFaction ?? 0;
+  const transportPairsPerFaction = options.transportPairsPerFaction ?? 0;
 
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
   if (factions.length < 2) {
@@ -96,6 +99,16 @@ export function createDemoBattleSetup(
   ) {
     throw new Error("vehicleGroupsPerFaction must be an integer within groupsPerFaction.");
   }
+  if (
+    !Number.isInteger(transportPairsPerFaction) ||
+    transportPairsPerFaction < 0 ||
+    transportPairsPerFaction > vehicleGroupsPerFaction ||
+    transportPairsPerFaction > groupsPerFaction - vehicleGroupsPerFaction
+  ) {
+    throw new Error(
+      "transportPairsPerFaction requires one vehicle and one passenger group per pair.",
+    );
+  }
 
   const map = generateBattleMap({
     seed,
@@ -109,11 +122,16 @@ export function createDemoBattleSetup(
     rockCoverage: options.rockCoverage ?? 0.006,
     wallCoverage: options.wallCoverage ?? 0.003,
   });
-  const groups = createGroupSpawns(
+  const generatedGroups = createGroupSpawns(
     map,
     factions,
     groupsPerFaction,
     vehicleGroupsPerFaction,
+  );
+  const transport = createTransportPairs(
+    generatedGroups,
+    factions,
+    transportPairsPerFaction,
   );
   const relations = (options.relations ?? createDefaultRelations(factions)).map((relation) => ({
     ...relation,
@@ -148,8 +166,8 @@ export function createDemoBattleSetup(
     map,
     factions,
     relations,
-    groups,
-    transportAssignments: [],
+    groups: transport.groups,
+    transportAssignments: transport.assignments,
     reinforcementEntrances: (options.reinforcementEntrances ?? []).map(cloneEntrance),
     reinforcements: (options.reinforcements ?? []).map(cloneWave),
     mode,
@@ -157,6 +175,45 @@ export function createDemoBattleSetup(
   };
   validateBattleSetup(setup);
   return setup;
+}
+
+function createTransportPairs(
+  sourceGroups: readonly GroupSpawn[],
+  factions: readonly FactionSetup[],
+  pairsPerFaction: number,
+): {
+  readonly groups: readonly GroupSpawn[];
+  readonly assignments: readonly TransportAssignment[];
+} {
+  if (pairsPerFaction === 0) {
+    return { groups: sourceGroups, assignments: [] };
+  }
+  const groups = sourceGroups.map((group) => ({
+    ...group,
+    spawn: { ...group.spawn },
+  }));
+  const assignments: TransportAssignment[] = [];
+  for (const faction of factions) {
+    const vehicles = groups.filter(
+      (group) => group.factionId === faction.id && group.platforms.length > 0,
+    );
+    const passengers = groups.filter(
+      (group) => group.factionId === faction.id && group.platforms.length === 0,
+    );
+    for (let index = 0; index < pairsPerFaction; index += 1) {
+      const vehicle = vehicles[index]!;
+      const passenger = passengers[index]!;
+      const platform = vehicle.platforms[0]!;
+      passenger.spawn = { ...vehicle.spawn };
+      assignments.push({
+        id: `${faction.id}-transport-${index + 1}`,
+        platformId: platform.id,
+        passengerGroupId: passenger.id,
+        initiallyEmbarked: true,
+      });
+    }
+  }
+  return { groups, assignments };
 }
 
 function createDefaultRelations(factions: readonly FactionSetup[]): readonly RelationSetup[] {

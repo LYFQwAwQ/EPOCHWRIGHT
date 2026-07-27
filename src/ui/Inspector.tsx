@@ -36,6 +36,23 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "advance-objective": "向防守目标推进",
   "assault-objective": "在交火中突击目标区",
   "capture-objective": "驻留目标区并完成占领",
+  "transport-rendezvous": "与配对运输平台会合",
+  "transport-embarking": "整组搭载中",
+  "transport-embarked": "已搭载，随平台机动",
+  "transport-disembarking": "整组下车中",
+  "transport-dismounted": "已完成下车",
+  "transport-forced-dismount": "平台失效，被迫下车",
+  "transport-trapped": "周边无合法容量，乘客受困",
+  "transport-evacuated": "随运输平台撤离",
+};
+
+const transportStatusLabels: Readonly<Record<string, string>> = {
+  pending: "等待双方部署",
+  dismounted: "已下车",
+  embarking: "搭载中",
+  embarked: "已搭载",
+  disembarking: "下车中",
+  trapped: "受困",
 };
 
 const coverReasonLabels: Readonly<Record<string, string>> = {
@@ -184,10 +201,28 @@ export function Inspector({
                           ? "可机动"
                           : "失去机动"}
                     {platform.combat === "effective" ? ` · ${platform.crewCount} 乘员` : " · 武器停用"}
+                    {platform.passengerGroupIds.length > 0
+                      ? ` · ${platform.passengerGroupIds.length} 乘客组`
+                      : ""}
                     {platform.damaged && platform.disposition === "crewed" ? " · 受损" : ""}
                   </strong>
                 </div>
               ))}
+            </section>
+          )}
+
+          {inspection.transport && (
+            <section className="inspector-section" data-testid="transport-status">
+              <div className="section-title">
+                <Truck size={15} />
+                <span>运输配对</span>
+                <b>{transportStatusLabels[inspection.transport.status] ?? inspection.transport.status}</b>
+              </div>
+              <strong className="action-label">{inspection.transport.platformId}</strong>
+              {(inspection.transport.status === "embarking" ||
+                inspection.transport.status === "disembarking") && (
+                <p>剩余 {inspection.transport.ticksRemaining} tick</p>
+              )}
             </section>
           )}
 

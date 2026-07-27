@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
-export const BATTLE_RULES_VERSION = "stage-3.2" as const;
+export const BATTLE_RULES_VERSION = "stage-3.3" as const;
+/** The armor-capable contract before explicit transport runtime behavior. */
+export const PRE_TRANSPORT_BATTLE_RULES_VERSION = "stage-3.2" as const;
 /** The crew-capable contract before armor penetration and component damage. */
 export const PRE_DAMAGE_BATTLE_RULES_VERSION = "stage-3.1" as const;
 /** The single-platform contract before crew replacement and platform weapons. */
@@ -574,6 +576,23 @@ export type HealthState =
 
 export type PresenceState = "undeployed" | "deployed" | "evacuated";
 
+export type TransportStatus =
+  | "pending"
+  | "dismounted"
+  | "embarking"
+  | "embarked"
+  | "disembarking"
+  | "trapped";
+
+export interface TransportInspection {
+  readonly assignmentId: string;
+  readonly platformId: PlatformId;
+  readonly passengerGroupId: GroupId;
+  readonly status: TransportStatus;
+  readonly ticksRemaining: Tick;
+  readonly destination?: GridCoord;
+}
+
 export type MemberPlacement =
   | { readonly kind: "dismounted" }
   | {
@@ -706,6 +725,7 @@ export interface GroupInspection {
   readonly currentCover?: CoverInspection;
   readonly coverEvaluation?: CoverEvaluationInspection;
   readonly platforms: readonly PlatformSummaryInspection[];
+  readonly transport?: TransportInspection;
 }
 
 export interface PlatformSummaryInspection {
@@ -718,6 +738,7 @@ export interface PlatformSummaryInspection {
   readonly disposition: PlatformDisposition;
   readonly damaged: boolean;
   readonly crewCount: number;
+  readonly passengerGroupIds: readonly GroupId[];
 }
 
 export interface PlatformComponentInspection {
@@ -771,6 +792,7 @@ export interface PlatformInspection extends PlatformSummaryInspection {
   readonly mobilityCapability: PlatformCapabilityInspection;
   readonly observation: PlatformCapabilityInspection;
   readonly weapons: readonly PlatformWeaponInspection[];
+  readonly transportAssignments: readonly TransportInspection[];
 }
 
 export interface MemberInspection {
@@ -876,6 +898,20 @@ export type BattleEvent =
       };
     })
   | (BattleEventBase & {
+      readonly type: "embarkation-changed";
+      readonly assignmentId: string;
+      readonly platformId: PlatformId;
+      readonly passengerGroupId: GroupId;
+      readonly action: "embark" | "disembark";
+      readonly phase: "started" | "completed" | "cancelled" | "forced";
+      readonly reason?:
+        | "automatic"
+        | "platform-moved"
+        | "platform-unavailable"
+        | "destination-blocked"
+        | "platform-destroyed";
+    })
+  | (BattleEventBase & {
       readonly type: "morale-changed";
       readonly groupId: GroupId;
       readonly from: MoraleState;
@@ -974,6 +1010,7 @@ export interface PlatformResult {
   readonly finalCrewAssignments: readonly CrewAssignment[];
   readonly finalCrewReassignments: readonly CrewReassignment[];
   readonly weaponStates: readonly PlatformWeaponInspection[];
+  readonly finalPassengerGroupIds: readonly GroupId[];
 }
 
 export interface BattleResult {

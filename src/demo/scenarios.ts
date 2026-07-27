@@ -112,6 +112,7 @@ export function createDemoScenarioOptions(
         height: 36,
         groupsPerFaction: 3,
         vehicleGroupsPerFaction: 1,
+        transportPairsPerFaction: 1,
         factions: TWO_FACTIONS,
         mountainDensity: 0,
         roughness: 0,

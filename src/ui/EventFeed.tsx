@@ -50,6 +50,23 @@ function describeEvent(event: BattleEvent): string | undefined {
         return `${event.groupId} 的 ${event.componentId} 失效`;
       }
       return event.penetrated ? `${event.groupId} 装甲被击穿` : undefined;
+    case "embarkation-changed":
+      if (event.phase === "cancelled") {
+        return `${event.passengerGroupId} 上下车动作中断`;
+      }
+      if (event.action === "embark") {
+        return event.phase === "started"
+          ? `${event.passengerGroupId} 开始搭载`
+          : `${event.passengerGroupId} 完成搭载`;
+      }
+      if (event.phase === "started") {
+        return event.reason === "platform-destroyed"
+          ? `${event.passengerGroupId} 受困于损毁平台`
+          : `${event.passengerGroupId} 开始下车`;
+      }
+      return event.phase === "forced"
+        ? `${event.passengerGroupId} 被迫下车`
+        : `${event.passengerGroupId} 完成下车`;
     case "morale-changed":
       return event.to === "routing" ? `${event.groupId} 开始撤离` : undefined;
     case "reinforcement-triggered":

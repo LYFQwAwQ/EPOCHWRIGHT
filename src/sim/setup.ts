@@ -24,10 +24,12 @@ import {
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_TRANSPORT_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
   SIMULATION_HZ,
 } from "./types";
+import { transportOccupancyUnits } from "./transport";
 import type {
   BattleMap,
   BattleSetup,
@@ -61,12 +63,15 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isPreDamage =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_DAMAGE_BATTLE_RULES_VERSION;
+  const isPreTransport =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_TRANSPORT_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
-  if (isCurrent || isPreCrew || isPreDamage) {
+  if (isCurrent || isPreCrew || isPreDamage || isPreTransport) {
     if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
       throw new Error("stage-3 battle setup requires a content-2 content bundle.");
     }
@@ -96,7 +101,14 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       normalizeGroup(group, injectDefaults, migratePlatformFields),
     ),
   }));
-  if (isLegacyTwoFaction || isPreContent || isPrePlatform || isPreCrew || isPreDamage) {
+  if (
+    isLegacyTwoFaction ||
+    isPreContent ||
+    isPrePlatform ||
+    isPreCrew ||
+    isPreDamage ||
+    isPreTransport
+  ) {
     return {
       ...inputSetup,
       schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,
@@ -106,7 +118,10 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       relations: inputSetup.relations?.map((relation) => ({ ...relation })) ??
         createDefaultRelations(inputSetup.factions),
       groups: normalizedGroups,
-      transportAssignments: [],
+      transportAssignments:
+        isPreTransport
+          ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
+          : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
       reinforcements: normalizedReinforcements,
     } as BattleSetup;
@@ -164,6 +179,7 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     claimUniqueId(staticObject.id, entityIds);
   }
   validateReinforcements(setup, factionIds, entityIds);
+  const initialPassengerGroupIds = validateTransportAssignments(setup);
   const occupiedSpawnCells = new Set<number>();
   const factionGroupCounts = new Map(setup.factions.map((faction) => [faction.id, 0]));
   if (setup.mode.kind === "defense") {
@@ -252,10 +268,12 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
       throw new Error(`Group ${group.id} has an illegal spawn cell.`);
     }
     const spawnIndex = group.spawn.z * setup.map.width + group.spawn.x;
-    if (occupiedSpawnCells.has(spawnIndex)) {
-      throw new Error(`Multiple groups cannot share initial cell ${spawnIndex}.`);
+    if (!initialPassengerGroupIds.has(group.id)) {
+      if (occupiedSpawnCells.has(spawnIndex)) {
+        throw new Error(`Multiple groups cannot share initial cell ${spawnIndex}.`);
+      }
+      occupiedSpawnCells.add(spawnIndex);
     }
-    occupiedSpawnCells.add(spawnIndex);
     if (!isLegalDeployment(setup.map, group.evacuation, movementType)) {
       throw new Error(`Group ${group.id} has an illegal evacuation cell.`);
     }
@@ -263,10 +281,6 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
       group.factionId,
       (factionGroupCounts.get(group.factionId) ?? 0) + 1,
     );
-  }
-
-  if (setup.transportAssignments.length > 0) {
-    throw new Error("Transport assignments are not supported until VEHICLE-006.");
   }
 
   if ([...factionGroupCounts.values()].some((count) => count === 0)) {
@@ -283,6 +297,98 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     throw new Error("Battle duration and stability windows must be positive.");
   }
   validateRequiredRoutes(setup);
+}
+
+function validateTransportAssignments(setup: BattleSetup): ReadonlySet<string> {
+  const locatedGroups = [
+    ...setup.groups.map((group) => ({ group, cohortId: "initial" })),
+    ...setup.reinforcements.flatMap((wave) =>
+      wave.groups.map((group) => ({ group, cohortId: `wave:${wave.id}` })),
+    ),
+  ];
+  const groupsById = new Map(
+    locatedGroups.map((located) => [located.group.id, located]),
+  );
+  const platformOwners = new Map(
+    locatedGroups.flatMap(({ group, cohortId }) =>
+      group.platforms.map((platform) => [
+        platform.id,
+        { platform, group, cohortId },
+      ] as const),
+    ),
+  );
+  const assignmentIds = new Set<string>();
+  const assignedPassengerGroupIds = new Set<string>();
+  const initiallyEmbarkedPassengerGroupIds = new Set<string>();
+  const initialCapacityByPlatformId = new Map<string, number>();
+
+  for (const assignment of setup.transportAssignments) {
+    if (!assignment.id || assignmentIds.has(assignment.id)) {
+      throw new Error(`Transport assignment IDs must be unique: ${assignment.id}.`);
+    }
+    if (assignedPassengerGroupIds.has(assignment.passengerGroupId)) {
+      throw new Error(
+        `Passenger group ${assignment.passengerGroupId} has multiple transport assignments.`,
+      );
+    }
+    const passenger = groupsById.get(assignment.passengerGroupId);
+    const owner = platformOwners.get(assignment.platformId);
+    if (!passenger || !owner) {
+      throw new Error(`Transport assignment ${assignment.id} references an unknown entity.`);
+    }
+    if (
+      passenger.group.id === owner.group.id ||
+      passenger.group.factionId !== owner.group.factionId
+    ) {
+      throw new Error(
+        `Transport assignment ${assignment.id} must pair distinct same-faction groups.`,
+      );
+    }
+    if (passenger.group.platforms.length > 0) {
+      throw new Error(
+        `Passenger group ${passenger.group.id} must be a dismounted group.`,
+      );
+    }
+    const platformTemplate = getPlatformTemplate(
+      setup.content,
+      owner.platform.platformTemplateId,
+    );
+    if (
+      platformTemplate.transportCapacityUnits <= 0 ||
+      platformTemplate.embarkTicks <= 0 ||
+      platformTemplate.disembarkTicks <= 0
+    ) {
+      throw new Error(`Platform ${owner.platform.id} is not transport-capable.`);
+    }
+    const requiredCapacity = transportOccupancyUnits(passenger.group, setup.content);
+    if (requiredCapacity > platformTemplate.transportCapacityUnits) {
+      throw new Error(
+        `Passenger group ${passenger.group.id} exceeds platform ${owner.platform.id} capacity.`,
+      );
+    }
+    if (assignment.initiallyEmbarked) {
+      if (
+        passenger.cohortId !== owner.cohortId ||
+        passenger.group.spawn.x !== owner.group.spawn.x ||
+        passenger.group.spawn.z !== owner.group.spawn.z
+      ) {
+        throw new Error(
+          `Initially embarked group ${passenger.group.id} must share its platform deployment cohort and spawn.`,
+        );
+      }
+      const initialCapacity =
+        (initialCapacityByPlatformId.get(owner.platform.id) ?? 0) + requiredCapacity;
+      if (initialCapacity > platformTemplate.transportCapacityUnits) {
+        throw new Error(`Platform ${owner.platform.id} exceeds initial passenger capacity.`);
+      }
+      initialCapacityByPlatformId.set(owner.platform.id, initialCapacity);
+      initiallyEmbarkedPassengerGroupIds.add(passenger.group.id);
+    }
+    assignmentIds.add(assignment.id);
+    assignedPassengerGroupIds.add(passenger.group.id);
+  }
+
+  return initiallyEmbarkedPassengerGroupIds;
 }
 
 export function hashBattleSetup(setup: BattleSetupInput): string {

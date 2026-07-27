@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDemoScenarioOptions } from "../demo/scenarios";
 import { createDemoBattleSetup } from "../demo/setup";
 import {
   BATTLE_MAP_SCHEMA_VERSION,
@@ -716,6 +717,91 @@ describe("single-platform vehicle slice", () => {
         placement: { kind: "dismounted" },
       });
     }
+  });
+
+  it("pursues a stale vehicle contact without targeting its blocked wreck cell", () => {
+    const simulation = createSimulation(createVehicleSetup("tracked"));
+    const wreckCell = { x: 17, z: 10 };
+    const internals = simulation as unknown as {
+      readonly setup: BattleSetup;
+      readonly state: {
+        readonly groupsById: Map<
+          string,
+          {
+            readonly id: string;
+            goal?: { x: number; z: number };
+            path: { x: number; z: number }[];
+            readonly localContacts: Map<string, unknown>;
+          }
+        >;
+        readonly staticPlatformOccupancy: Map<number, string>;
+      };
+      decideForGroup(group: unknown): void;
+    };
+    const group = internals.state.groupsById.get("azure-infantry")!;
+    const wreckIndex =
+      wreckCell.z * internals.setup.map.width + wreckCell.x;
+    internals.state.staticPlatformOccupancy.set(
+      wreckIndex,
+      "ember-vehicle-platform",
+    );
+    group.localContacts.set("ember-vehicle", {
+      targetGroupId: "ember-vehicle",
+      lastKnown: wreckCell,
+      observedAt: 0,
+      lastDirectTick: -100,
+      confidenceBps: 10_000,
+      sourceGroupId: group.id,
+    });
+
+    internals.decideForGroup(group);
+
+    expect(group.goal).toBeDefined();
+    expect(group.goal).not.toEqual(wreckCell);
+    expect(group.path.length).toBeGreaterThan(1);
+  });
+
+  it("keeps a rifle squad on a damageable routing target instead of an intact vehicle", () => {
+    const simulation = createSimulation(
+      createDemoBattleSetup(
+        createDemoScenarioOptions("vehicle-skirmish", "target-suitability"),
+      ),
+    );
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly tick: number;
+        readonly groupsById: Map<
+          string,
+          {
+            readonly id: string;
+            cell: { x: number; z: number };
+            moraleState: string;
+            readonly localContacts: Map<string, unknown>;
+          }
+        >;
+      };
+      chooseDirectTarget(group: unknown): { readonly id: string } | undefined;
+    };
+    const attacker = internals.state.groupsById.get("azure-squad-3")!;
+    const vehicle = internals.state.groupsById.get("ember-wheeled-1")!;
+    const routingSquad = internals.state.groupsById.get("ember-squad-3")!;
+    attacker.cell = { x: 20, z: 10 };
+    vehicle.cell = { x: 22, z: 10 };
+    routingSquad.cell = { x: 26, z: 10 };
+    routingSquad.moraleState = "routing";
+    attacker.localContacts.clear();
+    for (const target of [vehicle, routingSquad]) {
+      attacker.localContacts.set(target.id, {
+        targetGroupId: target.id,
+        lastKnown: { ...target.cell },
+        observedAt: internals.state.tick,
+        lastDirectTick: internals.state.tick,
+        confidenceBps: 10_000,
+        sourceGroupId: attacker.id,
+      });
+    }
+
+    expect(internals.chooseDirectTarget(attacker)?.id).toBe(routingSquad.id);
   });
 
   it("freezes an unfinished crew action in the final result and state hash", () => {

@@ -302,6 +302,29 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
   ]);
   await page.evaluate(() => window.__battleTest?.selectGroup("ember-wheeled-1"));
   await expect(page.getByTestId("platform-status")).toContainText("轮式可机动");
+  await expect(page.getByTestId("platform-status")).toContainText("1 乘客组");
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-squad-2"));
+  await expect(page.getByTestId("transport-status")).toContainText("已搭载");
+  await expect(page.getByTestId("transport-status")).toContainText(
+    "ember-wheeled-1-platform",
+  );
+
+  let sawEmbarkationEvent = false;
+  for (let index = 0; index < 35 && !sawEmbarkationEvent; index += 1) {
+    const previousTick = await page.evaluate(() => window.__battleTest?.getTick() ?? 0);
+    await page.evaluate(() => window.__battleTest?.step(20));
+    await page.waitForFunction(
+      (tick) =>
+        (window.__battleTest?.getTick() ?? 0) >= Number(tick) + 20 ||
+        window.__battleTest?.getStatus() === "finished",
+      previousTick,
+    );
+    sawEmbarkationEvent = await page.evaluate(() =>
+      window.__battleTest?.getEventTypes().includes("embarkation-changed") ?? false,
+    );
+  }
+  expect(sawEmbarkationEvent).toBe(true);
 
   const metrics = await readCanvasMetrics(page);
   expect(metrics.opaqueRatio).toBeGreaterThan(0.98);

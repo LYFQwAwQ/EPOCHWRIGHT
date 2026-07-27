@@ -8,6 +8,11 @@ import type {
 
 type FightingMemberState = Pick<MemberState, "health" | "presence">;
 type GroupMemberState = { readonly members: readonly FightingMemberState[] };
+type SpatialGroupState = Pick<GroupState, "action"> & {
+  readonly platforms?: readonly Pick<GroupState["platforms"][number], "disposition">[];
+  readonly members: readonly (Pick<MemberState, "health" | "presence"> &
+    Partial<Pick<MemberState, "placement">>)[];
+};
 
 export function updateWeaponTimer(
   member: Pick<
@@ -90,13 +95,24 @@ export function hasEvacuatedMembers(group: GroupMemberState): boolean {
 }
 
 export function isGroupSpatiallyActive(
-  group: Pick<GroupState, "action"> & GroupMemberState,
+  group: SpatialGroupState,
 ): boolean {
-  return group.action !== "evacuated" && activeMemberCount(group) > 0;
+  return (
+    group.action !== "evacuated" &&
+    (group.members.some(
+      (member) =>
+        canMemberFight(member) &&
+        (member.placement === undefined || member.placement.kind === "dismounted"),
+    ) || group.platforms?.some((platform) => platform.disposition === "crewed") === true)
+  );
 }
 
 export function isGroupCombatEffective(
-  group: Pick<GroupState, "action" | "moraleState"> & GroupMemberState,
+  group: Pick<GroupState, "action" | "moraleState"> & {
+    readonly platforms?: readonly Pick<GroupState["platforms"][number], "disposition">[];
+    readonly members: readonly (Pick<MemberState, "health" | "presence"> &
+      Partial<Pick<MemberState, "placement">>)[];
+  },
 ): boolean {
   return isGroupSpatiallyActive(group) && group.moraleState !== "routing";
 }

@@ -41,6 +41,7 @@ import type {
   ReinforcementRuntimeState,
   RuntimeState,
   ShotIntent,
+  TransportAssignmentState,
 } from "./internal";
 import {
   canTraverseStep,
@@ -85,6 +86,15 @@ import {
   selectWeightedPlatformComponent,
   selectCrewReassignment,
 } from "./vehicle";
+import {
+  activateTransportAssignment,
+  areTransportCellsAdjacent,
+  dismountPassengerGroup,
+  embarkPassengerGroup,
+  isTransportDestinationAvailable,
+  runtimeTransportOccupancyUnits,
+  selectTransportAdjacentCell,
+} from "./transport";
 import type {
   BattleEvent,
   BattleResult,
@@ -129,6 +139,7 @@ const HIGH_SUPPRESSION_COVER_THRESHOLD_BPS = 7_200;
 const COVER_SEARCH_RADIUS_CELLS = 6;
 const COVER_CURRENT_SLOT_BONUS = 900;
 const COVER_SELECTED_SLOT_BONUS = 450;
+const TRANSPORT_REEMBARK_DELAY_TICKS = 40;
 const GROUP_SLOT_OFFSETS: readonly (readonly [number, number])[] = [
   [-0.27, -0.25],
   [0, -0.29],
@@ -265,13 +276,25 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (group.action === "evacuated") {
         continue;
       }
+      const transportState = this.state.transportByPassengerGroupId.get(group.id);
+      const transportPlatform = transportState
+        ? this.state.platformsById.get(transportState.platformId)
+        : undefined;
+      const transportOwner = transportPlatform
+        ? this.state.groupsById.get(transportPlatform.groupId)
+        : undefined;
       const renderPosition = contact
         ? {
             x: contact.lastKnown.x,
             z: contact.lastKnown.z,
             height: heightAt(this.setup.map, contact.lastKnown),
           }
-        : getGroupRenderPosition(group, this.setup.map);
+        : transportOwner &&
+            (transportState?.status === "embarked" ||
+              transportState?.status === "disembarking" ||
+              transportState?.status === "trapped")
+          ? getGroupRenderPosition(transportOwner, this.setup.map)
+          : getGroupRenderPosition(group, this.setup.map);
       groups.push({
         id: group.id,
         factionId: group.factionId,
@@ -282,7 +305,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         worldX: renderPosition.x * cellSizeMeters,
         worldY: renderPosition.height * heightUnitMeters,
         worldZ: renderPosition.z * cellSizeMeters,
-        headingRadians: group.headingRadians,
+        headingRadians:
+          transportOwner &&
+          (transportState?.status === "embarked" ||
+            transportState?.status === "disembarking" ||
+            transportState?.status === "trapped")
+            ? transportOwner.headingRadians
+            : group.headingRadians,
         action: contact ? "searching" : group.action,
         moraleBps: contact ? 0 : group.moraleBps,
         suppressionBps: contact ? 0 : group.suppressionBps,
@@ -402,6 +431,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         mobilityCapability: { ...this.platformCapabilities(platform).mobility },
         observation: { ...this.platformCapabilities(platform).observation },
         weapons: this.platformWeaponInspections(platform),
+        transportAssignments: (
+          this.state.transportAssignmentsByPlatformId.get(platform.id) ?? []
+        ).map((assignment) => this.transportInspection(assignment)),
       };
       return inspection;
     }
@@ -527,6 +559,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(platform.mobility);
         hasher.addString(platform.combat);
         hasher.addString(platform.disposition);
+        for (const passengerGroupId of [...platform.passengerGroupIds].sort(compareStrings)) {
+          hasher.addString(passengerGroupId);
+        }
         for (const assignment of platform.crewAssignments) {
           hasher.addString(assignment.stationId);
           hasher.addString(assignment.memberId);
@@ -582,6 +617,18 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
     }
 
+    for (const assignment of this.state.transportAssignments) {
+      hasher.addString(assignment.id);
+      hasher.addString(assignment.platformId);
+      hasher.addString(assignment.passengerGroupId);
+      hasher.addString(assignment.status);
+      hasher.addNumber(assignment.ticksRemaining);
+      hasher.addNumber(assignment.destination?.x ?? -1);
+      hasher.addNumber(assignment.destination?.z ?? -1);
+      hasher.addNumber(assignment.lastTransitionTick);
+      hasher.addNumber(assignment.passengerDamageResolved ? 1 : 0);
+    }
+
     for (const [slotId, groupId] of [...this.state.coverOccupancy].sort(([a], [b]) =>
       compareStrings(a, b),
     )) {
@@ -631,6 +678,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private stepOnce(): void {
     this.updateReinforcements();
     this.updateCrewStations();
+    this.updateTransportAssignments();
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
@@ -838,36 +886,72 @@ class StageOneBattleSimulation implements BattleSimulation {
 
     const deployedGroups: GroupState[] = [];
     const usedCells = new Set<number>();
+    const bundledGroupIds = new Set<GroupId>();
+    let deploymentSlotsUsed = 0;
     for (const spawn of remainingGroups) {
-      if (deployedGroups.length >= selected.capacityPerTick) {
+      if (
+        deploymentSlotsUsed >= selected.capacityPerTick ||
+        bundledGroupIds.has(spawn.id)
+      ) {
+        if (deploymentSlotsUsed >= selected.capacityPerTick) {
+          break;
+        }
+        continue;
+      }
+      const bundle = this.initialTransportReinforcementBundle(
+        spawn,
+        remainingGroups,
+      );
+      const anchorSpawn = bundle.find((candidate) => candidate.platforms.length > 0) ?? spawn;
+      if (bundle.some((candidate) => bundledGroupIds.has(candidate.id))) {
         break;
       }
       const openCell = this.openEntranceCells(
         selected,
-        movementTypeForGroup(this.setup, spawn),
+        movementTypeForGroup(this.setup, anchorSpawn),
       ).find((cell) => !usedCells.has(cellIndex(this.setup.map, cell)));
       if (!openCell) {
         continue;
       }
       usedCells.add(cellIndex(this.setup.map, openCell));
-      const group = createGroupState(spawn, openCell, this.setup.content!);
-      deployedGroups.push(group);
-      wave.deployedGroupIds.push(group.id);
-      this.state.groupsById.set(group.id, group);
-      for (const member of group.members) {
-        this.state.membersById.set(member.id, member);
+      deploymentSlotsUsed += 1;
+      const groups = bundle.map((candidate) =>
+        createGroupState(candidate, openCell, this.setup.content),
+      );
+      for (const group of groups) {
+        bundledGroupIds.add(group.id);
+        deployedGroups.push(group);
+        wave.deployedGroupIds.push(group.id);
+        this.state.groupsById.set(group.id, group);
+        for (const member of group.members) {
+          this.state.membersById.set(member.id, member);
+        }
+        for (const platform of group.platforms) {
+          this.state.platformsById.set(platform.id, platform);
+        }
       }
-      for (const platform of group.platforms) {
-        this.state.platformsById.set(platform.id, platform);
+      for (const assignment of this.state.transportAssignments) {
+        activateTransportAssignment(
+          assignment,
+          this.state.groupsById,
+          this.state.platformsById,
+          this.state.tick,
+        );
       }
-      this.state.occupancy.set(cellIndex(this.setup.map, group.cell), group.id);
-      const coverSlot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
-      if (
-        coverSlot &&
-        activeMemberCount(group) > 0 &&
-        !group.platforms.some((platform) => platform.disposition === "crewed")
-      ) {
-        claimCoverSlot(this.state.coverOccupancy, coverSlot, group.id);
+      for (const group of groups) {
+        const transportState = this.state.transportByPassengerGroupId.get(group.id);
+        if (transportState?.status === "embarked") {
+          continue;
+        }
+        this.state.occupancy.set(cellIndex(this.setup.map, group.cell), group.id);
+        const coverSlot = this.coverSlotsByCell.get(cellIndex(this.setup.map, group.cell));
+        if (
+          coverSlot &&
+          activeMemberCount(group) > 0 &&
+          !group.platforms.some((platform) => platform.disposition === "crewed")
+        ) {
+          claimCoverSlot(this.state.coverOccupancy, coverSlot, group.id);
+        }
       }
     }
     this.state.groups.push(...deployedGroups);
@@ -894,6 +978,36 @@ class StageOneBattleSimulation implements BattleSimulation {
         reason: "capacity",
       });
     }
+  }
+
+  private initialTransportReinforcementBundle(
+    spawn: BattleSetup["groups"][number],
+    remainingGroups: readonly BattleSetup["groups"][number][],
+  ): readonly BattleSetup["groups"][number][] {
+    const related = this.state.transportAssignments.find(
+      (assignment) =>
+        assignment.initiallyEmbarked &&
+        (assignment.passengerGroupId === spawn.id ||
+          spawn.platforms.some((platform) => platform.id === assignment.platformId)),
+    );
+    if (!related) {
+      return [spawn];
+    }
+    const platformId = related.platformId;
+    const passengerGroupIds = new Set(
+      this.state.transportAssignments
+        .filter(
+          (assignment) =>
+            assignment.initiallyEmbarked && assignment.platformId === platformId,
+        )
+        .map((assignment) => assignment.passengerGroupId),
+    );
+    const bundle = remainingGroups.filter(
+      (candidate) =>
+        passengerGroupIds.has(candidate.id) ||
+        candidate.platforms.some((platform) => platform.id === platformId),
+    );
+    return bundle.length > 0 ? bundle.sort(compareById) : [spawn];
   }
 
   private openEntranceCells(
@@ -1173,6 +1287,469 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
   }
 
+  private updateTransportAssignments(): void {
+    for (const assignment of this.state.transportAssignments) {
+      if (assignment.status === "pending") {
+        if (
+          activateTransportAssignment(
+            assignment,
+            this.state.groupsById,
+            this.state.platformsById,
+            this.state.tick,
+          ) &&
+          assignment.initiallyEmbarked
+        ) {
+          const passengerGroup = this.state.groupsById.get(assignment.passengerGroupId);
+          if (passengerGroup) {
+            this.cancelMovement(passengerGroup);
+            this.releaseCover(passengerGroup);
+            const passengerIndex = cellIndex(this.setup.map, passengerGroup.cell);
+            if (this.state.occupancy.get(passengerIndex) === passengerGroup.id) {
+              this.state.occupancy.delete(passengerIndex);
+            }
+          }
+        }
+        continue;
+      }
+
+      const passengerGroup = this.state.groupsById.get(assignment.passengerGroupId);
+      const platform = this.state.platformsById.get(assignment.platformId);
+      const platformGroup = platform
+        ? this.state.groupsById.get(platform.groupId)
+        : undefined;
+      if (!passengerGroup || !platform || !platformGroup) {
+        continue;
+      }
+
+      if (assignment.status === "embarking") {
+        if (
+          platform.disposition !== "crewed" ||
+          platform.mobility !== "mobile" ||
+          platformGroup.movingTo ||
+          passengerGroup.movingTo ||
+          !areTransportCellsAdjacent(passengerGroup.cell, platform.cell)
+        ) {
+          this.cancelTransportAction(
+            assignment,
+            platformGroup.movingTo || passengerGroup.movingTo
+              ? "platform-moved"
+              : "platform-unavailable",
+          );
+          continue;
+        }
+        assignment.ticksRemaining = Math.max(0, assignment.ticksRemaining - 1);
+        if (assignment.ticksRemaining === 0) {
+          this.completeEmbarkation(assignment, passengerGroup, platform);
+        }
+        continue;
+      }
+
+      if (assignment.status === "disembarking") {
+        const destination = assignment.destination;
+        if (platform.disposition !== "crewed") {
+          this.cancelTransportAction(assignment, "platform-unavailable");
+          this.forcePassengerDismount(assignment, passengerGroup, platform);
+          continue;
+        }
+        if (
+          !destination ||
+          platformGroup.movingTo ||
+          !areTransportCellsAdjacent(destination, platform.cell)
+        ) {
+          this.cancelTransportAction(assignment, "platform-moved");
+          continue;
+        }
+        if (
+          !isTransportDestinationAvailable(
+            this.setup.map,
+            destination,
+            this.transportCellOccupancy(),
+            passengerGroup.id,
+          )
+        ) {
+          this.cancelTransportAction(assignment, "destination-blocked");
+          continue;
+        }
+        assignment.ticksRemaining = Math.max(0, assignment.ticksRemaining - 1);
+        if (assignment.ticksRemaining === 0) {
+          this.completeDisembarkation(
+            assignment,
+            passengerGroup,
+            platform,
+            destination,
+            "completed",
+          );
+        }
+        continue;
+      }
+
+      if (assignment.status === "embarked") {
+        passengerGroup.cell = { ...platform.cell };
+        if (platform.disposition !== "crewed") {
+          this.forcePassengerDismount(assignment, passengerGroup, platform);
+          continue;
+        }
+        if (this.shouldDisembarkTransport(assignment, passengerGroup, platform)) {
+          this.startDisembarkation(assignment, passengerGroup, platform);
+        }
+        continue;
+      }
+
+      if (assignment.status === "trapped") {
+        passengerGroup.cell = { ...platform.cell };
+        this.forcePassengerDismount(assignment, passengerGroup, platform);
+        continue;
+      }
+
+      if (
+        assignment.status === "dismounted" &&
+        this.shouldEmbarkTransport(assignment, passengerGroup, platform) &&
+        areTransportCellsAdjacent(passengerGroup.cell, platform.cell) &&
+        !passengerGroup.movingTo &&
+        !platformGroup.movingTo &&
+        !this.platformHasActiveTransportAction(platform.id)
+      ) {
+        this.startEmbarkation(assignment, passengerGroup, platform);
+      }
+    }
+  }
+
+  private startEmbarkation(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): void {
+    const platformGroup = this.state.groupsById.get(platform.groupId);
+    if (!platformGroup) {
+      return;
+    }
+    this.cancelMovement(passengerGroup);
+    this.cancelMovement(platformGroup);
+    assignment.status = "embarking";
+    assignment.ticksRemaining = getPlatformTemplate(
+      this.setup.content,
+      platform.platformTemplateId,
+    ).embarkTicks;
+    assignment.destination = undefined;
+    passengerGroup.action = "searching";
+    passengerGroup.decisionReason = "transport-embarking";
+    platformGroup.action = "searching";
+    platformGroup.decisionReason = "transport-embarking";
+    this.emit({
+      type: "embarkation-changed",
+      assignmentId: assignment.id,
+      platformId: platform.id,
+      passengerGroupId: passengerGroup.id,
+      action: "embark",
+      phase: "started",
+      reason: "automatic",
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private completeEmbarkation(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): void {
+    this.cancelMovement(passengerGroup);
+    this.releaseCover(passengerGroup);
+    const passengerIndex = cellIndex(this.setup.map, passengerGroup.cell);
+    if (this.state.occupancy.get(passengerIndex) === passengerGroup.id) {
+      this.state.occupancy.delete(passengerIndex);
+    }
+    embarkPassengerGroup(passengerGroup, platform);
+    assignment.status = "embarked";
+    assignment.ticksRemaining = 0;
+    assignment.destination = undefined;
+    assignment.lastTransitionTick = this.state.tick;
+    passengerGroup.action = "searching";
+    passengerGroup.decisionReason = "transport-embarked";
+    this.emit({
+      type: "embarkation-changed",
+      assignmentId: assignment.id,
+      platformId: platform.id,
+      passengerGroupId: passengerGroup.id,
+      action: "embark",
+      phase: "completed",
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private startDisembarkation(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): void {
+    if (this.platformHasActiveTransportAction(platform.id)) {
+      return;
+    }
+    const destination = selectTransportAdjacentCell(
+      this.setup.map,
+      platform.cell,
+      this.transportCellOccupancy(),
+      passengerGroup.id,
+    );
+    if (!destination) {
+      return;
+    }
+    const platformGroup = this.state.groupsById.get(platform.groupId);
+    if (!platformGroup) {
+      return;
+    }
+    this.cancelMovement(platformGroup);
+    assignment.status = "disembarking";
+    assignment.ticksRemaining = getPlatformTemplate(
+      this.setup.content,
+      platform.platformTemplateId,
+    ).disembarkTicks;
+    assignment.destination = { ...destination };
+    this.state.reservations.set(
+      cellIndex(this.setup.map, destination),
+      passengerGroup.id,
+    );
+    passengerGroup.action = "searching";
+    passengerGroup.decisionReason = "transport-disembarking";
+    platformGroup.action = "searching";
+    platformGroup.decisionReason = "transport-disembarking";
+    this.emit({
+      type: "embarkation-changed",
+      assignmentId: assignment.id,
+      platformId: platform.id,
+      passengerGroupId: passengerGroup.id,
+      action: "disembark",
+      phase: "started",
+      reason: "automatic",
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private completeDisembarkation(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+    destination: GridCoord,
+    phase: "completed" | "forced",
+  ): void {
+    this.state.reservations.delete(cellIndex(this.setup.map, destination));
+    dismountPassengerGroup(passengerGroup, platform, destination);
+    assignment.status = "dismounted";
+    assignment.ticksRemaining = 0;
+    assignment.destination = undefined;
+    assignment.lastTransitionTick = this.state.tick;
+    passengerGroup.action = "searching";
+    passengerGroup.decisionReason =
+      phase === "forced" ? "transport-forced-dismount" : "transport-dismounted";
+    if (activeMemberCount(passengerGroup) > 0) {
+      this.state.occupancy.set(
+        cellIndex(this.setup.map, passengerGroup.cell),
+        passengerGroup.id,
+      );
+      this.claimCover(passengerGroup);
+    }
+    this.emit({
+      type: "embarkation-changed",
+      assignmentId: assignment.id,
+      platformId: platform.id,
+      passengerGroupId: passengerGroup.id,
+      action: "disembark",
+      phase,
+      ...(phase === "forced"
+        ? {
+            reason:
+              platform.disposition === "destroyed"
+                ? ("platform-destroyed" as const)
+                : ("platform-unavailable" as const),
+          }
+        : {}),
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private cancelTransportAction(
+    assignment: TransportAssignmentState,
+    reason: "platform-moved" | "platform-unavailable" | "destination-blocked",
+  ): void {
+    const action = assignment.status === "embarking" ? "embark" : "disembark";
+    if (assignment.destination) {
+      this.state.reservations.delete(
+        cellIndex(this.setup.map, assignment.destination),
+      );
+    }
+    assignment.status = action === "embark" ? "dismounted" : "embarked";
+    assignment.ticksRemaining = 0;
+    assignment.destination = undefined;
+    this.emit({
+      type: "embarkation-changed",
+      assignmentId: assignment.id,
+      platformId: assignment.platformId,
+      passengerGroupId: assignment.passengerGroupId,
+      action,
+      phase: "cancelled",
+      reason,
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private forcePassengerDismount(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): void {
+    if (platform.disposition === "destroyed" && !assignment.passengerDamageResolved) {
+      assignment.passengerDamageResolved = true;
+      [...passengerGroup.members].sort(compareById).forEach((member, ordinal) => {
+        if (!canMemberFight(member)) {
+          return;
+        }
+        this.applyHit(member, passengerGroup, {
+          shooterGroupId: platform.groupId,
+          shooterEntityId: `platform-destruction:${platform.id}`,
+          targetGroupId: passengerGroup.id,
+          targetMemberId: member.id,
+          shotOrdinal: ordinal,
+          damageBps: 10_000,
+          hitSuppressionBps: 0,
+        });
+      });
+    }
+    const destination = selectTransportAdjacentCell(
+      this.setup.map,
+      platform.cell,
+      this.transportCellOccupancy(),
+      passengerGroup.id,
+    );
+    if (destination) {
+      this.completeDisembarkation(
+        assignment,
+        passengerGroup,
+        platform,
+        destination,
+        "forced",
+      );
+      return;
+    }
+    if (assignment.status !== "trapped") {
+      if (assignment.destination) {
+        this.state.reservations.delete(
+          cellIndex(this.setup.map, assignment.destination),
+        );
+      }
+      assignment.status = "trapped";
+      assignment.ticksRemaining = 0;
+      assignment.destination = undefined;
+      assignment.lastTransitionTick = this.state.tick;
+      passengerGroup.action = "combat-ineffective";
+      passengerGroup.decisionReason = "transport-trapped";
+      this.emit({
+        type: "embarkation-changed",
+        assignmentId: assignment.id,
+        platformId: platform.id,
+        passengerGroupId: passengerGroup.id,
+        action: "disembark",
+        phase: "started",
+        reason:
+          platform.disposition === "destroyed"
+            ? "platform-destroyed"
+            : "platform-unavailable",
+      });
+      this.markMeaningfulProgress();
+    }
+  }
+
+  private shouldDisembarkTransport(
+    _assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): boolean {
+    if (passengerGroup.moraleState === "routing") {
+      return true;
+    }
+    const platformGroup = this.state.groupsById.get(platform.groupId);
+    if (!platformGroup) {
+      return false;
+    }
+    if (this.hasFreshHostileContact(platformGroup)) {
+      return true;
+    }
+    return this.state.objectives.some(
+      (objective) =>
+        objective.unlocked &&
+        (platformGroup.factionId === objective.attackerFactionId ||
+          platformGroup.factionId === objective.defenderFactionId) &&
+        squaredGridDistance(platform.cell, objective.center) <=
+          (objective.radiusCells + 4) ** 2,
+    );
+  }
+
+  private shouldEmbarkTransport(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+  ): boolean {
+    const platformGroup = this.state.groupsById.get(platform.groupId);
+    if (
+      !platformGroup ||
+      platform.disposition !== "crewed" ||
+      platform.mobility !== "mobile" ||
+      passengerGroup.moraleState === "routing" ||
+      platformGroup.moraleState === "routing" ||
+      activeMemberCount(passengerGroup) === 0 ||
+      this.state.tick - assignment.lastTransitionTick < TRANSPORT_REEMBARK_DELAY_TICKS ||
+      this.hasFreshHostileContact(passengerGroup) ||
+      this.hasFreshHostileContact(platformGroup)
+    ) {
+      return false;
+    }
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const occupiedCapacity = platform.passengerGroupIds.reduce((sum, groupId) => {
+      const group = this.state.groupsById.get(groupId);
+      return group
+        ? sum + runtimeTransportOccupancyUnits(group, this.setup.content)
+        : sum;
+    }, 0);
+    if (
+      occupiedCapacity + runtimeTransportOccupancyUnits(passengerGroup, this.setup.content) >
+      template.transportCapacityUnits
+    ) {
+      return false;
+    }
+    return !this.state.objectives.some(
+      (objective) =>
+        objective.unlocked &&
+        (passengerGroup.factionId === objective.attackerFactionId ||
+          passengerGroup.factionId === objective.defenderFactionId) &&
+        squaredGridDistance(passengerGroup.cell, objective.center) <=
+          (objective.radiusCells + 5) ** 2,
+    );
+  }
+
+  private hasFreshHostileContact(group: GroupState): boolean {
+    return [...group.localContacts.values()].some((contact) => {
+      const target = this.state.groupsById.get(contact.targetGroupId);
+      return Boolean(
+        target &&
+          this.isHostile(group.factionId, target.factionId) &&
+          this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS + 1,
+      );
+    });
+  }
+
+  private platformHasActiveTransportAction(platformId: string): boolean {
+    return (this.state.transportAssignmentsByPlatformId.get(platformId) ?? []).some(
+      (assignment) =>
+        assignment.status === "embarking" || assignment.status === "disembarking",
+    );
+  }
+
+  private transportCellOccupancy() {
+    return {
+      groups: this.state.occupancy,
+      staticPlatforms: this.state.staticPlatformOccupancy,
+      reservations: this.state.reservations,
+    };
+  }
+
   private deliverIntelMessages(): void {
     this.state.intelQueue.sort(compareIntelMessages);
     let deliveredCount = 0;
@@ -1385,13 +1962,19 @@ class StageOneBattleSimulation implements BattleSimulation {
     if (activeMemberCount(group) === 0) {
       this.cancelMovement(group);
       this.releaseCover(group);
-      this.state.occupancy.delete(cellIndex(this.setup.map, group.cell));
+      const groupIndex = cellIndex(this.setup.map, group.cell);
+      if (this.state.occupancy.get(groupIndex) === group.id) {
+        this.state.occupancy.delete(groupIndex);
+      }
       group.action = hasEvacuatedMembers(group) ? "evacuated" : "combat-ineffective";
       group.decisionReason = "no-active-members";
       group.goal = undefined;
       group.path = [];
       group.currentTargetId = undefined;
       group.coverDecision = undefined;
+      return;
+    }
+    if (this.decideTransportForGroup(group)) {
       return;
     }
     const crewedPlatform = this.activeTargetPlatform(group);
@@ -1616,6 +2199,81 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
+  private decideTransportForGroup(group: GroupState): boolean {
+    const passengerAssignment = this.state.transportByPassengerGroupId.get(group.id);
+    if (passengerAssignment) {
+      const platform = this.state.platformsById.get(passengerAssignment.platformId);
+      if (!platform) {
+        return false;
+      }
+      if (passengerAssignment.status !== "dismounted") {
+        this.cancelMovement(group);
+        group.currentTargetId = undefined;
+        group.goal = undefined;
+        group.path = [];
+        group.action =
+          passengerAssignment.status === "trapped"
+            ? "combat-ineffective"
+            : "searching";
+        group.decisionReason = `transport-${passengerAssignment.status}`;
+        return true;
+      }
+      if (this.shouldEmbarkTransport(passengerAssignment, group, platform)) {
+        group.currentTargetId = undefined;
+        const rendezvous = selectTransportAdjacentCell(
+          this.setup.map,
+          platform.cell,
+          this.transportCellOccupancy(),
+          group.id,
+        );
+        if (!rendezvous || areTransportCellsAdjacent(group.cell, platform.cell)) {
+          this.cancelMovement(group);
+          group.action = "searching";
+          group.decisionReason = "transport-rendezvous";
+          group.goal = undefined;
+          group.path = [];
+        } else {
+          group.action = "moving-to-contact";
+          group.decisionReason = "transport-rendezvous";
+          this.assignGoal(group, rendezvous);
+        }
+        return true;
+      }
+    }
+
+    const platformAssignments = group.platforms.flatMap(
+      (platform) => this.state.transportAssignmentsByPlatformId.get(platform.id) ?? [],
+    );
+    const activeAction = platformAssignments.find(
+      (assignment) =>
+        assignment.status === "embarking" || assignment.status === "disembarking",
+    );
+    const rendezvous = platformAssignments.find((assignment) => {
+      if (assignment.status !== "dismounted") {
+        return false;
+      }
+      const passengerGroup = this.state.groupsById.get(assignment.passengerGroupId);
+      const platform = this.state.platformsById.get(assignment.platformId);
+      return Boolean(
+        passengerGroup &&
+          platform &&
+          this.shouldEmbarkTransport(assignment, passengerGroup, platform),
+      );
+    });
+    if (!activeAction && !rendezvous) {
+      return false;
+    }
+    this.cancelMovement(group);
+    group.currentTargetId = undefined;
+    group.goal = undefined;
+    group.path = [];
+    group.action = "searching";
+    group.decisionReason = activeAction
+      ? `transport-${activeAction.status}`
+      : "transport-rendezvous";
+    return true;
+  }
+
   private holdDefensePosition(
     group: GroupState,
     objective: ObjectiveRuntimeState,
@@ -1677,7 +2335,9 @@ class StageOneBattleSimulation implements BattleSimulation {
           Boolean(
             target &&
               activeMemberCount(target) > 0 &&
-              this.isHostile(group.factionId, target.factionId),
+              isGroupSpatiallyActive(target) &&
+              this.isHostile(group.factionId, target.factionId) &&
+              this.canGroupAffectTarget(group, target),
           ),
       )
       .sort((a, b) => {
@@ -1686,6 +2346,48 @@ class StageOneBattleSimulation implements BattleSimulation {
         return distanceDifference || compareStrings(a.id, b.id);
       });
     return candidates[0];
+  }
+
+  private canGroupAffectTarget(group: GroupState, target: GroupState): boolean {
+    const targetPlatform = this.activeTargetPlatform(target);
+    const weaponCanAffectTarget = (
+      weapon: ReturnType<typeof getWeaponTemplate>,
+    ): boolean =>
+      targetPlatform
+        ? firstPlatformDamageEffect(weapon) !== undefined
+        : weapon.suppressionBps > 0 ||
+          firstEffectAmount(weapon, "damage", 0) > 0 ||
+          firstEffectAmount(weapon, "suppression", 0) > 0;
+
+    if (
+      group.members.some(
+        (member) =>
+          canMemberFight(member) &&
+          member.placement.kind === "dismounted" &&
+          weaponCanAffectTarget(this.weaponForMember(member)),
+      )
+    ) {
+      return true;
+    }
+
+    return group.platforms.some((platform) => {
+      if (platform.disposition !== "crewed") {
+        return false;
+      }
+      const capabilities = this.platformCapabilities(platform);
+      return platform.weaponStates.some((weaponState) => {
+        const available = capabilities.weapons.find(
+          (capability) => capability.componentId === weaponState.componentId,
+        )?.available;
+        return Boolean(
+          available &&
+            this.platformWeaponOperator(platform, weaponState.componentId) &&
+            weaponCanAffectTarget(
+              getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
+            ),
+        );
+      });
+    });
   }
 
   private chooseBestKnownContact(group: GroupState): ContactState | undefined {
@@ -1732,7 +2434,28 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private assignGoal(group: GroupState, desiredGoal: GridCoord): void {
-    const goal = this.findNearestWalkable(desiredGoal, group.cell, group.movementType);
+    const terrainGoal = this.findNearestWalkable(
+      desiredGoal,
+      group.cell,
+      group.movementType,
+    );
+    const blocked = this.staticPlatformBlockedCellIndices(group);
+    const terrainGoalBlocked = blocked.has(cellIndex(this.setup.map, terrainGoal));
+    const terrainGoalChanged = !group.goal || !sameCoord(group.goal, terrainGoal);
+    if (!terrainGoalChanged && group.path.length > 0 && !terrainGoalBlocked) {
+      group.goal = terrainGoal;
+      return;
+    }
+    const { goal, path } = terrainGoalBlocked
+      ? this.findReachableGoalPath(group, terrainGoal, blocked)
+      : {
+          goal: terrainGoal,
+          path: this.pathfinderFor(group).findPath(
+            group.movingTo ?? group.cell,
+            terrainGoal,
+            blocked,
+          ),
+        };
     const goalChanged = !group.goal || !sameCoord(group.goal, goal);
     if (!goalChanged && group.path.length > 0) {
       group.goal = goal;
@@ -1743,12 +2466,73 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
     group.goal = goal;
     group.pathGoal = goal;
-    const path = this.pathfinderFor(group).findPath(
-      group.movingTo ?? group.cell,
-      goal,
-      this.staticPlatformBlockedCellIndices(group),
-    );
     group.path = path.map((coord) => ({ ...coord }));
+  }
+
+  private findReachableGoalPath(
+    group: GroupState,
+    terrainGoal: GridCoord,
+    blocked: ReadonlySet<number>,
+  ): { readonly goal: GridCoord; readonly path: readonly GridCoord[] } {
+    const pathStart = group.movingTo ?? group.cell;
+    const pathfinder = this.pathfinderFor(group);
+    const componentIds = this.walkableComponentIds.get(group.movementType)!;
+    const reachableComponent =
+      componentIds[cellIndex(this.setup.map, group.cell)] ?? -1;
+    const maximumRadius = Math.max(this.setup.map.width, this.setup.map.height);
+    for (let radius = 1; radius < maximumRadius; radius += 1) {
+      const options: {
+        readonly goal: GridCoord;
+        readonly path: readonly GridCoord[];
+        readonly distanceSquared: number;
+        readonly cost: number;
+      }[] = [];
+      for (let dz = -radius; dz <= radius; dz += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+            continue;
+          }
+          const candidate = { x: terrainGoal.x + dx, z: terrainGoal.z + dz };
+          const candidateIndex = cellIndex(this.setup.map, candidate);
+          const occupyingGroupId = this.state.occupancy.get(candidateIndex);
+          const reservingGroupId = this.state.reservations.get(candidateIndex);
+          if (
+            !isWalkable(this.setup.map, candidate, group.movementType) ||
+            componentIds[candidateIndex] !== reachableComponent ||
+            blocked.has(candidateIndex) ||
+            (occupyingGroupId !== undefined && occupyingGroupId !== group.id) ||
+            (reservingGroupId !== undefined && reservingGroupId !== group.id)
+          ) {
+            continue;
+          }
+          const path = sameCoord(pathStart, candidate)
+            ? [{ ...candidate }]
+            : pathfinder.findPath(pathStart, candidate, blocked);
+          if (path.length === 0) {
+            continue;
+          }
+          options.push({
+            goal: candidate,
+            path,
+            distanceSquared: squaredGridDistance(candidate, terrainGoal),
+            cost: path.length === 1
+              ? 0
+              : pathMovementCost(this.setup.map, path, group.movementType),
+          });
+        }
+      }
+      const best = options.sort(
+        (a, b) =>
+          a.distanceSquared - b.distanceSquared ||
+          a.cost - b.cost ||
+          cellIndex(this.setup.map, a.goal) - cellIndex(this.setup.map, b.goal),
+      )[0];
+      if (best) {
+        return { goal: best.goal, path: best.path };
+      }
+    }
+
+    return { goal: terrainGoal, path: [] };
   }
 
   private getPatrolGoal(group: GroupState): GridCoord {
@@ -2049,6 +2833,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       for (const platform of group.platforms) {
         if (platform.disposition === "crewed") {
           platform.cell = { ...group.cell };
+          for (const passengerGroupId of platform.passengerGroupIds) {
+            const passengerGroup = this.state.groupsById.get(passengerGroupId);
+            if (passengerGroup) {
+              passengerGroup.cell = { ...platform.cell };
+            }
+          }
         }
       }
       group.movingTo = undefined;
@@ -2175,6 +2965,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         !target ||
         !this.isHostile(group.factionId, target.factionId) ||
         activeMemberCount(target) === 0 ||
+        !isGroupSpatiallyActive(target) ||
         !this.hasFreshDirectContact(group, target)
       ) {
         continue;
@@ -2684,6 +3475,28 @@ class StageOneBattleSimulation implements BattleSimulation {
           evacuatedAny = true;
         }
       }
+      for (const platform of [...group.platforms].sort(compareById)) {
+        for (const passengerGroupId of [...platform.passengerGroupIds].sort(compareStrings)) {
+          const passengerGroup = this.state.groupsById.get(passengerGroupId);
+          if (!passengerGroup) {
+            continue;
+          }
+          let passengerEvacuated = false;
+          for (const member of passengerGroup.members) {
+            if (canMemberFight(member)) {
+              member.presence = "evacuated";
+              passengerEvacuated = true;
+            }
+          }
+          if (passengerEvacuated) {
+            passengerGroup.action = "evacuated";
+            passengerGroup.decisionReason = "transport-evacuated";
+            passengerGroup.path = [];
+            passengerGroup.goal = undefined;
+            this.emit({ type: "group-evacuated", groupId: passengerGroup.id });
+          }
+        }
+      }
       if (!evacuatedAny) {
         continue;
       }
@@ -2692,7 +3505,10 @@ class StageOneBattleSimulation implements BattleSimulation {
       group.path = [];
       group.goal = undefined;
       this.releaseCover(group);
-      this.state.occupancy.delete(cellIndex(this.setup.map, group.cell));
+      const evacuationIndex = cellIndex(this.setup.map, group.cell);
+      if (this.state.occupancy.get(evacuationIndex) === group.id) {
+        this.state.occupancy.delete(evacuationIndex);
+      }
       if (group.movingTo) {
         this.state.reservations.delete(cellIndex(this.setup.map, group.movingTo));
       }
@@ -3029,6 +3845,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             ...action,
           })),
           weaponStates: this.platformWeaponInspections(platform),
+          finalPassengerGroupIds: [...platform.passengerGroupIds].sort(compareStrings),
         })),
       )
       .sort((a, b) => compareStrings(a.id, b.id));
@@ -3416,6 +4233,9 @@ class StageOneBattleSimulation implements BattleSimulation {
           }
         : undefined,
       platforms: group.platforms.map((platform) => this.platformSummary(platform)),
+      transport: this.state.transportByPassengerGroupId.has(group.id)
+        ? this.transportInspection(this.state.transportByPassengerGroupId.get(group.id)!)
+        : undefined,
     };
   }
 
@@ -3456,6 +4276,20 @@ class StageOneBattleSimulation implements BattleSimulation {
         const member = this.state.membersById.get(assignment.memberId);
         return member ? this.isActiveCrewMember(member, platform) : false;
       }).length,
+      passengerGroupIds: [...platform.passengerGroupIds].sort(compareStrings),
+    };
+  }
+
+  private transportInspection(assignment: TransportAssignmentState) {
+    return {
+      assignmentId: assignment.id,
+      platformId: assignment.platformId,
+      passengerGroupId: assignment.passengerGroupId,
+      status: assignment.status,
+      ticksRemaining: assignment.ticksRemaining,
+      destination: assignment.destination
+        ? { ...assignment.destination }
+        : undefined,
     };
   }
 

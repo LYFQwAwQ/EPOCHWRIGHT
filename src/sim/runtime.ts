@@ -21,6 +21,7 @@ import {
   reinforcementEntranceIds,
 } from "./setup";
 import type { BattleSetup, CoverSlot, GridCoord, GroupId } from "./types";
+import { createTransportRuntimeCollections } from "./transport";
 import { derivePlatformCapabilities } from "./vehicle";
 
 export function createRuntimeState(
@@ -39,10 +40,21 @@ export function createRuntimeState(
       group.platforms.map((platform) => [platform.id, platform] as const),
     ),
   );
+  const transport = createTransportRuntimeCollections(
+    setup,
+    groupsById,
+    platformsById,
+  );
   const coverOccupancy = new Map<string, GroupId>();
   for (const group of groups) {
+    const transportState = transport.byPassengerGroupId.get(group.id);
     const slot = coverSlotsByCell.get(cellIndex(setup.map, group.cell));
-    if (slot && activeMemberCount(group) > 0 && group.platforms.length === 0) {
+    if (
+      slot &&
+      activeMemberCount(group) > 0 &&
+      group.platforms.length === 0 &&
+      transportState?.status !== "embarked"
+    ) {
       claimCoverSlot(coverOccupancy, slot, group.id);
     }
   }
@@ -86,6 +98,9 @@ export function createRuntimeState(
     groupsById,
     membersById,
     platformsById,
+    transportAssignments: transport.assignments,
+    transportByPassengerGroupId: transport.byPassengerGroupId,
+    transportAssignmentsByPlatformId: transport.byPlatformId,
     factionKnowledge: new Map(
       setup.factions.map((faction) => [
         faction.id,
@@ -94,7 +109,14 @@ export function createRuntimeState(
     ),
     intelQueue: [],
     events: [],
-    occupancy: new Map(groups.map((group) => [cellIndex(setup.map, group.cell), group.id])),
+    occupancy: new Map(
+      groups
+        .filter(
+          (group) =>
+            transport.byPassengerGroupId.get(group.id)?.status !== "embarked",
+        )
+        .map((group) => [cellIndex(setup.map, group.cell), group.id]),
+    ),
     staticPlatformOccupancy: new Map(),
     reservations: new Map(),
     coverOccupancy,
@@ -152,6 +174,7 @@ export function createGroupState(
             }]
           : [];
       }),
+      passengerGroupIds: [],
     };
   });
   const crewPlacementByMemberId = new Map(

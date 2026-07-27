@@ -28,6 +28,7 @@ import type {
   PlatformMobilityState,
   PlatformMovementType,
   StaticObjectFacing,
+  TransportStatus,
   ReinforcementBlockedPolicy,
   Tick,
 } from "./types";
@@ -86,6 +87,19 @@ export interface PlatformState {
   readonly crewReassignments: CrewReassignmentState[];
   readonly components: PlatformComponentStateValue[];
   readonly weaponStates: PlatformWeaponStateValue[];
+  readonly passengerGroupIds: GroupId[];
+}
+
+export interface TransportAssignmentState {
+  readonly id: string;
+  readonly platformId: PlatformId;
+  readonly passengerGroupId: GroupId;
+  readonly initiallyEmbarked: boolean;
+  status: TransportStatus;
+  ticksRemaining: Tick;
+  destination?: GridCoord;
+  lastTransitionTick: Tick;
+  passengerDamageResolved: boolean;
 }
 
 export interface DetectionState {
@@ -204,6 +218,9 @@ export interface RuntimeState {
   readonly groupsById: Map<GroupId, GroupState>;
   readonly membersById: Map<MemberId, MemberState>;
   readonly platformsById: Map<PlatformId, PlatformState>;
+  readonly transportAssignments: TransportAssignmentState[];
+  readonly transportByPassengerGroupId: Map<GroupId, TransportAssignmentState>;
+  readonly transportAssignmentsByPlatformId: Map<PlatformId, TransportAssignmentState[]>;
   readonly factionKnowledge: Map<FactionId, FactionKnowledgeState>;
   readonly intelQueue: IntelMessage[];
   readonly events: BattleEvent[];

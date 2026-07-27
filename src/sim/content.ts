@@ -349,9 +349,9 @@ function createDefaultPlatformTemplate(
         substituteEfficiencyBps: 10_000,
       },
     ],
-    transportCapacityUnits: 0,
-    embarkTicks: 0,
-    disembarkTicks: 0,
+    transportCapacityUnits: 8,
+    embarkTicks: 20,
+    disembarkTicks: 16,
     capturePowerBps: 0,
   };
 }
