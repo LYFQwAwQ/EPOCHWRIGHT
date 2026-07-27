@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
-export const BATTLE_RULES_VERSION = "stage-3.1" as const;
+export const BATTLE_RULES_VERSION = "stage-3.2" as const;
+/** The crew-capable contract before armor penetration and component damage. */
+export const PRE_DAMAGE_BATTLE_RULES_VERSION = "stage-3.1" as const;
 /** The single-platform contract before crew replacement and platform weapons. */
 export const PRE_CREW_BATTLE_RULES_VERSION = "stage-3.0" as const;
 /** The final infantry-only contract migrates without changing stage-2 combat behavior. */
@@ -255,10 +257,23 @@ export interface FirePattern {
   readonly shotsPerAction: number;
 }
 
-export interface EffectDefinition {
+export interface MemberEffectDefinition {
   readonly kind: "damage" | "suppression";
   readonly amountBps: number;
 }
+
+export type PlatformAttackTag = "top-attack";
+
+export interface PlatformDamageEffectDefinition {
+  readonly kind: "platform-damage";
+  readonly penetrationRating: number;
+  readonly componentDamageBps: number;
+  readonly crewDamageBps: number;
+  readonly externalDamageBps?: number;
+  readonly attackTags: readonly PlatformAttackTag[];
+}
+
+export type EffectDefinition = MemberEffectDefinition | PlatformDamageEffectDefinition;
 
 export interface WeaponTemplate {
   readonly id: TemplateId;
@@ -701,6 +716,7 @@ export interface PlatformSummaryInspection {
   readonly mobility: PlatformMobilityState;
   readonly combat: PlatformCombatState;
   readonly disposition: PlatformDisposition;
+  readonly damaged: boolean;
   readonly crewCount: number;
 }
 
@@ -747,6 +763,7 @@ export interface PlatformInspection extends PlatformSummaryInspection {
   readonly factionId: FactionId;
   readonly cell: GridCoord;
   readonly visualTypeId: string;
+  readonly armorRatingByFace: Readonly<Record<ArmorFace, number>>;
   readonly crewAssignments: readonly CrewAssignment[];
   readonly crewReassignments: readonly CrewReassignment[];
   readonly stations: readonly CrewStationInspection[];
@@ -840,6 +857,22 @@ export type BattleEvent =
         readonly mobility: PlatformMobilityState;
         readonly combat: PlatformCombatState;
         readonly disposition: PlatformDisposition;
+      };
+    })
+  | (BattleEventBase & {
+      readonly type: "platform-component-changed";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly componentId: string;
+      readonly armorFace: ArmorFace;
+      readonly penetrated: boolean;
+      readonly from: {
+        readonly integrityBps: number;
+        readonly state: PlatformComponentState;
+      };
+      readonly to: {
+        readonly integrityBps: number;
+        readonly state: PlatformComponentState;
       };
     })
   | (BattleEventBase & {

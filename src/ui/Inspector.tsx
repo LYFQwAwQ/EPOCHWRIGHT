@@ -29,6 +29,8 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "avoid-threat-high-suppression": "无可用掩体，避开已知威胁",
   "clear-line-of-fire": "绕开友军射线",
   "low-morale": "士气低落，向出口撤离",
+  "platform-combat-ineffective": "平台失去作战能力，正在撤离",
+  "platform-abandoned": "平台失去机动与作战能力，乘员弃车",
   "no-active-members": "无可作战成员",
   "defend-objective": "守住分配的防御阵位",
   "advance-objective": "向防守目标推进",
@@ -174,8 +176,15 @@ export function Inspector({
                   <span>{platform.id}</span>
                   <strong>
                     {platform.movementType === "tracked" ? "履带" : "轮式"}
-                    {platform.mobility === "mobile" ? "可机动" : "失去机动"}
+                    {platform.disposition === "destroyed"
+                      ? "已摧毁"
+                      : platform.disposition === "abandoned"
+                        ? "已废弃"
+                        : platform.mobility === "mobile"
+                          ? "可机动"
+                          : "失去机动"}
                     {platform.combat === "effective" ? ` · ${platform.crewCount} 乘员` : " · 武器停用"}
+                    {platform.damaged && platform.disposition === "crewed" ? " · 受损" : ""}
                   </strong>
                 </div>
               ))}

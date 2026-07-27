@@ -1,7 +1,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef } from "react";
 import { Group, InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
-import type { RenderFrame, RenderMember, RenderPlatform } from "../sim/types";
+import type { RenderFrame, RenderGroup, RenderMember, RenderPlatform } from "../sim/types";
 import { visualWorldY } from "./elevation";
 
 interface UnitsProps {
@@ -13,6 +13,11 @@ interface UnitsProps {
 
 const uprightQuaternion = new Quaternion();
 const proneQuaternion = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), Math.PI / 2);
+const POSITION_SMOOTHING_RATE = 12;
+
+function positionSmoothingAlpha(deltaSeconds: number): number {
+  return 1 - Math.exp(-POSITION_SMOOTHING_RATE * Math.max(0, deltaSeconds));
+}
 
 interface FactionUnitsProps {
   readonly members: readonly RenderMember[];
@@ -26,11 +31,13 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
   const currentPositions = useRef(new Map<string, Vector3>());
   const dummy = useMemo(() => new Object3D(), []);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const mesh = meshRef.current;
     if (!mesh) {
       return;
     }
+
+    const smoothingAlpha = positionSmoothingAlpha(delta);
 
     members.forEach((member, index) => {
       const groundY = visualWorldY(member.worldY);
@@ -40,7 +47,7 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
         current = target.clone();
         currentPositions.current.set(member.id, current);
       } else {
-        current.lerp(target, 0.16);
+        current.lerp(target, smoothingAlpha);
       }
 
       const inactive = member.health === "dead" || member.health === "incapacitated";
@@ -96,8 +103,13 @@ function PlatformMesh({
   const groupRef = useRef<Group>(null);
   const currentPosition = useRef<Vector3 | undefined>(undefined);
   const tracked = platform.visualTypeId.includes("tracked");
+  const platformColor = platform.disposition === "destroyed"
+    ? "#3d403d"
+    : platform.damaged
+      ? "#8b7458"
+      : color;
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const group = groupRef.current;
     if (!group) {
       return;
@@ -108,7 +120,7 @@ function PlatformMesh({
       platform.worldZ,
     );
     currentPosition.current ??= target.clone();
-    currentPosition.current.lerp(target, 0.16);
+    currentPosition.current.lerp(target, positionSmoothingAlpha(delta));
     group.position.copy(currentPosition.current);
     group.rotation.y = platform.headingRadians;
   });
@@ -124,11 +136,11 @@ function PlatformMesh({
     >
       <mesh castShadow>
         <boxGeometry args={[1.9, 0.78, 3.25]} />
-        <meshBasicMaterial color={selected ? "#f3c969" : color} toneMapped={false} />
+        <meshBasicMaterial color={selected ? "#f3c969" : platformColor} toneMapped={false} />
       </mesh>
       <mesh position={[0, 0.58, -0.15]} castShadow>
         <boxGeometry args={[1.45, 0.5, 1.65]} />
-        <meshBasicMaterial color={selected ? "#ffe09b" : color} toneMapped={false} />
+        <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
       </mesh>
       {tracked ? (
         <>
@@ -196,6 +208,59 @@ interface SquadMarkersProps {
   readonly onSelectGroup: (groupId: string) => void;
 }
 
+function SquadMarker({
+  group,
+  selected,
+  color,
+  onSelectGroup,
+}: {
+  readonly group: RenderGroup;
+  readonly selected: boolean;
+  readonly color: string;
+  readonly onSelectGroup: (groupId: string) => void;
+}) {
+  const markerRef = useRef<Group>(null);
+  const currentPosition = useRef<Vector3 | undefined>(undefined);
+  const routed = group.action === "routing";
+
+  useFrame((_, delta) => {
+    const marker = markerRef.current;
+    if (!marker) {
+      return;
+    }
+    const target = new Vector3(group.worldX, visualWorldY(group.worldY), group.worldZ);
+    currentPosition.current ??= target.clone();
+    currentPosition.current.lerp(target, positionSmoothingAlpha(delta));
+    marker.position.copy(currentPosition.current);
+  });
+
+  return (
+    <group ref={markerRef}>
+      <mesh
+        position={[0, 0.1, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          onSelectGroup(group.id);
+        }}
+      >
+        <ringGeometry args={[selected ? 3.2 : 2.6, selected ? 3.5 : 2.82, 32]} />
+        <meshBasicMaterial
+          color={selected ? "#f3c969" : color}
+          transparent
+          opacity={selected ? 0.95 : routed ? 0.55 : 0.32}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
+      <mesh position={[0, 2.8, 0]} rotation={[0, group.headingRadians, 0]}>
+        <octahedronGeometry args={[0.72, 0]} />
+        <meshBasicMaterial color={selected ? "#f3c969" : color} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
 export function SquadMarkers({
   frame,
   selectedGroupId,
@@ -206,35 +271,15 @@ export function SquadMarkers({
     <group>
       {frame.groups.map((group) => {
         const selected = group.id === selectedGroupId;
-        const routed = group.action === "routing";
         const factionColor = factionColors[group.factionId] ?? "#ffffff";
         return (
-          <group
+          <SquadMarker
             key={group.id}
-            position={[group.worldX, visualWorldY(group.worldY), group.worldZ]}
-          >
-            <mesh
-              position={[0, 0.1, 0]}
-              rotation={[-Math.PI / 2, 0, 0]}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                onSelectGroup(group.id);
-              }}
-            >
-              <ringGeometry args={[selected ? 3.2 : 2.6, selected ? 3.5 : 2.82, 32]} />
-              <meshBasicMaterial
-                color={selected ? "#f3c969" : factionColor}
-                transparent
-                opacity={selected ? 0.95 : routed ? 0.55 : 0.32}
-                depthWrite={false}
-                toneMapped={false}
-              />
-            </mesh>
-            <mesh position={[0, 2.8, 0]} rotation={[0, group.headingRadians, 0]}>
-              <octahedronGeometry args={[0.72, 0]} />
-              <meshBasicMaterial color={selected ? "#f3c969" : factionColor} toneMapped={false} />
-            </mesh>
-          </group>
+            group={group}
+            selected={selected}
+            color={factionColor}
+            onSelectGroup={onSelectGroup}
+          />
         );
       })}
     </group>

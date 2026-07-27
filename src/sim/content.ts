@@ -20,6 +20,7 @@ export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
 export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
+export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
 export const DEFAULT_CREW_MEMBER_TEMPLATE_ID = "vehicle-driver-v1" as const;
 export const DEFAULT_GUNNER_MEMBER_TEMPLATE_ID = "vehicle-gunner-v1" as const;
 export const DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID = "vehicle-relief-crew-v1" as const;
@@ -63,7 +64,7 @@ export function createDefaultBattleContent(
       DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
       DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
     ],
-    allowedWeaponTemplateIds: [DEFAULT_WEAPON_TEMPLATE_ID],
+    allowedWeaponTemplateIds: [DEFAULT_WEAPON_TEMPLATE_ID, DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID],
     allowedSensorTemplateIds: [DEFAULT_SENSOR_TEMPLATE_ID],
   };
   const group: GroupTemplate = {
@@ -175,6 +176,29 @@ export function createDefaultBattleContent(
     suppressionBps: 22,
     exposureOnFireBps: 1_100,
   };
+  const platformWeapon: WeaponTemplate = {
+    ...weapon,
+    id: DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
+    tags: ["autocannon", "anti-vehicle"],
+    techTags: ["basic-vehicles"],
+    magazineSize: 8,
+    reloadTicks: 50,
+    shotIntervalTicks: 12,
+    damageEffects: [
+      { kind: "damage", amountBps: 12_000 },
+      { kind: "suppression", amountBps: 180 },
+      {
+        kind: "platform-damage",
+        penetrationRating: 110,
+        componentDamageBps: 4_000,
+        crewDamageBps: 8_000,
+        externalDamageBps: 1_500,
+        attackTags: [],
+      },
+    ],
+    suppressionBps: 75,
+    exposureOnFireBps: 2_400,
+  };
 
   return {
     contentVersion: BATTLE_CONTENT_VERSION,
@@ -195,7 +219,7 @@ export function createDefaultBattleContent(
       [wheeledPlatform.id]: wheeledPlatform,
       [trackedPlatform.id]: trackedPlatform,
     },
-    weaponTemplates: { [weapon.id]: weapon },
+    weaponTemplates: { [weapon.id]: weapon, [platformWeapon.id]: platformWeapon },
     sensorTemplates: { [sensor.id]: sensor },
     abilityTemplates: {},
     statusTemplates: {},
@@ -256,12 +280,14 @@ function createDefaultPlatformTemplate(
     visualTypeId,
     occupancyUnits: 8,
     turnTicksPer45Degrees,
-    armorRatingByFace: { front: 0, side: 0, rear: 0, top: 0 },
+    armorRatingByFace: movementType === "tracked"
+      ? { front: 120, side: 80, rear: 45, top: 35 }
+      : { front: 70, side: 50, rear: 30, top: 25 },
     componentRules: [
       {
         id: "structure",
         kind: "structure",
-        hitWeight: 1,
+        hitWeight: 4,
         external: false,
         disabledAtBps: 0,
         requiredStationIds: [],
@@ -269,7 +295,7 @@ function createDefaultPlatformTemplate(
       {
         id: "powertrain",
         kind: "powertrain",
-        hitWeight: 1,
+        hitWeight: 2,
         external: false,
         disabledAtBps: 2_500,
         requiredStationIds: ["driver"],
@@ -277,7 +303,7 @@ function createDefaultPlatformTemplate(
       {
         id: "running-gear",
         kind: "running-gear",
-        hitWeight: 1,
+        hitWeight: 3,
         external: true,
         disabledAtBps: 2_500,
         requiredStationIds: ["driver"],
@@ -297,7 +323,7 @@ function createDefaultPlatformTemplate(
         external: true,
         disabledAtBps: 2_500,
         requiredStationIds: ["gunner"],
-        weaponTemplateId: DEFAULT_WEAPON_TEMPLATE_ID,
+        weaponTemplateId: DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
       },
     ],
     crewStationRules: [
@@ -662,6 +688,27 @@ function validateWeaponTemplate(template: WeaponTemplate): void {
   validateBps(template.suppressionBps, `Weapon template ${template.id}`, 10_000);
   validateBps(template.exposureOnFireBps, `Weapon template ${template.id}`, 10_000);
   for (const effect of template.damageEffects) {
+    if (effect.kind === "platform-damage") {
+      const externalDamageBps = effect.externalDamageBps ?? 0;
+      if (
+        !Number.isInteger(effect.penetrationRating) ||
+        effect.penetrationRating < 0 ||
+        !Number.isInteger(effect.componentDamageBps) ||
+        effect.componentDamageBps < 0 ||
+        effect.componentDamageBps > 20_000 ||
+        !Number.isInteger(effect.crewDamageBps) ||
+        effect.crewDamageBps < 0 ||
+        effect.crewDamageBps > 20_000 ||
+        !Number.isInteger(externalDamageBps) ||
+        externalDamageBps < 0 ||
+        externalDamageBps > 20_000 ||
+        new Set(effect.attackTags).size !== effect.attackTags.length ||
+        effect.attackTags.some((tag) => tag !== "top-attack")
+      ) {
+        throw new Error(`Weapon template ${template.id} has an invalid platform effect.`);
+      }
+      continue;
+    }
     if (
       (effect.kind !== "damage" && effect.kind !== "suppression") ||
       !Number.isInteger(effect.amountBps) ||
@@ -930,6 +977,14 @@ function hashWeaponTemplate(hasher: StateHasher, template: WeaponTemplate): void
 
 function hashEffect(hasher: StateHasher, effect: EffectDefinition): void {
   hasher.addString(effect.kind);
+  if (effect.kind === "platform-damage") {
+    hasher.addNumber(effect.penetrationRating);
+    hasher.addNumber(effect.componentDamageBps);
+    hasher.addNumber(effect.crewDamageBps);
+    hasher.addNumber(effect.externalDamageBps ?? 0);
+    addSortedStrings(hasher, effect.attackTags);
+    return;
+  }
   hasher.addNumber(effect.amountBps);
 }
 
@@ -1020,7 +1075,11 @@ function cloneWeaponTemplate(template: WeaponTemplate): WeaponTemplate {
     techTags: [...template.techTags],
     targetDomains: [...template.targetDomains],
     firePattern: { ...template.firePattern },
-    damageEffects: template.damageEffects.map((effect) => ({ ...effect })),
+    damageEffects: template.damageEffects.map((effect) =>
+      effect.kind === "platform-damage"
+        ? { ...effect, attackTags: [...effect.attackTags] }
+        : { ...effect },
+    ),
   };
 }
 

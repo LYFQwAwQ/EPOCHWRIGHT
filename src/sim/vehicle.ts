@@ -1,12 +1,15 @@
 import type {
+  ArmorFace,
   CrewAssignment,
   CrewReassignment,
   CrewStationRule,
+  GridCoord,
   MemberId,
   PlatformCapabilityInspection,
   PlatformComponentRule,
   PlatformComponentState,
   PlatformTemplate,
+  StaticObjectFacing,
 } from "./types";
 
 function compareIds(a: string, b: string): number {
@@ -49,6 +52,92 @@ export interface CrewReassignmentProposal {
 interface ComponentStateInput {
   readonly id: string;
   readonly state: PlatformComponentState;
+}
+
+export function armorFaceForAttack(
+  targetFacing: StaticObjectFacing,
+  targetCell: GridCoord,
+  attackerCell: GridCoord,
+  topAttack: boolean,
+): ArmorFace {
+  if (topAttack) {
+    return "top";
+  }
+  const bearing = facingToward(targetCell, attackerCell);
+  const difference = circularFacingDifference(targetFacing, bearing);
+  if (difference <= 1) {
+    return "front";
+  }
+  if (difference >= 3) {
+    return "rear";
+  }
+  return "side";
+}
+
+export function penetrationChanceBps(
+  penetrationRating: number,
+  armorRating: number,
+): number {
+  if (penetrationRating <= 0) {
+    return 0;
+  }
+  if (armorRating <= 0) {
+    return 10_000;
+  }
+  return Math.max(
+    500,
+    Math.min(9_500, 5_000 + (penetrationRating - armorRating) * 50),
+  );
+}
+
+export function componentStateForIntegrity(
+  integrityBps: number,
+  disabledAtBps: number,
+): PlatformComponentState {
+  if (integrityBps <= 0) {
+    return "destroyed";
+  }
+  if (integrityBps <= disabledAtBps) {
+    return "disabled";
+  }
+  return integrityBps < 10_000 ? "damaged" : "operational";
+}
+
+export function selectWeightedPlatformComponent(
+  componentRules: readonly PlatformComponentRule[],
+  roll: number,
+  externalOnly = false,
+): PlatformComponentRule | undefined {
+  const eligible = componentRules
+    .filter((component) => !externalOnly || component.external)
+    .sort((a, b) => compareIds(a.id, b.id));
+  const totalWeight = eligible.reduce((sum, component) => sum + component.hitWeight, 0);
+  if (totalWeight <= 0) {
+    return undefined;
+  }
+  let cursor = Math.abs(Math.trunc(roll)) % totalWeight;
+  for (const component of eligible) {
+    if (cursor < component.hitWeight) {
+      return component;
+    }
+    cursor -= component.hitWeight;
+  }
+  return eligible[eligible.length - 1];
+}
+
+function facingToward(from: GridCoord, to: GridCoord): StaticObjectFacing {
+  const octant = Math.round(
+    Math.atan2(to.x - from.x, to.z - from.z) / (Math.PI / 4),
+  );
+  return ((octant + 8) % 8) as StaticObjectFacing;
+}
+
+function circularFacingDifference(
+  a: StaticObjectFacing,
+  b: StaticObjectFacing,
+): number {
+  const difference = Math.abs(a - b);
+  return Math.min(difference, 8 - difference);
 }
 
 export function crewEfficiencyForStation(

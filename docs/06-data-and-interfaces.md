@@ -692,7 +692,7 @@ type BattleEvent =
 
 阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
 
-当前 `stage-3.1` 已实现其中两类：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`crew-station-changed` 携带成员、来源/目标岗位和 `started|completed|cancelled` 阶段。两者都携带平台与编组 ID，观察端按编组可见性裁剪。部件变化和搭载变化仍由后续切片接入。
+当前 `stage-3.2` 已实现其中三类：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和 `started|completed|cancelled` 阶段。三者都携带平台与编组 ID，观察端按编组可见性裁剪。搭载变化仍由后续运输切片接入。
 
 ## 16. 战斗结果
 
@@ -753,7 +753,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.1`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把字段不变的 `stage-3/stage-3.0` 输入显式升级到当前岗位规则；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.2`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把字段不变的 `stage-3/stage-3.0` 与 `stage-3/stage-3.1` 输入显式升级到当前规则；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -763,5 +763,7 @@ interface PlatformResult {
 - 只有字段结构变化升级 schema；装甲、移动、岗位或运输结算语义变化升级 rules；纯内容数值变化升级 content。
 
 `VEHICLE-004` 保持 setup schema 和内容字段结构不变，把规则升级到 `stage-3.1`：岗位有效性由成员健康/在场、资格或替代效率共同派生，替代效率按基点缩放移动、观察和平台武器命中；换岗动作和平台武器弹药/计时进入状态哈希、inspection 与结果。`stage-3.0` 输入迁移只更新规则版本，不改写调用方提供的编组或内容。
+
+`VEHICLE-005` 继续保持 setup schema 和 `content-2` 字段版本，把规则升级到 `stage-3.2`：`platform-damage` 效果驱动装甲面、穿透、外露/内部部件与乘员伤害；平台独立格、部件状态、弃车后的移动类型和静态占用进入状态哈希。`stage-3.1` 输入迁移只更新规则版本，不改写调用方内容；没有 `platform-damage` 的既有武器仍不能伤害平台。
 
 内容规范哈希参与 setup 哈希，因此固定 seed 回归比较“同输入同哈希”，不承诺跨 schema 的旧哈希字面值不变。版本不匹配、内容版本不支持、模板引用缺失或编制槽位不一致都会在创建运行时状态前明确拒绝。

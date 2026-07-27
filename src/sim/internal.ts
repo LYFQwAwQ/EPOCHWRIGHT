@@ -2,6 +2,7 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
+  ArmorFace,
   CoverSlotId,
   CoverEvaluationReason,
   CoverThreatSource,
@@ -23,6 +24,7 @@ import type {
   PlatformComponentState,
   PlatformDisposition,
   PlatformId,
+  PlatformDamageEffectDefinition,
   PlatformMobilityState,
   PlatformMovementType,
   StaticObjectFacing,
@@ -75,6 +77,7 @@ export interface PlatformState {
   readonly persistentPlatformId?: string;
   readonly movementType: PlatformMovementType;
   readonly visualTypeId: string;
+  cell: GridCoord;
   facing: StaticObjectFacing;
   mobility: PlatformMobilityState;
   combat: PlatformCombatState;
@@ -122,7 +125,7 @@ export interface GroupState {
   readonly id: GroupId;
   readonly factionId: FactionId;
   readonly groupTemplateId: string;
-  readonly movementType: MovementType;
+  movementType: MovementType;
   readonly evacuation: GridCoord;
   readonly members: MemberState[];
   readonly platforms: PlatformState[];
@@ -205,6 +208,7 @@ export interface RuntimeState {
   readonly intelQueue: IntelMessage[];
   readonly events: BattleEvent[];
   readonly occupancy: Map<number, GroupId>;
+  readonly staticPlatformOccupancy: Map<number, PlatformId>;
   readonly reservations: Map<number, GroupId>;
   readonly coverOccupancy: Map<CoverSlotId, GroupId>;
   readonly objectives: ObjectiveRuntimeState[];
@@ -229,6 +233,7 @@ export interface ShotIntent {
   readonly damageBps: number;
   readonly suppressionBps: number;
   readonly hitSuppressionBps: number;
+  readonly platformDamage?: PlatformDamageEffectDefinition;
 }
 
 export interface HitIntent {
@@ -238,5 +243,20 @@ export interface HitIntent {
   readonly targetMemberId: MemberId;
   readonly shotOrdinal: number;
   readonly damageBps: number;
+  readonly hitSuppressionBps: number;
+}
+
+export interface PlatformDamageIntent {
+  readonly shooterGroupId: GroupId;
+  readonly shooterEntityId: string;
+  readonly targetGroupId: GroupId;
+  readonly targetPlatformId: PlatformId;
+  readonly targetComponentId?: string;
+  readonly targetCrewMemberId?: MemberId;
+  readonly shotOrdinal: number;
+  readonly armorFace: ArmorFace;
+  readonly penetrated: boolean;
+  readonly componentDamageBps: number;
+  readonly crewDamageBps: number;
   readonly hitSuppressionBps: number;
 }

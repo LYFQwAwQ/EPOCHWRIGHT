@@ -63,7 +63,7 @@ future game systems -> complete BattleSetup --+
 
 ### `src/sim/types.ts`
 
-公共领域契约。包含版本常量、标准地图图层、战斗输入、模式判别联合、渲染帧、事件、岗位/换岗与平台武器检查、最终结果和 `BattleSimulation` 接口。当前规则为 `stage-3.1`，并保留 `stage-3.0` 的显式迁移版本常量。
+公共领域契约。包含版本常量、标准地图图层、战斗输入、模式判别联合、渲染帧、事件、岗位/换岗、平台部件与武器检查、最终结果和 `BattleSimulation` 接口。当前规则为 `stage-3.2`，并保留 `stage-3.0`、`stage-3.1` 的显式迁移版本常量。
 
 修改时需要检查：
 
@@ -118,7 +118,7 @@ future game systems -> complete BattleSetup --+
 
 ### `src/sim/vehicle.ts`
 
-无状态车辆岗位规则。负责岗位资格与替代效率、稳定换岗候选、换岗期间来源/目标岗位停用，以及由部件和有效岗位共同派生机动、观察、武器和存续能力效率；不拥有 tick、成员健康或运行时集合。
+无状态车辆规则。负责装甲面判定、整数穿透曲线、稳定加权部件选择、部件完整度状态，以及岗位资格与替代效率、稳定换岗候选、换岗期间来源/目标岗位停用和平台能力派生；不拥有 tick、成员健康或运行时集合。
 
 ### `src/sim/ordering.ts`
 
@@ -126,7 +126,7 @@ future game systems -> complete BattleSetup --+
 
 ### `src/sim/runtime.ts`
 
-拥有规范 `BattleSetup` 的深拷贝，以及成员、编组、平台岗位/武器初态、占用索引、势力知识、目标和增援运行时状态的确定性初始化。平台初始能力也由 `vehicle.ts` 的同一纯规则派生。它不推进 tick；初始化后的权威状态仍由 `simulation.ts` 独占和调度。
+拥有规范 `BattleSetup` 的深拷贝，以及成员、编组、平台位置/部件/岗位/武器初态、占用索引、势力知识、目标和增援运行时状态的确定性初始化。平台初始能力也由 `vehicle.ts` 的同一纯规则派生。它不推进 tick；初始化后的权威状态仍由 `simulation.ts` 独占和调度。
 
 ### `src/sim/simulation.ts`
 
@@ -139,6 +139,7 @@ future game systems -> complete BattleSetup --+
 - 只消费接触快照的防守/压制掩体评分、选择迟滞和无槽位降级；
 - 弹匣、射击意图、伤情与压制；
 - 乘员换岗调度、平台能力刷新、平台武器计时与射击意图；
+- 平台命中意图的同时收集、方向装甲/穿透、部件与乘员伤害、弃车、残骸占用和车辆有效战力；
 - 从成员/武器/传感器模板解析射程、射击节奏、伤害、防护、压制和占领能力；
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
@@ -241,7 +242,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - `src/sim/generated-invariants.test.ts`：批量 seed 覆盖地图边界/路线、逐 tick 哈希、非敌对安全和结果人数守恒，并支持按 seed 重放。
 - `src/demo/setup.test.ts`：覆盖演示生成结果、标准输入验证和 Worker 初始化边界。
 - `src/demo/scenarios.test.ts`：覆盖六类人工场景验证、多目标配置和增援事件接线。
-- `src/sim/vehicle.test.ts`：覆盖旧输入迁移、车辆路线类型、离散转向、乘员位置和平台投影/结果。
+- `src/sim/vehicle.test.ts`：覆盖旧输入迁移、车辆路线/转向/岗位，以及装甲面、穿透、外露部件、同 tick 双向伤害、部件/乘员结算、固定火力、撤离、弃车、投影/结果和逐 tick 复演。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
 - `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
@@ -254,7 +255,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 | 状态 | 所有者 | 可否影响战斗 |
 | --- | --- | --- |
-| 成员健康、弹匣、士气、情报、目标进度 | 模拟 Worker | 是 |
+| 成员健康、平台位置/部件/岗位、弹匣、士气、情报、目标进度 | 模拟 Worker | 是 |
 | Worker 运行/暂停 | Worker 适配 | 只决定是否调用 step |
 | 最近事件列表、当前检查结果 | Client Hook | 否 |
 | 选中单位、镜头模式、纯净界面 | React App | 否 |

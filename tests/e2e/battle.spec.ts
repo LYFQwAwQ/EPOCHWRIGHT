@@ -187,6 +187,12 @@ test("desktop battle renders, pauses, and exposes squad inspection", async ({ pa
   ]);
 
   const canvas = page.locator("canvas");
+  await expect.poll(
+    async () => (await canvas.boundingBox())?.width ?? 0,
+  ).toBeGreaterThan(1_000);
+  await expect.poll(
+    async () => (await canvas.boundingBox())?.height ?? 0,
+  ).toBeGreaterThan(700);
   const box = await canvas.boundingBox();
   expect(box?.width).toBeGreaterThan(1_000);
   expect(box?.height).toBeGreaterThan(700);

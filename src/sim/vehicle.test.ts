@@ -8,17 +8,20 @@ import {
   DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
   DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
   DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
   DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   createDefaultBattleContent,
+  cloneBattleContent,
   createSimulation,
   migrateBattleSetup,
   validateBattleSetup,
@@ -35,9 +38,62 @@ import type {
   PlatformInspection,
 } from "./types";
 import {
+  armorFaceForAttack,
+  componentStateForIntegrity,
+  penetrationChanceBps,
+  selectWeightedPlatformComponent,
   derivePlatformCapabilities,
   selectCrewReassignment,
 } from "./vehicle";
+
+describe("vehicle armor rules", () => {
+  it("resolves front, side, rear, and explicit top attacks from stable facings", () => {
+    const target = { x: 10, z: 10 };
+
+    expect(armorFaceForAttack(0, target, { x: 10, z: 15 }, false)).toBe("front");
+    expect(armorFaceForAttack(0, target, { x: 15, z: 10 }, false)).toBe("side");
+    expect(armorFaceForAttack(0, target, { x: 10, z: 5 }, false)).toBe("rear");
+    expect(armorFaceForAttack(0, target, { x: 10, z: 15 }, true)).toBe("top");
+  });
+
+  it("uses bounded integer penetration odds around the armor rating", () => {
+    expect(penetrationChanceBps(0, 0)).toBe(0);
+    expect(penetrationChanceBps(100, 0)).toBe(10_000);
+    expect(penetrationChanceBps(100, 100)).toBe(5_000);
+    expect(penetrationChanceBps(80, 100)).toBe(4_000);
+    expect(penetrationChanceBps(1, 1_000)).toBe(500);
+    expect(penetrationChanceBps(1_000, 1)).toBe(9_500);
+  });
+
+  it("selects weighted eligible components and derives threshold states", () => {
+    const rules = [
+      {
+        id: "structure",
+        kind: "structure" as const,
+        hitWeight: 1,
+        external: false,
+        disabledAtBps: 0,
+        requiredStationIds: [],
+      },
+      {
+        id: "tracks",
+        kind: "running-gear" as const,
+        hitWeight: 3,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["driver"],
+      },
+    ];
+
+    expect(selectWeightedPlatformComponent(rules, 0)?.id).toBe("structure");
+    expect(selectWeightedPlatformComponent(rules, 1)?.id).toBe("tracks");
+    expect(selectWeightedPlatformComponent(rules, 0, true)?.id).toBe("tracks");
+    expect(componentStateForIntegrity(10_000, 2_500)).toBe("operational");
+    expect(componentStateForIntegrity(9_999, 2_500)).toBe("damaged");
+    expect(componentStateForIntegrity(2_500, 2_500)).toBe("disabled");
+    expect(componentStateForIntegrity(0, 2_500)).toBe("destroyed");
+  });
+});
 
 describe("vehicle crew rules", () => {
   it("prefers qualified relief crew and suspends both transition stations", () => {
@@ -105,6 +161,18 @@ describe("vehicle crew rules", () => {
 });
 
 describe("single-platform vehicle slice", () => {
+  it("migrates stage-3.1 setups to armor-capable rules without changing input fields", () => {
+    const current = createVehicleSetup("tracked");
+    const migrated = migrateBattleSetup({
+      ...current,
+      rulesVersion: PRE_DAMAGE_BATTLE_RULES_VERSION,
+    });
+
+    expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
+    expect(migrated.groups).toEqual(current.groups);
+    expect(migrated.content).toEqual(current.content);
+  });
+
   it("migrates stage-3.0 setups to the crew-capable rules without changing input fields", () => {
     const current = createDemoBattleSetup({
       seed: "vehicle-crew-migration",
@@ -198,6 +266,43 @@ describe("single-platform vehicle slice", () => {
       cell: { x: 3, z: 10 },
       platforms: [{ facing: 2, movementType: "tracked", mobility: "mobile" }],
     });
+  });
+
+  it("projects a crewed platform at the group's continuous in-cell position", () => {
+    const simulation = createSimulation(createVehicleSetup("tracked"));
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly groupsById: Map<
+          string,
+          {
+            path: { x: number; z: number }[];
+            action: string;
+            moveProgress: number;
+            readonly platforms: { readonly cell: { x: number; z: number } }[];
+          }
+        >;
+      };
+      advanceMovement(): void;
+    };
+    const groupState = internals.state.groupsById.get("ember-vehicle")!;
+    groupState.path = [{ x: 3, z: 10 }];
+    groupState.action = "moving-to-contact";
+
+    for (let tick = 0; tick < 4; tick += 1) {
+      internals.advanceMovement();
+    }
+
+    const frame = simulation.getRenderFrame("ember");
+    const renderedGroup = frame.groups.find((group) => group.id === "ember-vehicle")!;
+    const renderedPlatform = frame.platforms.find(
+      (platform) => platform.id === "ember-vehicle-platform",
+    )!;
+    expect(groupState.moveProgress).toBeGreaterThan(0);
+    expect(groupState.platforms[0]?.cell).toEqual({ x: 2, z: 10 });
+    expect(renderedPlatform.worldX).toBe(renderedGroup.worldX);
+    expect(renderedPlatform.worldZ).toBe(renderedGroup.worldZ);
+    expect(renderedPlatform.worldX).toBeGreaterThan(2 * 4);
+    expect(renderedPlatform.worldX).toBeLessThan(3 * 4);
   });
 
   it("reassigns qualified relief crew after a fixed deterministic delay", () => {
@@ -373,6 +478,246 @@ describe("single-platform vehicle slice", () => {
     ).toBeLessThan(12);
   });
 
+  it("resolves deterministic anti-vehicle damage through components, crew survival, and abandonment", () => {
+    const setup = createVehicleDuelSetup({
+      kind: "platform-damage",
+      penetrationRating: 10_000,
+      componentDamageBps: 6_000,
+      crewDamageBps: 0,
+      externalDamageBps: 0,
+      attackTags: [],
+    });
+    const first = createSimulation(setup);
+    const second = createSimulation(setup);
+    const events: ReturnType<typeof first.drainEvents>[number][] = [];
+    let crewHealthyWhenDestroyed = false;
+
+    while (first.status !== "finished" && first.tick < 800) {
+      first.step();
+      second.step();
+      expect(second.getStateHash()).toBe(first.getStateHash());
+      const tickEvents = first.drainEvents();
+      events.push(...tickEvents);
+      const destruction = tickEvents.find(
+        (event) =>
+          event.type === "platform-state-changed" &&
+          event.to.disposition === "destroyed",
+      );
+      if (destruction?.type === "platform-state-changed") {
+        const group = setup.groups.find((candidate) => candidate.id === destruction.groupId)!;
+        crewHealthyWhenDestroyed = group.members.every(
+          (member) =>
+            (first.inspect(member.id, group.factionId) as MemberInspection).health === "healthy",
+        );
+      }
+    }
+
+    const result = first.getResult();
+    const destroyed = result?.platforms.find(
+      (platform) => platform.disposition === "destroyed",
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "platform-component-changed",
+        penetrated: true,
+      }),
+      expect.objectContaining({
+        type: "platform-state-changed",
+        to: expect.objectContaining({ disposition: "destroyed" }),
+      }),
+    ]));
+    expect(destroyed).toBeDefined();
+    expect(crewHealthyWhenDestroyed).toBe(true);
+    expect(destroyed?.finalCrewAssignments).toEqual([]);
+    expect(
+      result?.members
+        .filter((member) => member.groupId === destroyed?.groupId)
+        .some((member) => member.health !== "dead"),
+    ).toBe(true);
+    expect(
+      result?.members
+        .filter((member) => member.groupId === destroyed?.groupId)
+        .every((member) => member.finalPlacement.kind === "dismounted"),
+    ).toBe(true);
+    const frozenHash = first.getStateHash();
+    first.step(100);
+    expect(first.getStateHash()).toBe(frozenHash);
+    expect(first.getResult()?.stateHash).toBe(frozenHash);
+  });
+
+  it("keeps non-penetrating damage on external components and away from crew", () => {
+    const setup = createVehicleDuelSetup({
+      kind: "platform-damage",
+      penetrationRating: 0,
+      componentDamageBps: 10_000,
+      crewDamageBps: 20_000,
+      externalDamageBps: 10_000,
+      attackTags: [],
+    });
+    const simulation = createSimulation(setup);
+    const componentEvents: Extract<
+      ReturnType<typeof simulation.drainEvents>[number],
+      { type: "platform-component-changed" }
+    >[] = [];
+
+    while (componentEvents.length === 0 && simulation.tick < 500) {
+      simulation.step();
+      componentEvents.push(
+        ...simulation.drainEvents().filter(
+          (event): event is typeof componentEvents[number] =>
+            event.type === "platform-component-changed",
+        ),
+      );
+    }
+
+    expect(componentEvents.length).toBeGreaterThan(0);
+    expect(componentEvents.every((event) => !event.penetrated)).toBe(true);
+    expect(
+      componentEvents.every((event) =>
+        ["running-gear", "sensor", "primary-weapon"].includes(event.componentId),
+      ),
+    ).toBe(true);
+    expect(
+      setup.groups.every((group) =>
+        group.members.every(
+          (member) =>
+            (simulation.inspect(member.id, group.factionId) as MemberInspection).health === "healthy",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps an immobilized armed platform fighting and withdraws a mobile disarmed platform", () => {
+    const fixedGun = createSimulation(createVehicleSetup("tracked"));
+    setPlatformComponent(fixedGun, "ember-vehicle-platform", "running-gear", 0, "destroyed");
+    refreshPlatform(fixedGun, "ember-vehicle-platform");
+    fixedGun.step(300);
+    expect(fixedGun.inspect("ember-vehicle-platform", "ember")).toMatchObject({
+      mobility: "immobilized",
+      combat: "effective",
+      disposition: "crewed",
+    });
+    expect(fixedGun.drainEvents()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "weapon-fired",
+        groupId: "ember-vehicle",
+      }),
+    ]));
+
+    const withdrawal = createSimulation(createVehicleSetup("tracked"));
+    setPlatformComponent(withdrawal, "ember-vehicle-platform", "primary-weapon", 0, "destroyed");
+    refreshPlatform(withdrawal, "ember-vehicle-platform");
+    withdrawal.step(5);
+    expect(withdrawal.inspect("ember-vehicle", "ember")).toMatchObject({
+      action: "routing",
+      decisionReason: "platform-combat-ineffective",
+    });
+    expect(withdrawal.inspect("ember-vehicle-platform", "ember")).toMatchObject({
+      mobility: "mobile",
+      combat: "ineffective",
+      disposition: "crewed",
+    });
+  });
+
+  it("collects mutual platform hits before either weapon component is disabled", () => {
+    const base = createVehicleDuelSetup({
+      kind: "platform-damage",
+      penetrationRating: 10_000,
+      componentDamageBps: 10_000,
+      crewDamageBps: 0,
+      externalDamageBps: 0,
+      attackTags: [],
+    });
+    const content = cloneBattleContent(base.content);
+    const tracked = content.platformTemplates[DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID]!;
+    const setup: BattleSetup = {
+      ...base,
+      seed: "simultaneous-438217",
+      content: {
+        ...content,
+        platformTemplates: {
+          ...content.platformTemplates,
+          [tracked.id]: {
+            ...tracked,
+            armorRatingByFace: { front: 0, side: 0, rear: 0, top: 0 },
+          },
+        },
+      },
+    };
+    const simulation = createSimulation(setup);
+    primeDirectVehicleDuel(simulation);
+
+    invokeWeaponUpdate(simulation);
+
+    for (const platformId of ["ember-vehicle-platform", "azure-vehicle-platform"]) {
+      expect(simulation.inspect(platformId)).toMatchObject({
+        combat: "ineffective",
+        components: expect.arrayContaining([
+          expect.objectContaining({
+            id: "primary-weapon",
+            integrityBps: 0,
+            state: "destroyed",
+          }),
+        ]),
+      });
+    }
+    const events = simulation.drainEvents();
+    expect(
+      events.filter((event) => event.type === "weapon-fired"),
+    ).toHaveLength(2);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "platform-component-changed" &&
+          event.componentId === "primary-weapon",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("leaves a destroyed platform in place while its surviving crew withdraws on foot", () => {
+    const simulation = createSimulation(createVehicleSetup("tracked"));
+    setPlatformComponent(
+      simulation,
+      "ember-vehicle-platform",
+      "structure",
+      0,
+      "destroyed",
+    );
+    refreshPlatform(simulation, "ember-vehicle-platform");
+
+    simulation.step(20);
+
+    const platform = simulation.inspect(
+      "ember-vehicle-platform",
+      "ember",
+    ) as PlatformInspection;
+    const group = simulation.inspect("ember-vehicle", "ember") as GroupInspection;
+    expect(platform).toMatchObject({
+      disposition: "destroyed",
+      cell: { x: 2, z: 10 },
+      crewAssignments: [],
+    });
+    expect(group.action).toBe("routing");
+    expect(group.cell).not.toEqual(platform.cell);
+    const frame = simulation.getRenderFrame("ember");
+    const renderedGroup = frame.groups.find((entry) => entry.id === "ember-vehicle")!;
+    const renderedPlatform = frame.platforms.find(
+      (entry) => entry.id === "ember-vehicle-platform",
+    )!;
+    expect(renderedPlatform.worldX).toBe(platform.cell.x * 4);
+    expect(renderedPlatform.worldZ).toBe(platform.cell.z * 4);
+    expect(renderedPlatform.worldX).not.toBe(renderedGroup.worldX);
+    for (const memberId of [
+      "ember-vehicle-driver",
+      "ember-vehicle-gunner",
+      "ember-vehicle-relief",
+    ]) {
+      expect(simulation.inspect(memberId, "ember")).toMatchObject({
+        placement: { kind: "dismounted" },
+      });
+    }
+  });
+
   it("freezes an unfinished crew action in the final result and state hash", () => {
     const setup = createVehicleSetup("tracked");
     const simulation = createSimulation({
@@ -460,6 +805,82 @@ function createVehicleSetup(movementType: "wheeled" | "tracked"): BattleSetup {
     battleId: `vehicle-${movementType}`,
     map: createBarrierMap(),
     groups: [createVehicleGroup(movementType), createInfantryGroup()],
+  };
+}
+
+function createVehicleDuelSetup(
+  platformDamage: Extract<
+    BattleContentBundle["weaponTemplates"][string]["damageEffects"][number],
+    { kind: "platform-damage" }
+  >,
+): BattleSetup {
+  const base = createVehicleSetup("tracked");
+  const content = cloneBattleContent(base.content);
+  const weapon = content.weaponTemplates[DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID]!;
+  const tunedContent: BattleContentBundle = {
+    ...content,
+    weaponTemplates: {
+      ...content.weaponTemplates,
+      [weapon.id]: {
+        ...weapon,
+        magazineSize: 500,
+        reloadTicks: 1,
+        shotIntervalTicks: 1,
+        damageEffects: [
+          { kind: "damage", amountBps: 12_000 },
+          { kind: "suppression", amountBps: 180 },
+          platformDamage,
+        ],
+      },
+    },
+  };
+  return {
+    ...base,
+    battleId: "vehicle-damage-duel",
+    seed: "vehicle-damage-duel",
+    content: tunedContent,
+    groups: [createVehicleGroup("tracked"), createAzureVehicleGroup()],
+    rules: {
+      ...base.rules,
+      maximumDurationTicks: 800,
+      stalemateTicks: 700,
+    },
+  };
+}
+
+function createAzureVehicleGroup(): GroupSpawn {
+  return {
+    id: "azure-vehicle",
+    factionId: "azure",
+    groupTemplateId: DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+    spawn: { x: 9, z: 10 },
+    evacuation: { x: 21, z: 10 },
+    members: [
+      {
+        id: "azure-vehicle-driver",
+        memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+      },
+      {
+        id: "azure-vehicle-gunner",
+        memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+      },
+      {
+        id: "azure-vehicle-relief",
+        memberTemplateId: DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+      },
+    ],
+    platforms: [
+      {
+        id: "azure-vehicle-platform",
+        platformTemplateId: DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+        initialFacing: 4,
+        crewAssignments: [
+          { stationId: "driver", memberId: "azure-vehicle-driver" },
+          { stationId: "gunner", memberId: "azure-vehicle-gunner" },
+          { stationId: "relief", memberId: "azure-vehicle-relief" },
+        ],
+      },
+    ],
   };
 }
 
@@ -590,6 +1011,82 @@ function setCrewHealth(
     };
   };
   internals.state.membersById.get(memberId)!.health = health;
+}
+
+function setPlatformComponent(
+  simulation: ReturnType<typeof createSimulation>,
+  platformId: string,
+  componentId: string,
+  integrityBps: number,
+  state: "operational" | "damaged" | "disabled" | "destroyed",
+): void {
+  const internals = simulation as unknown as {
+    readonly state: {
+      readonly platformsById: Map<
+        string,
+        { readonly components: { id: string; integrityBps: number; state: string }[] }
+      >;
+    };
+  };
+  const component = internals.state.platformsById
+    .get(platformId)!
+    .components.find((candidate) => candidate.id === componentId)!;
+  component.integrityBps = integrityBps;
+  component.state = state;
+}
+
+function refreshPlatform(
+  simulation: ReturnType<typeof createSimulation>,
+  platformId: string,
+): void {
+  const internals = simulation as unknown as {
+    readonly state: { readonly platformsById: Map<string, unknown> };
+    refreshPlatformState(platform: unknown, emitEvent: boolean): void;
+  };
+  internals.refreshPlatformState(internals.state.platformsById.get(platformId), false);
+}
+
+function primeDirectVehicleDuel(
+  simulation: ReturnType<typeof createSimulation>,
+): void {
+  const internals = simulation as unknown as {
+    readonly state: {
+      readonly groupsById: Map<
+        string,
+        {
+          readonly id: string;
+          readonly cell: { x: number; z: number };
+          action: string;
+          currentTargetId?: string;
+          readonly localContacts: Map<string, unknown>;
+        }
+      >;
+    };
+  };
+  for (const [shooterId, targetId] of [
+    ["ember-vehicle", "azure-vehicle"],
+    ["azure-vehicle", "ember-vehicle"],
+  ] as const) {
+    const shooter = internals.state.groupsById.get(shooterId)!;
+    const target = internals.state.groupsById.get(targetId)!;
+    shooter.action = "engaging";
+    shooter.currentTargetId = target.id;
+    shooter.localContacts.set(target.id, {
+      targetGroupId: target.id,
+      lastKnown: { ...target.cell },
+      observedAt: 0,
+      lastDirectTick: 0,
+      confidenceBps: 10_000,
+      sourceGroupId: shooter.id,
+    });
+  }
+}
+
+function invokeWeaponUpdate(
+  simulation: ReturnType<typeof createSimulation>,
+): void {
+  const internals = simulation as unknown as { updateWeapons(): unknown };
+  internals.updateWeapons();
 }
 
 function createLegacyInfantryContent(

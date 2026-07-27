@@ -1,6 +1,10 @@
 import { squaredGridDistance } from "./map";
 import type { GroupState, MemberState } from "./internal";
-import type { MoraleState, WeaponTemplate } from "./types";
+import type {
+  MoraleState,
+  PlatformDamageEffectDefinition,
+  WeaponTemplate,
+} from "./types";
 
 type FightingMemberState = Pick<MemberState, "health" | "presence">;
 type GroupMemberState = { readonly members: readonly FightingMemberState[] };
@@ -28,7 +32,19 @@ export function firstEffectAmount(
   kind: "damage" | "suppression",
   fallback: number,
 ): number {
-  return weapon.damageEffects.find((effect) => effect.kind === kind)?.amountBps ?? fallback;
+  const effect = weapon.damageEffects.find(
+    (candidate): candidate is Extract<typeof candidate, { kind: "damage" | "suppression" }> =>
+      candidate.kind === kind,
+  );
+  return effect?.amountBps ?? fallback;
+}
+
+export function firstPlatformDamageEffect(
+  weapon: Pick<WeaponTemplate, "damageEffects">,
+): PlatformDamageEffectDefinition | undefined {
+  return weapon.damageEffects.find(
+    (effect): effect is PlatformDamageEffectDefinition => effect.kind === "platform-damage",
+  );
 }
 
 export function calculateHitChance(

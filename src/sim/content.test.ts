@@ -4,6 +4,7 @@ import {
   BATTLE_SETUP_SCHEMA_VERSION,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
   cloneBattleContent,
@@ -123,6 +124,25 @@ describe("battle content templates", () => {
       },
     };
     expect(() => validateBattleContent(unsupportedTrajectory)).toThrow(/not supported/i);
+
+    const platformEffectBase = cloneBattleContent(createDefaultBattleContent());
+    const platformWeapon =
+      platformEffectBase.weaponTemplates[DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID]!;
+    const malformedPlatformEffect = {
+      ...platformEffectBase,
+      weaponTemplates: {
+        ...platformEffectBase.weaponTemplates,
+        [platformWeapon.id]: {
+          ...platformWeapon,
+          damageEffects: platformWeapon.damageEffects.map((effect) =>
+            effect.kind === "platform-damage"
+              ? { ...effect, penetrationRating: -1 }
+              : effect,
+          ),
+        },
+      },
+    };
+    expect(() => validateBattleContent(malformedPlatformEffect)).toThrow(/platform effect/i);
   });
 
   it("hashes content canonically while excluding observation-only era labels", () => {
@@ -153,6 +173,23 @@ describe("battle content templates", () => {
     };
 
     expect(hashBattleContent(first)).toBe(hashBattleContent(second));
+
+    const platformWeapon = first.weaponTemplates[DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID]!;
+    const changedPenetration = {
+      ...first,
+      weaponTemplates: {
+        ...first.weaponTemplates,
+        [platformWeapon.id]: {
+          ...platformWeapon,
+          damageEffects: platformWeapon.damageEffects.map((effect) =>
+            effect.kind === "platform-damage"
+              ? { ...effect, penetrationRating: effect.penetrationRating + 1 }
+              : effect,
+          ),
+        },
+      },
+    };
+    expect(hashBattleContent(changedPenetration)).not.toBe(hashBattleContent(first));
   });
 
   it("initializes member weapon state from content data", () => {

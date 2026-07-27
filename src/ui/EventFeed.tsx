@@ -26,6 +26,11 @@ function describeEvent(event: BattleEvent): string | undefined {
       }
       return `${event.groupId} 乘员换岗中断`;
     case "platform-state-changed":
+      if (event.from.disposition !== event.to.disposition) {
+        return event.to.disposition === "destroyed"
+          ? `${event.groupId} 平台被摧毁`
+          : `${event.groupId} 乘员弃车`;
+      }
       if (event.from.mobility !== event.to.mobility) {
         return event.to.mobility === "mobile"
           ? `${event.groupId} 恢复机动`
@@ -37,6 +42,14 @@ function describeEvent(event: BattleEvent): string | undefined {
           : `${event.groupId} 平台武器停用`;
       }
       return undefined;
+    case "platform-component-changed":
+      if (event.to.state === "destroyed") {
+        return `${event.groupId} 的 ${event.componentId} 被摧毁`;
+      }
+      if (event.to.state === "disabled") {
+        return `${event.groupId} 的 ${event.componentId} 失效`;
+      }
+      return event.penetrated ? `${event.groupId} 装甲被击穿` : undefined;
     case "morale-changed":
       return event.to === "routing" ? `${event.groupId} 开始撤离` : undefined;
     case "reinforcement-triggered":
