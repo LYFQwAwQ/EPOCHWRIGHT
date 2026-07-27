@@ -80,7 +80,7 @@ future game systems -> complete BattleSetup --+
 
 模拟私有运行时状态，包括成员、小队、感知、接触、情报队列、网格/掩体占用、掩体选择黑板与目标状态。此文件不是公共 API。
 
-新增字段通常还需要更新 `createRuntimeState`、`getStateHash`、结果或检查投影，以及测试。
+新增字段通常还需要更新 `runtime.ts` 的初始化、`getStateHash`、结果或检查投影，以及测试。
 
 ### `src/sim/setup.ts`
 
@@ -112,6 +112,18 @@ future game systems -> complete BattleSetup --+
 
 目标区占领、争夺和恢复的纯规则。这里不读取地图、AI 或渲染状态，适合直接单元测试和未来数值配置化。
 
+### `src/sim/combat.ts`
+
+无状态战斗规则，包括武器计时、效果数值、命中概率、士气状态转换，以及成员和编组的战斗/在场判定。函数只接收所需的最小状态切片，不拥有 tick、随机或运行时集合；`simulation.ts` 负责按固定管线调用并结算意图。
+
+### `src/sim/ordering.ts`
+
+集中提供字符串、实体、势力、情报消息和接触快照的稳定排序。影响权威结果或哈希的集合必须复用这些显式比较器或提供同等明确的稳定顺序。
+
+### `src/sim/runtime.ts`
+
+拥有规范 `BattleSetup` 的深拷贝，以及成员、编组、占用索引、势力知识、目标和增援运行时状态的确定性初始化。它不推进 tick；初始化后的权威状态仍由 `simulation.ts` 独占和调度。
+
 ### `src/sim/simulation.ts`
 
 当前权威调度器，负责：
@@ -130,6 +142,8 @@ future game systems -> complete BattleSetup --+
 - 渲染帧、检查结果、最终结果和状态哈希。
 
 完整静态 setup 摘要在模拟初始化时计算一次并进入状态哈希，覆盖地图、部署、模式和规则参数，同时避免 Worker 每次发布帧时重新遍历全部输入。`getSetup()` 返回深拷贝快照，外部不能通过 TypedArray 修改运行时地图。
+
+运行时构造、稳定排序和战斗纯计算已分别委托给 `runtime.ts`、`ordering.ts` 和 `combat.ts`。调度器仍决定调用时机、意图收集与结算顺序，提取模块不能直接推进或持有权威 tick。
 
 静态地图的步行连通分量也在初始化时派生一次，AI 目标会投影到编组当前所在分量，避免把局部可走但隔水不可达的孤岛当作巡逻目标。该缓存由已哈希地图完全派生，不进入权威状态。
 
@@ -242,6 +256,6 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 ## 10. 已知技术债
 
-- `simulation.ts` 调度范围较大，未来应按经过测试的规则域逐步提取。
+- `simulation.ts` 仍拥有多个有状态规则域；进一步拆分必须保留调度顺序，并用固定 seed 黄金哈希逐步证明行为不变。
 - Three.js 运行时保留为延迟加载的 vendor chunk，主入口和战场入口已拆分；该 vendor chunk 仍可能超过 500KB，但不会阻塞首屏 UI 加载。
 - 当前事件列表仅保留最近 160 条，不是回放日志。

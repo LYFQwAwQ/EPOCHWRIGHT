@@ -14,6 +14,17 @@ import {
   releaseCoverSlot,
   resolveDirectionalCoverEffect,
 } from "./cover";
+import {
+  activeMemberCount,
+  calculateHitChance,
+  canMemberFight,
+  firstEffectAmount,
+  hasEvacuatedMembers,
+  isGroupCombatEffective,
+  isGroupSpatiallyActive,
+  nextMoraleState,
+  updateWeaponTimer,
+} from "./combat";
 import type {
   ContactState,
   CoverDecisionState,
@@ -35,22 +46,31 @@ import {
   type Pathfinder,
 } from "./pathfinder";
 import { resolveObjectiveTick } from "./objective";
+import {
+  compareByFactionId,
+  compareById,
+  compareIntelMessages,
+  compareStrings,
+  sortedContacts,
+} from "./ordering";
 import { areHostile, findRelation } from "./relations";
 import { deterministicBps, deterministicUint32, StateHasher } from "./rng";
 import {
-  cloneBattleContent,
   getGroupTemplate,
   getMemberTemplate,
-  getPrimaryWeaponTemplate,
   getWeaponTemplate,
 } from "./content";
 import {
-  defenseObjectives,
   hashBattleSetup,
   migrateBattleSetup,
-  reinforcementEntranceIds,
   validateBattleSetup,
 } from "./setup";
+import {
+  cloneBattleSetup,
+  countSpawnActiveMembers,
+  createGroupState,
+  createRuntimeState,
+} from "./runtime";
 import type {
   BattleEvent,
   BattleResult,
@@ -68,7 +88,6 @@ import type {
   GroupInspection,
   HealthState,
   MemberInspection,
-  MoraleState,
   ObjectiveInspection,
   RenderFrame,
   RenderGroup,
@@ -157,7 +176,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   constructor(inputSetup: BattleSetupInput) {
     const normalizedSetup = migrateBattleSetup(inputSetup);
     validateBattleSetup(normalizedSetup);
-    this.setup = cloneSetup(normalizedSetup);
+    this.setup = cloneBattleSetup(normalizedSetup);
     this.setupHash = hashBattleSetup(this.setup);
     this.coverSlots = buildCoverSlots(this.setup.map);
     this.coverSlotsByCell = new Map(
@@ -179,7 +198,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   getSetup(): BattleSetup {
-    return cloneSetup(this.setup);
+    return cloneBattleSetup(this.setup);
   }
 
   step(count = 1): void {
@@ -2720,271 +2739,6 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 }
 
-function createRuntimeState(
-  setup: BattleSetup,
-  coverSlotsByCell: ReadonlyMap<number, CoverSlot>,
-): RuntimeState {
-  const groups = [...setup.groups]
-    .sort(compareById)
-    .map((spawn) => createGroupState(spawn, spawn.spawn, setup.content!));
-  const groupsById = new Map(groups.map((group) => [group.id, group]));
-  const membersById = new Map(
-    groups.flatMap((group) => group.members.map((member) => [member.id, member] as const)),
-  );
-  const coverOccupancy = new Map<string, GroupId>();
-  for (const group of groups) {
-    const slot = coverSlotsByCell.get(cellIndex(setup.map, group.cell));
-    if (slot && activeMemberCount(group) > 0) {
-      claimCoverSlot(coverOccupancy, slot, group.id);
-    }
-  }
-  const defenseMode = setup.mode.kind === "defense" ? setup.mode : undefined;
-  const objectives =
-    defenseMode
-      ? defenseObjectives(defenseMode).map((objective, index) => ({
-          id: objective.id,
-          center: { ...objective.center },
-          radiusCells: objective.radiusCells,
-          attackerFactionId: defenseMode.attackerFactionId,
-          defenderFactionId: defenseMode.defenderFactionId,
-          state: "defender-controlled" as const,
-          progressBps: 0,
-          attackerPower: 0,
-          defenderPower: 0,
-          unlocked:
-            (defenseMode.objectiveRule ?? "all") !== "sequence" || index === 0,
-        }))
-      : [];
-  const reinforcementWaves: ReinforcementRuntimeState[] = setup.reinforcements
-    .slice()
-    .sort((a, b) => a.arrivalTick - b.arrivalTick || compareStrings(a.id, b.id))
-    .map((wave) => ({
-      id: wave.id,
-      factionId: wave.factionId,
-      arrivalTick: wave.arrivalTick,
-      entranceIds: reinforcementEntranceIds(wave).slice(),
-      groups: wave.groups.map((group) => ({
-        ...group,
-        spawn: { ...group.spawn },
-        evacuation: { ...group.evacuation },
-        members: group.members.map((member) => ({ ...member })),
-      })),
-      blockedPolicy: wave.blockedPolicy,
-      status: "pending",
-      deployedGroupIds: [],
-    }));
-  return {
-    setup,
-    groups,
-    groupsById,
-    membersById,
-    factionKnowledge: new Map(
-      setup.factions.map((faction) => [
-        faction.id,
-        { factionId: faction.id, contacts: new Map() },
-      ]),
-    ),
-    intelQueue: [],
-    events: [],
-    occupancy: new Map(
-      groups.map((group) => [cellIndex(setup.map, group.cell), group.id]),
-    ),
-    reservations: new Map(),
-    coverOccupancy,
-    objectives,
-    objective: objectives[0],
-    reinforcementWaves,
-    tick: 0,
-    eventSequence: 0,
-    intelSequence: 0,
-    lastMeaningfulProgressTick: 0,
-  };
-}
-
-function createGroupState(
-  spawn: BattleSetup["groups"][number],
-  cell: GridCoord,
-  content: NonNullable<BattleSetup["content"]>,
-): GroupState {
-  const groupTemplate = getGroupTemplate(content, spawn.groupTemplateId);
-  return {
-    id: spawn.id,
-    factionId: spawn.factionId,
-    groupTemplateId: groupTemplate.id,
-    evacuation: { ...spawn.evacuation },
-    members: [...spawn.members]
-      .sort(compareById)
-      .map<MemberState>((member) => {
-        const memberTemplate = getMemberTemplate(content, member.memberTemplateId);
-        const weapon = getPrimaryWeaponTemplate(content, memberTemplate.id);
-        return {
-          id: member.id,
-          groupId: spawn.id,
-          factionId: spawn.factionId,
-          memberTemplateId: memberTemplate.id,
-          weaponTemplateId: weapon.id,
-          health: member.initialHealth ?? "healthy",
-          presence: "deployed",
-          magazineRounds: weapon.magazineSize,
-          reloadTicksRemaining: 0,
-          shotCooldownTicks: 0,
-        };
-      }),
-    cell: { ...cell },
-    moveProgress: 0,
-    moveCost: 0,
-    waitAge: 0,
-    headingRadians: 0,
-    path: [],
-    action: "searching",
-    decisionReason: "search-sector",
-    moraleBps: 10_000,
-    moraleState: "steady",
-    suppressionBps: 0,
-    patrolIndex: 0,
-    lastFiredTick: -1_000_000,
-    lastDecisionTick: -1,
-    localDetections: new Map(),
-    localContacts: new Map(),
-    searchedContacts: new Map(),
-  };
-}
-
-function countSpawnActiveMembers(group: BattleSetup["groups"][number]): number {
-  return group.members.filter(
-    (member) => member.initialHealth !== "incapacitated" && member.initialHealth !== "dead",
-  ).length;
-}
-
-function cloneSetup(setup: BattleSetup): BattleSetup {
-  return {
-    ...setup,
-    content: cloneBattleContent(setup.content),
-    map: {
-      ...setup.map,
-      layers: {
-        heightUnits: setup.map.layers.heightUnits.slice(),
-        surfaceTypeIds: setup.map.layers.surfaceTypeIds.slice(),
-        waterDepthUnits: setup.map.layers.waterDepthUnits.slice(),
-        cellFlags: setup.map.layers.cellFlags.slice(),
-        staticOccupancy: setup.map.layers.staticOccupancy.slice(),
-      },
-      staticObjects: setup.map.staticObjects.map((object) => ({
-        ...object,
-        cell: { ...object.cell },
-      })),
-    },
-    factions: setup.factions.map((faction) => ({ ...faction })),
-    relations: setup.relations.map((relation) => ({ ...relation })),
-    groups: setup.groups.map((group) => ({
-      ...group,
-      spawn: { ...group.spawn },
-      evacuation: { ...group.evacuation },
-      members: group.members.map((member) => ({ ...member })),
-    })),
-    reinforcementEntrances: setup.reinforcementEntrances.map((entrance) => ({
-      ...entrance,
-      cells: entrance.cells.map((cell) => ({ ...cell })),
-    })),
-    reinforcements: setup.reinforcements.map((wave) => ({
-      ...wave,
-      entranceIds: wave.entranceIds ? [...wave.entranceIds] : undefined,
-      entranceZoneIds: wave.entranceZoneIds ? [...wave.entranceZoneIds] : undefined,
-      groups: wave.groups.map((group) => ({
-        ...group,
-        spawn: { ...group.spawn },
-        evacuation: { ...group.evacuation },
-        members: group.members.map((member) => ({ ...member })),
-      })),
-    })),
-    mode:
-      setup.mode.kind === "defense"
-        ? {
-            ...setup.mode,
-            objective: {
-              ...setup.mode.objective,
-              center: { ...setup.mode.objective.center },
-            },
-            objectives: defenseObjectives(setup.mode).map((objective) => ({
-              ...objective,
-              center: { ...objective.center },
-            })),
-          }
-        : { kind: "conflict" },
-    rules: { ...setup.rules },
-  };
-}
-
-function updateWeaponTimer(
-  member: MemberState,
-  weapon: ReturnType<typeof getWeaponTemplate>,
-): void {
-  if (member.shotCooldownTicks > 0) {
-    member.shotCooldownTicks -= 1;
-  }
-  if (member.reloadTicksRemaining > 0) {
-    member.reloadTicksRemaining -= 1;
-    if (member.reloadTicksRemaining === 0) {
-      member.magazineRounds = weapon.magazineSize;
-    }
-  }
-}
-
-function firstEffectAmount(
-  weapon: ReturnType<typeof getWeaponTemplate>,
-  kind: "damage" | "suppression",
-  fallback: number,
-): number {
-  return weapon.damageEffects.find((effect) => effect.kind === kind)?.amountBps ?? fallback;
-}
-
-function calculateHitChance(
-  shooter: GroupState,
-  member: MemberState,
-  target: GroupState,
-  preferredRange: number,
-): number {
-  const distance = Math.round(Math.sqrt(squaredGridDistance(shooter.cell, target.cell)) * 100);
-  const preferred = preferredRange * 100;
-  const distancePenalty = Math.max(0, distance - preferred) * 2;
-  const suppressionPenalty = Math.floor(shooter.suppressionBps / 35);
-  const woundPenalty = member.health === "wounded" ? 70 : 0;
-  return Math.max(60, Math.min(360, 275 - distancePenalty - suppressionPenalty - woundPenalty));
-}
-
-function nextMoraleState(previous: MoraleState, moraleBps: number): MoraleState {
-  if (previous === "routing" && moraleBps < 4_800) {
-    return "routing";
-  }
-  if (moraleBps <= 2_600) {
-    return "routing";
-  }
-  return moraleBps <= 6_000 ? "shaken" : "steady";
-}
-
-function activeMemberCount(group: GroupState): number {
-  return group.members.filter(canMemberFight).length;
-}
-
-function canMemberFight(member: MemberState): boolean {
-  return (
-    member.presence === "deployed" &&
-    (member.health === "healthy" || member.health === "wounded")
-  );
-}
-
-function hasEvacuatedMembers(group: GroupState): boolean {
-  return group.members.some((member) => member.presence === "evacuated");
-}
-
-function isGroupSpatiallyActive(group: GroupState): boolean {
-  return group.action !== "evacuated" && activeMemberCount(group) > 0;
-}
-
-function isGroupCombatEffective(group: GroupState): boolean {
-  return isGroupSpatiallyActive(group) && group.moraleState !== "routing";
-}
-
 function confidenceAtAge(age: number, forgetTicks: number): number {
   if (age <= 0) {
     return 10_000;
@@ -3059,31 +2813,6 @@ function buildWalkableComponentIds(map: BattleSetup["map"]): Int32Array {
 
 function sameCoord(a: GridCoord, b: GridCoord): boolean {
   return a.x === b.x && a.z === b.z;
-}
-
-function compareById<T extends { readonly id: string }>(a: T, b: T): number {
-  return compareStrings(a.id, b.id);
-}
-
-function compareByFactionId(
-  a: { readonly factionId: string },
-  b: { readonly factionId: string },
-): number {
-  return compareStrings(a.factionId, b.factionId);
-}
-
-function compareIntelMessages(a: IntelMessage, b: IntelMessage): number {
-  return a.deliveryAt - b.deliveryAt || a.sequence - b.sequence;
-}
-
-function sortedContacts(contacts: Map<GroupId, ContactState>): ContactState[] {
-  return [...contacts.values()].sort((a, b) =>
-    compareStrings(a.targetGroupId, b.targetGroupId),
-  );
-}
-
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function addContactToHash(hasher: StateHasher, contact: ContactState): void {
