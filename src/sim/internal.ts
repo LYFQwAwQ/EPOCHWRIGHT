@@ -51,6 +51,22 @@ export interface PlatformComponentStateValue {
   state: PlatformComponentState;
 }
 
+export interface CrewReassignmentState {
+  readonly memberId: MemberId;
+  readonly fromStationId: string;
+  readonly toStationId: string;
+  readonly startedAt: Tick;
+  ticksRemaining: Tick;
+}
+
+export interface PlatformWeaponStateValue {
+  readonly componentId: string;
+  readonly weaponTemplateId: string;
+  magazineRounds: number;
+  reloadTicksRemaining: Tick;
+  shotCooldownTicks: Tick;
+}
+
 export interface PlatformState {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -64,7 +80,9 @@ export interface PlatformState {
   combat: PlatformCombatState;
   disposition: PlatformDisposition;
   readonly crewAssignments: { readonly stationId: string; readonly memberId: MemberId }[];
+  readonly crewReassignments: CrewReassignmentState[];
   readonly components: PlatformComponentStateValue[];
+  readonly weaponStates: PlatformWeaponStateValue[];
 }
 
 export interface DetectionState {
@@ -204,7 +222,7 @@ export interface RuntimeState {
 
 export interface ShotIntent {
   readonly shooterGroupId: GroupId;
-  readonly shooterMemberId: MemberId;
+  readonly shooterEntityId: string;
   readonly targetGroupId: GroupId;
   readonly shotOrdinal: number;
   readonly hitChanceBps: number;
@@ -215,7 +233,7 @@ export interface ShotIntent {
 
 export interface HitIntent {
   readonly shooterGroupId: GroupId;
-  readonly shooterMemberId: MemberId;
+  readonly shooterEntityId: string;
   readonly targetGroupId: GroupId;
   readonly targetMemberId: MemberId;
   readonly shotOrdinal: number;

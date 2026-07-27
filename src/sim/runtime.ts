@@ -1,4 +1,4 @@
-import { activeMemberCount } from "./combat";
+import { activeMemberCount, canMemberFight } from "./combat";
 import {
   cloneBattleContent,
   getGroupTemplate,
@@ -21,6 +21,7 @@ import {
   reinforcementEntranceIds,
 } from "./setup";
 import type { BattleSetup, CoverSlot, GridCoord, GroupId } from "./types";
+import { derivePlatformCapabilities } from "./vehicle";
 
 export function createRuntimeState(
   setup: BattleSetup,
@@ -123,18 +124,32 @@ export function createGroupState(
       movementType: template.movementType,
       visualTypeId: template.visualTypeId,
       facing: platform.initialFacing,
-      mobility: "mobile",
-      combat: template.componentRules.some((component) => component.kind === "weapon")
-        ? "effective"
-        : "ineffective",
+      mobility: "immobilized",
+      combat: "ineffective",
       disposition: platform.crewAssignments.length > 0 ? "crewed" : "abandoned",
       crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+      crewReassignments: [],
       components: template.componentRules.map((component) => ({
         id: component.id,
         kind: component.kind,
         integrityBps: 10_000,
         state: "operational",
       })),
+      weaponStates: template.componentRules.flatMap((component) => {
+        if (component.kind !== "weapon" || !component.weaponTemplateId) {
+          return [];
+        }
+        const weapon = content.weaponTemplates[component.weaponTemplateId];
+        return weapon
+          ? [{
+              componentId: component.id,
+              weaponTemplateId: weapon.id,
+              magazineRounds: weapon.magazineSize,
+              reloadTicksRemaining: 0,
+              shotCooldownTicks: 0,
+            }]
+          : [];
+      }),
     };
   });
   const crewPlacementByMemberId = new Map(
@@ -149,7 +164,7 @@ export function createGroupState(
       ]),
     ),
   );
-  return {
+  const group: GroupState = {
     id: spawn.id,
     factionId: spawn.factionId,
     groupTemplateId: groupTemplate.id,
@@ -194,6 +209,26 @@ export function createGroupState(
     localContacts: new Map(),
     searchedContacts: new Map(),
   };
+  for (const platform of group.platforms) {
+    const template = getPlatformTemplate(content, platform.platformTemplateId);
+    const capabilities = derivePlatformCapabilities(
+      template,
+      platform.components,
+      platform.crewAssignments,
+      group.members.map((member) => ({
+        id: member.id,
+        roleTags: getMemberTemplate(content, member.memberTemplateId).roleTags,
+        active: canMemberFight(member),
+      })),
+      platform.crewReassignments,
+    );
+    platform.mobility = capabilities.mobility.available ? "mobile" : "immobilized";
+    platform.combat = capabilities.weapons.some((weapon) => weapon.available)
+      ? "effective"
+      : "ineffective";
+    platform.disposition = capabilities.disposition;
+  }
+  return group;
 }
 
 export function countSpawnActiveMembers(group: BattleSetup["groups"][number]): number {

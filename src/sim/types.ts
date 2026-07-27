@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
-export const BATTLE_RULES_VERSION = "stage-3.0" as const;
+export const BATTLE_RULES_VERSION = "stage-3.1" as const;
+/** The single-platform contract before crew replacement and platform weapons. */
+export const PRE_CREW_BATTLE_RULES_VERSION = "stage-3.0" as const;
 /** The final infantry-only contract migrates without changing stage-2 combat behavior. */
 export const PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION = "stage-2.2" as const;
 export const PRE_PLATFORM_BATTLE_RULES_VERSION = "stage-2.5" as const;
@@ -395,6 +397,14 @@ export interface CrewAssignment {
   readonly memberId: MemberId;
 }
 
+export interface CrewReassignment {
+  readonly memberId: MemberId;
+  readonly fromStationId: string;
+  readonly toStationId: string;
+  readonly startedAt: Tick;
+  readonly ticksRemaining: Tick;
+}
+
 export interface PlatformSpawn {
   readonly id: PlatformId;
   readonly platformTemplateId: TemplateId;
@@ -701,6 +711,36 @@ export interface PlatformComponentInspection {
   readonly state: PlatformComponentState;
 }
 
+export type CrewStationStatus = "vacant" | "effective" | "unavailable" | "reassigning";
+
+export interface CrewStationInspection {
+  readonly id: string;
+  readonly kind: CrewStationKind;
+  readonly assignedMemberId?: MemberId;
+  readonly status: CrewStationStatus;
+  readonly efficiencyBps: number;
+}
+
+export type PlatformCapabilityReason =
+  | "available"
+  | "no-component"
+  | "component-unavailable"
+  | "crew-unavailable";
+
+export interface PlatformCapabilityInspection {
+  readonly available: boolean;
+  readonly reason: PlatformCapabilityReason;
+  readonly efficiencyBps: number;
+}
+
+export interface PlatformWeaponInspection extends PlatformCapabilityInspection {
+  readonly componentId: string;
+  readonly weaponTemplateId: TemplateId;
+  readonly magazineRounds: number;
+  readonly reloadTicksRemaining: Tick;
+  readonly shotCooldownTicks: Tick;
+}
+
 export interface PlatformInspection extends PlatformSummaryInspection {
   readonly kind: "platform";
   readonly groupId: GroupId;
@@ -708,7 +748,12 @@ export interface PlatformInspection extends PlatformSummaryInspection {
   readonly cell: GridCoord;
   readonly visualTypeId: string;
   readonly crewAssignments: readonly CrewAssignment[];
+  readonly crewReassignments: readonly CrewReassignment[];
+  readonly stations: readonly CrewStationInspection[];
   readonly components: readonly PlatformComponentInspection[];
+  readonly mobilityCapability: PlatformCapabilityInspection;
+  readonly observation: PlatformCapabilityInspection;
+  readonly weapons: readonly PlatformWeaponInspection[];
 }
 
 export interface MemberInspection {
@@ -772,6 +817,30 @@ export type BattleEvent =
       readonly groupId: GroupId;
       readonly from: HealthState;
       readonly to: HealthState;
+    })
+  | (BattleEventBase & {
+      readonly type: "crew-station-changed";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly memberId: MemberId;
+      readonly fromStationId: string;
+      readonly toStationId: string;
+      readonly phase: "started" | "completed" | "cancelled";
+    })
+  | (BattleEventBase & {
+      readonly type: "platform-state-changed";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly from: {
+        readonly mobility: PlatformMobilityState;
+        readonly combat: PlatformCombatState;
+        readonly disposition: PlatformDisposition;
+      };
+      readonly to: {
+        readonly mobility: PlatformMobilityState;
+        readonly combat: PlatformCombatState;
+        readonly disposition: PlatformDisposition;
+      };
     })
   | (BattleEventBase & {
       readonly type: "morale-changed";
@@ -870,6 +939,8 @@ export interface PlatformResult {
   readonly damaged: boolean;
   readonly components: readonly PlatformComponentResult[];
   readonly finalCrewAssignments: readonly CrewAssignment[];
+  readonly finalCrewReassignments: readonly CrewReassignment[];
+  readonly weaponStates: readonly PlatformWeaponInspection[];
 }
 
 export interface BattleResult {

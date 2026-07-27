@@ -21,6 +21,7 @@ import {
   BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
@@ -53,12 +54,15 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isPrePlatform =
     candidate.schemaVersion === PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_PLATFORM_BATTLE_RULES_VERSION;
+  const isPreCrew =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_CREW_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
-  if (isCurrent) {
+  if (isCurrent || isPreCrew) {
     if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
       throw new Error("stage-3 battle setup requires a content-2 content bundle.");
     }
@@ -88,7 +92,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       normalizeGroup(group, injectDefaults, migratePlatformFields),
     ),
   }));
-  if (isLegacyTwoFaction || isPreContent || isPrePlatform) {
+  if (isLegacyTwoFaction || isPreContent || isPrePlatform || isPreCrew) {
     return {
       ...inputSetup,
       schemaVersion: BATTLE_SETUP_SCHEMA_VERSION,

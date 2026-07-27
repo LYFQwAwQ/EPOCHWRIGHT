@@ -126,6 +126,8 @@ function filterObservationEvents(
       case "member-health-changed":
       case "morale-changed":
       case "group-evacuated":
+      case "crew-station-changed":
+      case "platform-state-changed":
         return visibleGroupIds.has(event.groupId);
       case "weapon-fired":
         return visibleGroupIds.has(event.groupId) && visibleGroupIds.has(event.targetGroupId);

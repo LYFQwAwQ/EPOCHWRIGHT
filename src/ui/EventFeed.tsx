@@ -17,6 +17,26 @@ function describeEvent(event: BattleEvent): string | undefined {
         return `${event.groupId} 出现阵亡`;
       }
       return undefined;
+    case "crew-station-changed":
+      if (event.phase === "started") {
+        return `${event.groupId} 开始调整乘员岗位`;
+      }
+      if (event.phase === "completed") {
+        return `${event.groupId} 完成乘员换岗`;
+      }
+      return `${event.groupId} 乘员换岗中断`;
+    case "platform-state-changed":
+      if (event.from.mobility !== event.to.mobility) {
+        return event.to.mobility === "mobile"
+          ? `${event.groupId} 恢复机动`
+          : `${event.groupId} 失去机动`;
+      }
+      if (event.from.combat !== event.to.combat) {
+        return event.to.combat === "effective"
+          ? `${event.groupId} 恢复平台武器`
+          : `${event.groupId} 平台武器停用`;
+      }
+      return undefined;
     case "morale-changed":
       return event.to === "routing" ? `${event.groupId} 开始撤离` : undefined;
     case "reinforcement-triggered":

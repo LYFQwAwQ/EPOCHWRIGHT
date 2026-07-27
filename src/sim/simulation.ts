@@ -74,6 +74,11 @@ import {
   createGroupState,
   createRuntimeState,
 } from "./runtime";
+import {
+  buildCrewStationCapabilities,
+  derivePlatformCapabilities,
+  selectCrewReassignment,
+} from "./vehicle";
 import type {
   BattleEvent,
   BattleResult,
@@ -95,6 +100,8 @@ import type {
   MovementType,
   ObjectiveInspection,
   PlatformInspection,
+  PlatformCapabilityInspection,
+  PlatformWeaponInspection,
   PlatformSummaryInspection,
   RenderFrame,
   RenderGroup,
@@ -372,7 +379,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         cell: { ...group.cell },
         visualTypeId: platform.visualTypeId,
         crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+        crewReassignments: platform.crewReassignments.map((action) => ({ ...action })),
+        stations: this.platformStationInspections(platform),
         components: platform.components.map((component) => ({ ...component })),
+        mobilityCapability: { ...this.platformCapabilities(platform).mobility },
+        observation: { ...this.platformCapabilities(platform).observation },
+        weapons: this.platformWeaponInspections(platform),
       };
       return inspection;
     }
@@ -500,11 +512,25 @@ class StageOneBattleSimulation implements BattleSimulation {
           hasher.addString(assignment.stationId);
           hasher.addString(assignment.memberId);
         }
+        for (const reassignment of platform.crewReassignments) {
+          hasher.addString(reassignment.memberId);
+          hasher.addString(reassignment.fromStationId);
+          hasher.addString(reassignment.toStationId);
+          hasher.addNumber(reassignment.startedAt);
+          hasher.addNumber(reassignment.ticksRemaining);
+        }
         for (const component of platform.components) {
           hasher.addString(component.id);
           hasher.addString(component.kind);
           hasher.addNumber(component.integrityBps);
           hasher.addString(component.state);
+        }
+        for (const weapon of platform.weaponStates) {
+          hasher.addString(weapon.componentId);
+          hasher.addString(weapon.weaponTemplateId);
+          hasher.addNumber(weapon.magazineRounds);
+          hasher.addNumber(weapon.reloadTicksRemaining);
+          hasher.addNumber(weapon.shotCooldownTicks);
         }
       }
       for (const contact of sortedContacts(group.localContacts)) {
@@ -585,6 +611,7 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private stepOnce(): void {
     this.updateReinforcements();
+    this.updateCrewStations();
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
@@ -870,6 +897,198 @@ class StageOneBattleSimulation implements BattleSimulation {
         activeMemberCount(group) > 0 &&
         this.isHostile(group.factionId, entrance.factionId) &&
         entrance.cells.some((cell) => sameCoord(group.cell, cell)),
+    );
+  }
+
+  private updateCrewStations(): void {
+    const platforms = [...this.state.platformsById.values()].sort(compareById);
+    for (const platform of platforms) {
+      const activeAction = platform.crewReassignments[0];
+      if (activeAction) {
+        const member = this.state.membersById.get(activeAction.memberId);
+        const assignment = platform.crewAssignments.find(
+          (candidate) =>
+            candidate.memberId === activeAction.memberId &&
+            candidate.stationId === activeAction.fromStationId,
+        );
+        if (!member || !assignment || !this.isActiveCrewMember(member, platform)) {
+          platform.crewReassignments.splice(0, 1);
+          this.emit({
+            type: "crew-station-changed",
+            platformId: platform.id,
+            groupId: platform.groupId,
+            memberId: activeAction.memberId,
+            fromStationId: activeAction.fromStationId,
+            toStationId: activeAction.toStationId,
+            phase: "cancelled",
+          });
+        } else {
+          activeAction.ticksRemaining = Math.max(0, activeAction.ticksRemaining - 1);
+          if (activeAction.ticksRemaining === 0) {
+            this.completeCrewReassignment(platform, activeAction);
+          }
+        }
+      }
+
+      this.refreshPlatformState(platform, true);
+      if (platform.crewReassignments.length > 0 || platform.disposition !== "crewed") {
+        continue;
+      }
+      const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+      const proposal = selectCrewReassignment(
+        template,
+        platform.crewAssignments,
+        this.crewCapabilityMembers(platform),
+        platform.crewReassignments,
+      );
+      if (!proposal) {
+        continue;
+      }
+      const targetStation = template.crewStationRules.find(
+        (station) => station.id === proposal.toStationId,
+      );
+      if (!targetStation) {
+        continue;
+      }
+      const action = {
+        memberId: proposal.memberId,
+        fromStationId: proposal.fromStationId,
+        toStationId: proposal.toStationId,
+        startedAt: this.state.tick,
+        ticksRemaining: targetStation.replacementTicks,
+      };
+      platform.crewReassignments.push(action);
+      this.emit({
+        type: "crew-station-changed",
+        platformId: platform.id,
+        groupId: platform.groupId,
+        memberId: action.memberId,
+        fromStationId: action.fromStationId,
+        toStationId: action.toStationId,
+        phase: "started",
+      });
+      if (action.ticksRemaining === 0) {
+        this.completeCrewReassignment(platform, action);
+      }
+      this.refreshPlatformState(platform, true);
+      this.markMeaningfulProgress();
+    }
+  }
+
+  private completeCrewReassignment(
+    platform: PlatformState,
+    action: PlatformState["crewReassignments"][number],
+  ): void {
+    const sourceIndex = platform.crewAssignments.findIndex(
+      (assignment) =>
+        assignment.memberId === action.memberId &&
+        assignment.stationId === action.fromStationId,
+    );
+    if (sourceIndex < 0) {
+      platform.crewReassignments.splice(0, 1);
+      return;
+    }
+    const targetIndex = platform.crewAssignments.findIndex(
+      (assignment) => assignment.stationId === action.toStationId,
+    );
+    const displaced = targetIndex >= 0 ? platform.crewAssignments[targetIndex] : undefined;
+    platform.crewAssignments[sourceIndex] = {
+      stationId: action.toStationId,
+      memberId: action.memberId,
+    };
+    if (targetIndex >= 0 && targetIndex !== sourceIndex && displaced) {
+      platform.crewAssignments[targetIndex] = {
+        stationId: action.fromStationId,
+        memberId: displaced.memberId,
+      };
+      const displacedMember = this.state.membersById.get(displaced.memberId);
+      if (displacedMember) {
+        displacedMember.placement = {
+          kind: "crew",
+          platformId: platform.id,
+          stationId: action.fromStationId,
+        };
+      }
+    }
+    const member = this.state.membersById.get(action.memberId);
+    if (member) {
+      member.placement = {
+        kind: "crew",
+        platformId: platform.id,
+        stationId: action.toStationId,
+      };
+    }
+    platform.crewReassignments.splice(0, 1);
+    this.emit({
+      type: "crew-station-changed",
+      platformId: platform.id,
+      groupId: platform.groupId,
+      memberId: action.memberId,
+      fromStationId: action.fromStationId,
+      toStationId: action.toStationId,
+      phase: "completed",
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private refreshPlatformState(platform: PlatformState, emitEvent: boolean): void {
+    const previous = {
+      mobility: platform.mobility,
+      combat: platform.combat,
+      disposition: platform.disposition,
+    };
+    const capabilities = this.platformCapabilities(platform);
+    platform.mobility = capabilities.mobility.available ? "mobile" : "immobilized";
+    platform.combat = capabilities.weapons.some((weapon) => weapon.available)
+      ? "effective"
+      : "ineffective";
+    platform.disposition = capabilities.disposition;
+    if (
+      emitEvent &&
+      (previous.mobility !== platform.mobility ||
+        previous.combat !== platform.combat ||
+        previous.disposition !== platform.disposition)
+    ) {
+      this.emit({
+        type: "platform-state-changed",
+        platformId: platform.id,
+        groupId: platform.groupId,
+        from: previous,
+        to: {
+          mobility: platform.mobility,
+          combat: platform.combat,
+          disposition: platform.disposition,
+        },
+      });
+      this.markMeaningfulProgress();
+    }
+  }
+
+  private platformCapabilities(platform: PlatformState) {
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    return derivePlatformCapabilities(
+      template,
+      platform.components,
+      platform.crewAssignments,
+      this.crewCapabilityMembers(platform),
+      platform.crewReassignments,
+    );
+  }
+
+  private crewCapabilityMembers(platform: PlatformState) {
+    const group = this.state.groupsById.get(platform.groupId);
+    return (group?.members ?? []).map((member) => ({
+      id: member.id,
+      roleTags: getMemberTemplate(this.setup.content, member.memberTemplateId).roleTags,
+      active: this.isActiveCrewMember(member, platform),
+    }));
+  }
+
+  private isActiveCrewMember(member: MemberState, platform: PlatformState): boolean {
+    return (
+      canMemberFight(member) &&
+      member.placement.kind === "crew" &&
+      member.placement.platformId === platform.id
     );
   }
 
@@ -1662,6 +1881,13 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!group.movingTo) {
         continue;
       }
+      if (
+        group.platforms.some(
+          (platform) => platform.mobility !== "mobile" || platform.disposition !== "crewed",
+        )
+      ) {
+        continue;
+      }
       if (group.turnTicksRemaining > 0) {
         group.turnTicksRemaining -= 1;
         if (group.turnTicksRemaining === 0) {
@@ -1669,8 +1895,14 @@ class StageOneBattleSimulation implements BattleSimulation {
         }
         continue;
       }
-      group.moveProgress +=
+      const baseMovePoints =
         group.action === "routing" ? ROUTING_MOVE_POINTS_PER_TICK : MOVE_POINTS_PER_TICK;
+      const movementEfficiencyBps = group.platforms[0]
+        ? this.platformCapabilities(group.platforms[0]).mobility.efficiencyBps
+        : 10_000;
+      group.moveProgress += Math.floor(
+        (baseMovePoints * movementEfficiencyBps) / 10_000,
+      );
       if (group.moveProgress < group.moveCost) {
         continue;
       }
@@ -1775,8 +2007,20 @@ class StageOneBattleSimulation implements BattleSimulation {
       for (const member of group.members) {
         updateWeaponTimer(member, this.weaponForMember(member));
       }
-      if (group.platforms.length > 0) {
-        continue;
+      for (const platform of group.platforms) {
+        const capabilities = this.platformCapabilities(platform);
+        for (const weaponState of platform.weaponStates) {
+          if (
+            capabilities.weapons.find(
+              (capability) => capability.componentId === weaponState.componentId,
+            )?.available
+          ) {
+            updateWeaponTimer(
+              weaponState,
+              getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
+            );
+          }
+        }
       }
       const advancingAttacker =
         this.setup.mode.kind === "defense" &&
@@ -1838,7 +2082,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         const hitSuppressionBps = firstEffectAmount(weapon, "suppression", 0);
         shotIntents.push({
           shooterGroupId: group.id,
-          shooterMemberId: member.id,
+          shooterEntityId: member.id,
           targetGroupId: target.id,
           shotOrdinal,
           hitChanceBps: applyBasisPointReduction(
@@ -1850,6 +2094,58 @@ class StageOneBattleSimulation implements BattleSimulation {
           hitSuppressionBps,
         });
         shotOrdinal += 1;
+      }
+      for (const platform of group.platforms) {
+        const capabilities = this.platformCapabilities(platform);
+        for (const weaponState of [...platform.weaponStates].sort((a, b) =>
+          compareStrings(a.componentId, b.componentId),
+        )) {
+          const capability = capabilities.weapons.find(
+            (candidate) => candidate.componentId === weaponState.componentId,
+          );
+          const operator = this.platformWeaponOperator(platform, weaponState.componentId);
+          if (!capability?.available || !operator) {
+            continue;
+          }
+          const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+          if (
+            distanceSquared > this.weaponRangeCells(weapon) ** 2 ||
+            distanceSquared < this.weaponMinimumRangeCells(weapon) ** 2
+          ) {
+            continue;
+          }
+          if (weaponState.magazineRounds === 0) {
+            if (weaponState.reloadTicksRemaining === 0) {
+              weaponState.reloadTicksRemaining = weapon.reloadTicks;
+            }
+            continue;
+          }
+          if (weaponState.reloadTicksRemaining > 0 || weaponState.shotCooldownTicks > 0) {
+            continue;
+          }
+          weaponState.magazineRounds -= 1;
+          weaponState.shotCooldownTicks = weapon.shotIntervalTicks;
+          const baseHitChance = calculateHitChance(
+            group,
+            operator.member,
+            target,
+            this.weaponPreferredRangeCells(weapon),
+          );
+          shotIntents.push({
+            shooterGroupId: group.id,
+            shooterEntityId: `${platform.id}:${weaponState.componentId}`,
+            targetGroupId: target.id,
+            shotOrdinal,
+            hitChanceBps: applyBasisPointReduction(
+              Math.floor((baseHitChance * operator.efficiencyBps) / 10_000),
+              cover?.effect.protectionBps ?? 0,
+            ),
+            damageBps: firstEffectAmount(weapon, "damage", 0),
+            suppressionBps: weapon.suppressionBps,
+            hitSuppressionBps: firstEffectAmount(weapon, "suppression", 0),
+          });
+          shotOrdinal += 1;
+        }
       }
       if (shotOrdinal > 0) {
         group.lastFiredTick = this.state.tick;
@@ -1864,7 +2160,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.setup.seed,
         "weapon-hit",
         this.state.tick,
-        `${shot.shooterMemberId}:${shot.targetGroupId}`,
+        `${shot.shooterEntityId}:${shot.targetGroupId}`,
         shot.shotOrdinal,
       );
       if (roll >= shot.hitChanceBps) {
@@ -1887,14 +2183,14 @@ class StageOneBattleSimulation implements BattleSimulation {
           this.setup.seed,
           "weapon-target",
           this.state.tick,
-          `${shot.shooterMemberId}:${shot.targetGroupId}`,
+          `${shot.shooterEntityId}:${shot.targetGroupId}`,
           shot.shotOrdinal,
         ) % eligibleTargets.length;
       const targetMember = eligibleTargets[targetIndex];
       if (targetMember) {
         hits.push({
           shooterGroupId: shot.shooterGroupId,
-          shooterMemberId: shot.shooterMemberId,
+          shooterEntityId: shot.shooterEntityId,
           targetGroupId: shot.targetGroupId,
           targetMemberId: targetMember.id,
           shotOrdinal: shot.shotOrdinal,
@@ -2398,6 +2694,10 @@ class StageOneBattleSimulation implements BattleSimulation {
           finalCrewAssignments: platform.crewAssignments.map((assignment) => ({
             ...assignment,
           })),
+          finalCrewReassignments: platform.crewReassignments.map((action) => ({
+            ...action,
+          })),
+          weaponStates: this.platformWeaponInspections(platform),
         })),
       )
       .sort((a, b) => compareStrings(a.id, b.id));
@@ -2822,6 +3122,58 @@ class StageOneBattleSimulation implements BattleSimulation {
     };
   }
 
+  private platformStationInspections(platform: PlatformState) {
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const stationRules = new Map(
+      template.crewStationRules.map((station) => [station.id, station]),
+    );
+    return buildCrewStationCapabilities(
+      template.crewStationRules,
+      platform.crewAssignments,
+      this.crewCapabilityMembers(platform),
+      platform.crewReassignments,
+    ).map((station) => ({
+      id: station.stationId,
+      kind: stationRules.get(station.stationId)!.kind,
+      assignedMemberId: station.memberId,
+      status: station.reassigning
+        ? "reassigning" as const
+        : !station.memberId
+          ? "vacant" as const
+          : station.efficiencyBps > 0
+            ? "effective" as const
+            : "unavailable" as const,
+      efficiencyBps: station.efficiencyBps,
+    }));
+  }
+
+  private platformWeaponInspections(
+    platform: PlatformState,
+  ): readonly PlatformWeaponInspection[] {
+    const capabilities = this.platformCapabilities(platform);
+    return [...platform.weaponStates]
+      .sort((a, b) => compareStrings(a.componentId, b.componentId))
+      .map((weapon) => {
+        const capability = capabilities.weapons.find(
+          (candidate) => candidate.componentId === weapon.componentId,
+        ) ?? ({
+          available: false,
+          reason: "component-unavailable",
+          efficiencyBps: 0,
+        } satisfies PlatformCapabilityInspection);
+        return {
+          componentId: weapon.componentId,
+          weaponTemplateId: weapon.weaponTemplateId,
+          available: capability.available,
+          reason: capability.reason,
+          efficiencyBps: capability.efficiencyBps,
+          magazineRounds: weapon.magazineRounds,
+          reloadTicksRemaining: weapon.reloadTicksRemaining,
+          shotCooldownTicks: weapon.shotCooldownTicks,
+        };
+      });
+  }
+
   private inspectObjective(objective: ObjectiveRuntimeState): ObjectiveInspection {
     return {
       kind: "objective",
@@ -2859,7 +3211,23 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private groupWeaponRangeCells(group: GroupState): number {
     if (group.platforms.length > 0) {
-      return 0;
+      const maximum = group.platforms.reduce((range, platform) => {
+        const capabilities = this.platformCapabilities(platform);
+        return platform.weaponStates.reduce((platformRange, weaponState) => {
+          const available = capabilities.weapons.find(
+            (capability) => capability.componentId === weaponState.componentId,
+          )?.available;
+          return available
+            ? Math.max(
+                platformRange,
+                this.weaponRangeCells(
+                  getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
+                ),
+              )
+            : platformRange;
+        }, range);
+      }, 0);
+      return Math.min(this.setup.rules.weaponRangeCells, maximum);
     }
     const maximum = group.members
       .filter(
@@ -2873,8 +3241,66 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private groupSightRangeCells(group: GroupState): number {
+    if (group.platforms.length > 0) {
+      const maximum = group.platforms.reduce((range, platform) => {
+        const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+        const capabilities = this.platformCapabilities(platform);
+        const stations = buildCrewStationCapabilities(
+          template.crewStationRules,
+          platform.crewAssignments,
+          this.crewCapabilityMembers(platform),
+          platform.crewReassignments,
+        );
+        const stationById = new Map(stations.map((station) => [station.stationId, station]));
+        return template.componentRules
+          .filter(
+            (component) =>
+              component.kind === "sensor" &&
+              capabilities.components.find(
+                (capability) => capability.componentId === component.id,
+              )?.available,
+          )
+          .flatMap((component) => {
+            const stationIds = component.requiredStationIds.length > 0
+              ? component.requiredStationIds
+              : stations
+                  .filter((station) => station.efficiencyBps > 0)
+                  .map((station) => station.stationId);
+            const efficiencyBps = capabilities.components.find(
+              (capability) => capability.componentId === component.id,
+            )?.efficiencyBps ?? 0;
+            return stationIds.map((stationId) => ({ stationId, efficiencyBps }));
+          })
+          .reduce((sensorRange, sensorStation) => {
+            const { stationId, efficiencyBps } = sensorStation;
+            const memberId = stationById.get(stationId)?.memberId;
+            const member = memberId ? this.state.membersById.get(memberId) : undefined;
+            if (!member) {
+              return sensorRange;
+            }
+            const memberTemplate = getMemberTemplate(
+              this.setup.content,
+              member.memberTemplateId,
+            );
+            const sensor = this.setup.content.sensorTemplates[memberTemplate.sensorTemplateId];
+            return Math.max(
+              sensorRange,
+              sensor
+                ? Math.floor(
+                    (sensor.rangeMm * efficiencyBps) /
+                      10_000 /
+                      this.setup.map.cellSizeMm,
+                  )
+                : 0,
+            );
+          }, range);
+      }, 0);
+      return Math.min(this.setup.rules.sightRangeCells, maximum);
+    }
     const maximum = group.members
-      .filter(canMemberFight)
+      .filter(
+        (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+      )
       .reduce((range, member) => {
         const memberTemplate = getMemberTemplate(this.setup.content!, member.memberTemplateId);
         const sensor = this.setup.content!.sensorTemplates[memberTemplate.sensorTemplateId];
@@ -2887,7 +3313,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private groupExposureOnFireBps(group: GroupState): number {
-    return group.members
+    const memberExposure = group.members
       .filter(
         (member) => canMemberFight(member) && member.placement.kind === "dismounted",
       )
@@ -2895,6 +3321,65 @@ class StageOneBattleSimulation implements BattleSimulation {
         (exposure, member) => Math.max(exposure, this.weaponForMember(member).exposureOnFireBps),
         0,
       );
+    return group.platforms.reduce((exposure, platform) => {
+      const capabilities = this.platformCapabilities(platform);
+      return platform.weaponStates.reduce((platformExposure, weaponState) => {
+        const available = capabilities.weapons.find(
+          (capability) => capability.componentId === weaponState.componentId,
+        )?.available;
+        return available
+          ? Math.max(
+              platformExposure,
+              getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId)
+                .exposureOnFireBps,
+            )
+          : platformExposure;
+      }, exposure);
+    }, memberExposure);
+  }
+
+  private platformWeaponOperator(
+    platform: PlatformState,
+    componentId: string,
+  ): { readonly member: MemberState; readonly efficiencyBps: number } | undefined {
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const component = template.componentRules.find((rule) => rule.id === componentId);
+    if (!component) {
+      return undefined;
+    }
+    const stations = buildCrewStationCapabilities(
+      template.crewStationRules,
+      platform.crewAssignments,
+      this.crewCapabilityMembers(platform),
+      platform.crewReassignments,
+    );
+    const stationById = new Map(stations.map((station) => [station.stationId, station]));
+    const requiredStations = component.requiredStationIds
+      .map((stationId) => stationById.get(stationId))
+      .filter((station): station is NonNullable<typeof station> => Boolean(station));
+    const candidateStations = requiredStations.length > 0
+      ? requiredStations
+      : stations.filter((station) => station.efficiencyBps > 0);
+    if (candidateStations.some((station) => station.efficiencyBps === 0)) {
+      return undefined;
+    }
+    const preferred = candidateStations.find(
+      (station) =>
+        template.crewStationRules.find((rule) => rule.id === station.stationId)?.kind ===
+        "gunner",
+    ) ?? candidateStations[0];
+    const member = preferred?.memberId
+      ? this.state.membersById.get(preferred.memberId)
+      : undefined;
+    if (!member) {
+      return undefined;
+    }
+    return {
+      member,
+      efficiencyBps: Math.min(
+        ...candidateStations.map((station) => station.efficiencyBps),
+      ),
+    };
   }
 
   private groupSuppressionResistanceBps(group: GroupState): number {

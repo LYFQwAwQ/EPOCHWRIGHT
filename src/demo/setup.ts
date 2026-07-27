@@ -2,6 +2,8 @@ import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+  DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+  DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
@@ -269,7 +271,9 @@ function createGroupSpawns(
       if (groupIndex < vehicleGroupsPerFaction) {
         const tracked = side % 2 === 1;
         const groupId = `${faction.id}-${tracked ? "tracked" : "wheeled"}-${groupIndex + 1}`;
-        const memberId = `${groupId}-driver`;
+        const driverId = `${groupId}-driver`;
+        const gunnerId = `${groupId}-gunner`;
+        const reliefId = `${groupId}-relief`;
         const platformId = `${groupId}-platform`;
         groups.push({
           id: groupId,
@@ -281,8 +285,16 @@ function createGroupSpawns(
           evacuation: { ...spawn },
           members: [
             {
-              id: memberId,
+              id: driverId,
               memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+            },
+            {
+              id: gunnerId,
+              memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+            },
+            {
+              id: reliefId,
+              memberTemplateId: DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
             },
           ],
           platforms: [
@@ -292,7 +304,11 @@ function createGroupSpawns(
                 ? DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID
                 : DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
               initialFacing: side === 0 ? 2 : side === 1 ? 6 : 0,
-              crewAssignments: [{ stationId: "driver", memberId }],
+              crewAssignments: [
+                { stationId: "driver", memberId: driverId },
+                { stationId: "gunner", memberId: gunnerId },
+                { stationId: "relief", memberId: reliefId },
+              ],
             },
           ],
         });

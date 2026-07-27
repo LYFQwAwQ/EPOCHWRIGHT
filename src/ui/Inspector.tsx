@@ -175,6 +175,7 @@ export function Inspector({
                   <strong>
                     {platform.movementType === "tracked" ? "履带" : "轮式"}
                     {platform.mobility === "mobile" ? "可机动" : "失去机动"}
+                    {platform.combat === "effective" ? ` · ${platform.crewCount} 乘员` : " · 武器停用"}
                   </strong>
                 </div>
               ))}

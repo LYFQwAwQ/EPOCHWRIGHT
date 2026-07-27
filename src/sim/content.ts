@@ -21,6 +21,8 @@ export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_CREW_MEMBER_TEMPLATE_ID = "vehicle-driver-v1" as const;
+export const DEFAULT_GUNNER_MEMBER_TEMPLATE_ID = "vehicle-gunner-v1" as const;
+export const DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID = "vehicle-relief-crew-v1" as const;
 export const DEFAULT_WHEELED_GROUP_TEMPLATE_ID = "vehicle-wheeled-scout-group-v1" as const;
 export const DEFAULT_TRACKED_GROUP_TEMPLATE_ID = "vehicle-tracked-scout-group-v1" as const;
 export const DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID = "vehicle-wheeled-scout-v1" as const;
@@ -51,7 +53,12 @@ export function createDefaultBattleContent(
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
     ],
-    allowedMemberTemplateIds: [DEFAULT_MEMBER_TEMPLATE_ID, DEFAULT_CREW_MEMBER_TEMPLATE_ID],
+    allowedMemberTemplateIds: [
+      DEFAULT_MEMBER_TEMPLATE_ID,
+      DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+      DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+      DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+    ],
     allowedPlatformTemplateIds: [
       DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
       DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
@@ -106,6 +113,18 @@ export function createDefaultBattleContent(
     roleTags: ["driver"],
     silhouetteId: "vehicle-crew",
     capturePowerBps: 0,
+  };
+  const gunnerMember: MemberTemplate = {
+    ...crewMember,
+    id: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+    tags: ["crew", "gunner"],
+    roleTags: ["gunner"],
+  };
+  const reliefCrewMember: MemberTemplate = {
+    ...crewMember,
+    id: DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+    tags: ["crew", "relief"],
+    roleTags: ["driver", "gunner"],
   };
   const wheeledPlatform = createDefaultPlatformTemplate(
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
@@ -166,7 +185,12 @@ export function createDefaultBattleContent(
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
     },
-    memberTemplates: { [member.id]: member, [crewMember.id]: crewMember },
+    memberTemplates: {
+      [member.id]: member,
+      [crewMember.id]: crewMember,
+      [gunnerMember.id]: gunnerMember,
+      [reliefCrewMember.id]: reliefCrewMember,
+    },
     platformTemplates: {
       [wheeledPlatform.id]: wheeledPlatform,
       [trackedPlatform.id]: trackedPlatform,
@@ -192,6 +216,18 @@ function createDefaultVehicleGroupTemplate(
       {
         slotId: "driver",
         memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "gunner",
+        memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "relief",
+        memberTemplateId: DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
         count: 1,
         required: true,
       },
@@ -246,6 +282,23 @@ function createDefaultPlatformTemplate(
         disabledAtBps: 2_500,
         requiredStationIds: ["driver"],
       },
+      {
+        id: "sensor",
+        kind: "sensor",
+        hitWeight: 1,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["gunner"],
+      },
+      {
+        id: "primary-weapon",
+        kind: "weapon",
+        hitWeight: 1,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["gunner"],
+        weaponTemplateId: DEFAULT_WEAPON_TEMPLATE_ID,
+      },
     ],
     crewStationRules: [
       {
@@ -253,7 +306,21 @@ function createDefaultPlatformTemplate(
         kind: "driver",
         requiredRoleTags: ["driver"],
         replacementTicks: 20,
-        substituteEfficiencyBps: 0,
+        substituteEfficiencyBps: 6_000,
+      },
+      {
+        id: "gunner",
+        kind: "gunner",
+        requiredRoleTags: ["gunner"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 6_000,
+      },
+      {
+        id: "relief",
+        kind: "auxiliary",
+        requiredRoleTags: [],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 10_000,
       },
     ],
     transportCapacityUnits: 0,
