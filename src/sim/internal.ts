@@ -38,6 +38,8 @@ import type {
   ReinforcementBlockedPolicy,
   Tick,
   EffectDefinition,
+  FireMissionEvaluationInspection,
+  FireMissionIntelSource,
 } from "./types";
 
 export interface MemberState {
@@ -87,6 +89,31 @@ export interface PlatformDeploymentStateValue {
   missionsAssigned: number;
 }
 
+export interface FireMissionTargetSnapshot {
+  readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: TargetProfile;
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly deliveredAt: Tick;
+  readonly source: FireMissionIntelSource;
+  readonly confidenceBps: number;
+}
+
+export interface ArtilleryFireMissionState {
+  readonly id: string;
+  readonly platformId: PlatformId;
+  readonly weaponComponentId: string;
+  readonly fireModeId: string;
+  readonly assignedAt: Tick;
+  readonly snapshot: FireMissionTargetSnapshot;
+  uncertaintyRadiusMm: number;
+  selectedOffset: { readonly dx: number; readonly dz: number };
+  plannedImpactCell: GridCoord;
+  status: "aiming" | "ready" | "released" | "cancelled";
+  aimTicksRemaining: Tick;
+}
+
 export interface PlatformState {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -105,6 +132,8 @@ export interface PlatformState {
   readonly components: PlatformComponentStateValue[];
   readonly weaponStates: PlatformWeaponStateValue[];
   readonly deployment?: PlatformDeploymentStateValue;
+  fireMission?: ArtilleryFireMissionState;
+  fireMissionEvaluation?: FireMissionEvaluationInspection;
   readonly passengerGroupIds: GroupId[];
 }
 
@@ -170,9 +199,11 @@ export interface ContactState {
   readonly targetProfile: TargetProfile;
   lastKnown: GridCoord;
   observedAt: Tick;
+  deliveredAt: Tick;
   lastDirectTick: Tick;
   confidenceBps: number;
   sourceGroupId: GroupId;
+  intelSource: FireMissionIntelSource;
 }
 
 export interface CoverThreatState {
@@ -240,6 +271,7 @@ export interface IntelMessage {
   readonly deliveryAt: Tick;
   readonly lastKnown: GridCoord;
   readonly confidenceBps: number;
+  readonly intelSource: Exclude<FireMissionIntelSource, "local-direct">;
 }
 
 export interface FactionKnowledgeState {

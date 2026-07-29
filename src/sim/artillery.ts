@@ -1,13 +1,97 @@
 import { cellIndex, heightAt, isInsideMap } from "./map";
 import { STATIC_OBJECT_DEFINITIONS } from "./types";
-import type { BattleMap, GridCoord } from "./types";
+import type {
+  BattleMap,
+  FireMissionIntelSource,
+  GridCoord,
+  IndirectFireUncertaintyRule,
+} from "./types";
 
 export const MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS = 10_000;
+export const MAX_ARTILLERY_SCATTER_MM = 1_000_000;
 
 export interface ProjectilePositionMm {
   readonly xMm: number;
   readonly zMm: number;
   readonly heightMm: number;
+}
+
+export interface ArtilleryUncertaintyBreakdown {
+  readonly ageTicks: number;
+  readonly baseScatterMm: number;
+  readonly ageScatterMm: number;
+  readonly relayPenaltyMm: number;
+  readonly confidencePenaltyMm: number;
+  readonly radiusMm: number;
+}
+
+export interface ArtilleryScatterCandidate {
+  readonly cell: GridCoord;
+  readonly offset: { readonly dx: number; readonly dz: number };
+  readonly distanceSquared: number;
+}
+
+export function calculateArtilleryUncertainty(
+  rule: IndirectFireUncertaintyRule,
+  source: FireMissionIntelSource,
+  firingTick: number,
+  observedAt: number,
+  confidenceBps: number,
+): ArtilleryUncertaintyBreakdown {
+  const ageTicks = Math.max(0, firingTick - observedAt);
+  const ageScatterMm = Math.floor((ageTicks * rule.ageScatterMmPerSecond) / 20);
+  const relayPenaltyMm = source === "same-faction"
+    ? rule.sameFactionRelayPenaltyMm
+    : source === "allied"
+      ? rule.alliedRelayPenaltyMm
+      : 0;
+  const confidencePenaltyMm = Math.floor(
+    (Math.max(0, 10_000 - confidenceBps) * rule.zeroConfidencePenaltyMm) / 10_000,
+  );
+  const radiusMm = Math.max(
+    0,
+    Math.min(
+      rule.maximumScatterMm,
+      rule.baseScatterMm + ageScatterMm + relayPenaltyMm + confidencePenaltyMm,
+    ),
+  );
+  return {
+    ageTicks,
+    baseScatterMm: rule.baseScatterMm,
+    ageScatterMm,
+    relayPenaltyMm,
+    confidencePenaltyMm,
+    radiusMm,
+  };
+}
+
+export function artilleryScatterCandidates(
+  map: BattleMap,
+  aimCell: GridCoord,
+  radiusMm: number,
+): readonly ArtilleryScatterCandidate[] {
+  const radiusCells = Math.floor(radiusMm / map.cellSizeMm);
+  const candidates: ArtilleryScatterCandidate[] = [];
+  const minimumDz = Math.max(-radiusCells, -aimCell.z);
+  const maximumDz = Math.min(radiusCells, map.height - 1 - aimCell.z);
+  const minimumDx = Math.max(-radiusCells, -aimCell.x);
+  const maximumDx = Math.min(radiusCells, map.width - 1 - aimCell.x);
+  for (let dz = minimumDz; dz <= maximumDz; dz += 1) {
+    for (let dx = minimumDx; dx <= maximumDx; dx += 1) {
+      const distanceSquared = dx * dx + dz * dz;
+      if (distanceSquared * map.cellSizeMm * map.cellSizeMm > radiusMm * radiusMm) {
+        continue;
+      }
+      const cell = { x: aimCell.x + dx, z: aimCell.z + dz };
+      candidates.push({ cell, offset: { dx, dz }, distanceSquared });
+    }
+  }
+  return candidates.sort(
+    (a, b) =>
+      a.distanceSquared - b.distanceSquared ||
+      a.cell.z - b.cell.z ||
+      a.cell.x - b.cell.x,
+  );
 }
 
 export function projectileFlightTicks(

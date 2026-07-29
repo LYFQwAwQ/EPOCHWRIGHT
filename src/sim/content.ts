@@ -16,7 +16,10 @@ import type {
   WeaponFireModeDefinition,
   WeaponTemplate,
 } from "./types";
-import { MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS } from "./artillery";
+import {
+  MAX_ARTILLERY_SCATTER_MM,
+  MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
+} from "./artillery";
 
 export const BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
@@ -245,16 +248,42 @@ export function createDefaultBattleContent(
     id: DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID,
     tags: ["artillery", "howitzer", "anti-vehicle"],
     techTags: ["basic-artillery"],
-    fireModes: platformWeapon.fireModes.map((mode) => ({
-      ...mode,
-      trajectory: "logical-projectile" as const,
-      requiresDeployedPlatform: true,
-      projectileSpeedMmPerTick: 8_000,
-      muzzleHeightMm: 2_000,
-      apexHeightMm: 12_000,
-      blastRadiusMm: 8_000,
-      visualTypeId: "shell-medium-v1",
-    })),
+    fireModes: [
+      {
+        ...platformWeapon.fireModes[0]!,
+        trajectory: "logical-projectile" as const,
+        requiresDeployedPlatform: true,
+        projectileSpeedMmPerTick: 8_000,
+        muzzleHeightMm: 2_000,
+        apexHeightMm: 12_000,
+        blastRadiusMm: 8_000,
+        visualTypeId: "shell-medium-v1",
+      },
+      {
+        id: "indirect",
+        targeting: "indirect",
+        trajectory: "logical-projectile",
+        minimumRangeMm: 40_000,
+        optimalRangeMm: 120_000,
+        maximumRangeMm: 240_000,
+        aimTicks: 20,
+        requiresDeployedPlatform: true,
+        projectileSpeedMmPerTick: 6_000,
+        muzzleHeightMm: 2_000,
+        apexHeightMm: 48_000,
+        blastRadiusMm: 8_000,
+        visualTypeId: "shell-medium-v1",
+        uncertainty: {
+          baseScatterMm: 4_000,
+          ageScatterMmPerSecond: 1_000,
+          sameFactionRelayPenaltyMm: 2_000,
+          alliedRelayPenaltyMm: 6_000,
+          zeroConfidencePenaltyMm: 12_000,
+          maximumScatterMm: 40_000,
+          maximumContactAgeTicks: 200,
+        },
+      },
+    ],
     magazineSize: 6,
     reloadTicks: 60,
     shotIntervalTicks: 20,
@@ -577,11 +606,11 @@ export function validateBattleContent(content: BattleContentBundle): void {
       }
       if (
         content.weaponTemplates[slot.weaponTemplateId]!.fireModes.some(
-          (mode) => mode.requiresDeployedPlatform,
+          (mode) => mode.requiresDeployedPlatform || mode.targeting === "indirect",
         )
       ) {
         throw new Error(
-          `Member weapon ${slot.weaponTemplateId} cannot require platform deployment.`,
+          `Member weapon ${slot.weaponTemplateId} cannot use indirect fire or platform deployment.`,
         );
       }
     }
@@ -597,11 +626,14 @@ export function validateBattleContent(content: BattleContentBundle): void {
     const weapon = content.weaponTemplates[weaponId]!;
     if (
       !weapon.targetDomains.includes("ground") ||
-      weapon.fireModes.length !== 1 ||
-      weapon.fireModes[0]!.targeting !== "direct" ||
+      weapon.fireModes.some(
+        (mode) =>
+          (mode.targeting === "indirect" &&
+            (mode.trajectory !== "logical-projectile" || !mode.requiresDeployedPlatform)) ||
+          (mode.targeting === "direct" && mode.aimTicks !== 0),
+      ) ||
       weapon.firePattern.kind !== "single" ||
-      weapon.firePattern.shotsPerAction !== 1 ||
-      weapon.fireModes[0]!.aimTicks !== 0
+      weapon.firePattern.shotsPerAction !== 1
     ) {
       throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-3.`);
     }
@@ -843,9 +875,22 @@ function validateWeaponTemplate(template: WeaponTemplate): void {
           uncertainty.maximumScatterMm,
           uncertainty.maximumContactAgeTicks,
         ]) {
-          if (!Number.isInteger(value) || value < 0) {
+          if (!Number.isSafeInteger(value) || value < 0) {
             throw new Error(`Weapon template ${template.id} has invalid uncertainty fields.`);
           }
+        }
+        if (
+          uncertainty.maximumContactAgeTicks < 1 ||
+          uncertainty.maximumScatterMm > MAX_ARTILLERY_SCATTER_MM ||
+          !Number.isSafeInteger(
+            uncertainty.maximumContactAgeTicks * uncertainty.ageScatterMmPerSecond,
+          ) ||
+          uncertainty.baseScatterMm > uncertainty.maximumScatterMm ||
+          uncertainty.sameFactionRelayPenaltyMm > uncertainty.maximumScatterMm ||
+          uncertainty.alliedRelayPenaltyMm > uncertainty.maximumScatterMm ||
+          uncertainty.zeroConfidencePenaltyMm > uncertainty.maximumScatterMm
+        ) {
+          throw new Error(`Weapon template ${template.id} has invalid uncertainty bounds.`);
         }
       }
     }

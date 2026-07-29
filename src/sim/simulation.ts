@@ -1,5 +1,7 @@
 import {
+  artilleryScatterCandidates,
   blastFalloffBps,
+  calculateArtilleryUncertainty,
   firstProjectileCollision,
   projectileFlightTicks,
   projectilePositionAtElapsed,
@@ -33,6 +35,7 @@ import {
   updateWeaponTimer,
 } from "./combat";
 import type {
+  ArtilleryFireMissionState,
   ContactState,
   CoverDecisionState,
   CoverThreatState,
@@ -124,6 +127,8 @@ import type {
   EffectDefinition,
   EntityInspection,
   FactionId,
+  FireMissionEvaluationCandidateInspection,
+  FireMissionIntelSource,
   GridCoord,
   GroupId,
   GroupInspection,
@@ -223,6 +228,24 @@ interface VehicleEngagementOption {
     readonly facing: number;
     readonly retention: number;
   };
+}
+
+type IndirectFireMode = Extract<
+  WeaponFireModeDefinition,
+  { targeting: "indirect" }
+>;
+
+interface ArtilleryMissionOption {
+  readonly contact: ContactState;
+  readonly weapon: WeaponTemplate;
+  readonly weaponComponentId: string;
+  readonly fireMode: IndirectFireMode;
+  readonly missionId: string;
+  readonly uncertaintyRadiusMm: number;
+  readonly selectedOffset: { readonly dx: number; readonly dz: number };
+  readonly plannedImpactCell: GridCoord;
+  readonly score: number;
+  readonly evaluation: FireMissionEvaluationCandidateInspection;
 }
 
 type PendingBattleEvent = BattleEvent extends infer Event
@@ -478,6 +501,29 @@ class StageOneBattleSimulation implements BattleSimulation {
           ? {
               deployment: platform.deployment.state,
               deploymentTicksRemaining: platform.deployment.ticksRemaining,
+              mission: platform.fireMission
+                ? {
+                    id: platform.fireMission.id,
+                    fireModeId: platform.fireMission.fireModeId,
+                    targetGroupId: platform.fireMission.snapshot.targetGroupId,
+                    source: platform.fireMission.snapshot.source,
+                    observedAt: platform.fireMission.snapshot.observedAt,
+                    deliveredAt: platform.fireMission.snapshot.deliveredAt,
+                    confidenceBps: platform.fireMission.snapshot.confidenceBps,
+                    uncertaintyRadiusMm: platform.fireMission.uncertaintyRadiusMm,
+                    selectedOffset: { ...platform.fireMission.selectedOffset },
+                    plannedImpactCell: { ...platform.fireMission.plannedImpactCell },
+                    aimTicksRemaining: platform.fireMission.aimTicksRemaining,
+                  }
+                : undefined,
+              evaluation: platform.fireMissionEvaluation
+                ? {
+                    ...platform.fireMissionEvaluation,
+                    candidates: platform.fireMissionEvaluation.candidates.map(
+                      (candidate) => ({ ...candidate }),
+                    ),
+                  }
+                : undefined,
             }
           : undefined,
       };
@@ -644,6 +690,42 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addNumber(platform.deployment?.directRoundsFired ?? 0);
         hasher.addNumber(platform.deployment?.indirectRoundsFired ?? 0);
         hasher.addNumber(platform.deployment?.missionsAssigned ?? 0);
+        const mission = platform.fireMission;
+        hasher.addString(mission?.id ?? "");
+        hasher.addString(mission?.platformId ?? "");
+        hasher.addString(mission?.weaponComponentId ?? "");
+        hasher.addString(mission?.fireModeId ?? "");
+        hasher.addNumber(mission?.assignedAt ?? -1);
+        hasher.addString(mission?.snapshot.targetGroupId ?? "");
+        hasher.addString(mission?.snapshot.targetFactionId ?? "");
+        hasher.addString(mission?.snapshot.targetProfile ?? "");
+        hasher.addNumber(mission?.snapshot.lastKnown.x ?? -1);
+        hasher.addNumber(mission?.snapshot.lastKnown.z ?? -1);
+        hasher.addNumber(mission?.snapshot.observedAt ?? -1);
+        hasher.addNumber(mission?.snapshot.deliveredAt ?? -1);
+        hasher.addString(mission?.snapshot.source ?? "");
+        hasher.addNumber(mission?.snapshot.confidenceBps ?? 0);
+        hasher.addNumber(mission?.uncertaintyRadiusMm ?? 0);
+        hasher.addNumber(mission?.selectedOffset.dx ?? 0);
+        hasher.addNumber(mission?.selectedOffset.dz ?? 0);
+        hasher.addNumber(mission?.plannedImpactCell.x ?? -1);
+        hasher.addNumber(mission?.plannedImpactCell.z ?? -1);
+        hasher.addString(mission?.status ?? "");
+        hasher.addNumber(mission?.aimTicksRemaining ?? 0);
+        const missionEvaluation = platform.fireMissionEvaluation;
+        hasher.addNumber(missionEvaluation?.evaluatedAt ?? -1);
+        hasher.addString(missionEvaluation?.reason ?? "");
+        hasher.addString(missionEvaluation?.selectedTargetGroupId ?? "");
+        for (const candidate of missionEvaluation?.candidates ?? []) {
+          hasher.addString(candidate.targetGroupId);
+          hasher.addString(candidate.source);
+          hasher.addNumber(candidate.ageTicks);
+          hasher.addNumber(candidate.uncertaintyRadiusMm);
+          hasher.addNumber(candidate.weaponCompatible ? 1 : 0);
+          hasher.addNumber(candidate.dangerClose ? 1 : 0);
+          hasher.addNumber(candidate.score);
+          hasher.addString(candidate.rejectionReason ?? "");
+        }
         for (const passengerGroupId of [...platform.passengerGroupIds].sort(compareStrings)) {
           hasher.addString(passengerGroupId);
         }
@@ -757,6 +839,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(message.lastKnown.x);
       hasher.addNumber(message.lastKnown.z);
       hasher.addNumber(message.confidenceBps);
+      hasher.addString(message.intelSource);
     }
     for (const objective of this.state.objectives) {
       hasher.addString(objective.id);
@@ -834,6 +917,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
+    this.updateArtilleryMissions();
     this.updatePlatformDeployments();
     this.advanceMovement();
     const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), true);
@@ -1359,6 +1443,473 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
+  private updateArtilleryMissions(): void {
+    const groupIndexById = new Map(
+      this.state.groups.map((group, index) => [group.id, index] as const),
+    );
+    for (const platform of [...this.state.platformsById.values()].sort(compareById)) {
+      const group = this.state.groupsById.get(platform.groupId);
+      const configurations = this.indirectWeaponConfigurations(platform);
+      if (!group || configurations.length === 0) {
+        continue;
+      }
+      if (platform.fireMission?.status === "released") {
+        platform.fireMission = undefined;
+      }
+
+      if (this.hasCurrentDirectHostileContact(group)) {
+        if (platform.fireMission) {
+          this.cancelArtilleryMission(platform, "contact-replaced");
+        }
+        platform.fireMissionEvaluation = {
+          evaluatedAt: this.state.tick,
+          reason: "ARTILLERY_DIRECT_SELF_DEFENSE",
+          candidates: [],
+        };
+        continue;
+      }
+
+      const mission = platform.fireMission;
+      if (mission) {
+        const configuration = configurations.find(
+          (candidate) =>
+            candidate.weaponState.componentId === mission.weaponComponentId &&
+            candidate.fireMode.id === mission.fireModeId,
+        );
+        if (!configuration?.available) {
+          this.cancelArtilleryMission(platform, "capability-lost");
+        } else if (
+          !this.isHostile(group.factionId, mission.snapshot.targetFactionId) ||
+          this.state.tick - mission.snapshot.observedAt >
+            configuration.fireMode.uncertainty.maximumContactAgeTicks
+        ) {
+          this.cancelArtilleryMission(platform, "contact-expired");
+        } else if (
+          this.isArtilleryDangerClose(
+            group,
+            mission.plannedImpactCell,
+            configuration.fireMode.blastRadiusMm,
+          )
+        ) {
+          this.cancelArtilleryMission(platform, "danger-close");
+        } else {
+          if (
+            mission.status === "aiming" &&
+            platform.deployment?.state === "deployed"
+          ) {
+            mission.aimTicksRemaining = Math.max(0, mission.aimTicksRemaining - 1);
+            if (mission.aimTicksRemaining === 0) {
+              mission.status = "ready";
+            }
+          }
+          this.holdGroupForArtilleryMission(group, platform, mission);
+        }
+      }
+
+      const groupIndex = groupIndexById.get(group.id) ?? 0;
+      if ((this.state.tick + groupIndex) % AI_INTERVAL_TICKS !== 0) {
+        continue;
+      }
+      const { options, candidates } = this.evaluateArtilleryMissionOptions(
+        group,
+        platform,
+        configurations,
+      );
+      const selected = options[0];
+      const retainedMission = platform.fireMission;
+      if (retainedMission) {
+        platform.fireMissionEvaluation = {
+          evaluatedAt: this.state.tick,
+          reason: retainedMission.status === "ready"
+            ? "ARTILLERY_AIM_INDIRECT_MISSION"
+            : platform.deployment?.state === "deployed"
+              ? "ARTILLERY_AIM_INDIRECT_MISSION"
+              : "ARTILLERY_DEPLOY_FOR_MISSION",
+          selectedTargetGroupId: retainedMission.snapshot.targetGroupId,
+          candidates,
+        };
+        continue;
+      }
+      if (!selected) {
+        platform.fireMissionEvaluation = {
+          evaluatedAt: this.state.tick,
+          reason: candidates.some((candidate) => candidate.dangerClose)
+            ? "ARTILLERY_HOLD_DANGER_CLOSE"
+            : "ARTILLERY_HOLD_NO_LEGAL_CONTACT",
+          candidates,
+        };
+        continue;
+      }
+
+      const assigned = this.assignArtilleryMission(platform, selected);
+      platform.fireMissionEvaluation = {
+        evaluatedAt: this.state.tick,
+        reason: platform.deployment?.state === "deployed"
+          ? "ARTILLERY_AIM_INDIRECT_MISSION"
+          : "ARTILLERY_DEPLOY_FOR_MISSION",
+        selectedTargetGroupId: selected.contact.targetGroupId,
+        candidates,
+      };
+      this.holdGroupForArtilleryMission(group, platform, assigned);
+    }
+  }
+
+  private indirectWeaponConfigurations(platform: PlatformState) {
+    const capabilities = this.platformCapabilities(platform);
+    return [...platform.weaponStates]
+      .sort((a, b) => compareStrings(a.componentId, b.componentId))
+      .flatMap((weaponState) => {
+        const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+        const capability = capabilities.weapons.find(
+          (candidate) => candidate.componentId === weaponState.componentId,
+        );
+        const available = Boolean(
+          capability?.available &&
+            this.platformWeaponOperator(platform, weaponState.componentId),
+        );
+        return weapon.fireModes
+          .filter((mode): mode is IndirectFireMode => mode.targeting === "indirect")
+          .map((fireMode) => ({ weaponState, weapon, fireMode, available }));
+      });
+  }
+
+  private evaluateArtilleryMissionOptions(
+    group: GroupState,
+    platform: PlatformState,
+    configurations: ReturnType<StageOneBattleSimulation["indirectWeaponConfigurations"]>,
+  ): {
+    readonly options: readonly ArtilleryMissionOption[];
+    readonly candidates: readonly FireMissionEvaluationCandidateInspection[];
+  } {
+    const options: ArtilleryMissionOption[] = [];
+    const candidates: FireMissionEvaluationCandidateInspection[] = [];
+    const missionSequence = platform.deployment?.missionsAssigned ?? 0;
+    const contacts = this.artilleryMissionContacts(group);
+
+    for (const contact of contacts) {
+      let bestOption: ArtilleryMissionOption | undefined;
+      let fallbackEvaluation: FireMissionEvaluationCandidateInspection | undefined;
+      let fallbackFireModeId: string | undefined;
+      for (const configuration of configurations) {
+        const { weapon, weaponState, fireMode, available } = configuration;
+        const ageTicks = Math.max(0, this.state.tick - contact.observedAt);
+        const effectivenessBps = weaponTargetEffectivenessBps(
+          weapon,
+          contact.targetProfile,
+        );
+        const weaponCompatible = effectivenessBps > 0;
+        const uncertainty = calculateArtilleryUncertainty(
+          fireMode.uncertainty,
+          contact.intelSource,
+          this.state.tick,
+          contact.observedAt,
+          contact.confidenceBps,
+        );
+        const missionId = `${platform.id}:${weaponState.componentId}:${this.state.tick}:${missionSequence}`;
+        const scatter = this.selectArtilleryScatter(
+          missionId,
+          `${platform.id}:${weaponState.componentId}`,
+          contact.lastKnown,
+          uncertainty.radiusMm,
+          this.state.tick,
+        );
+        const dangerClose = this.isArtilleryDangerClose(
+          group,
+          scatter.cell,
+          fireMode.blastRadiusMm,
+        );
+        const distanceSquaredMm = this.gridDistanceSquaredMm(
+          platform.cell,
+          contact.lastKnown,
+        );
+        const inRange =
+          distanceSquaredMm >= fireMode.minimumRangeMm ** 2 &&
+          distanceSquaredMm <= fireMode.maximumRangeMm ** 2;
+        const hostile = this.isHostile(group.factionId, contact.targetFactionId);
+        const fresh = ageTicks <= fireMode.uncertainty.maximumContactAgeTicks;
+        const rejectionReason = !hostile
+          ? "CONTACT_NOT_HOSTILE"
+          : !fresh || contact.confidenceBps <= 0
+            ? "CONTACT_EXPIRED"
+            : !available
+              ? "CAPABILITY_UNAVAILABLE"
+              : !weaponCompatible
+                ? "WEAPON_INCOMPATIBLE"
+                : !inRange
+                  ? "OUT_OF_RANGE"
+                  : dangerClose
+                    ? "DANGER_CLOSE"
+                    : undefined;
+        const baseScore = scoreTargetCandidates([{
+          targetGroupId: contact.targetGroupId,
+          targetProfile: contact.targetProfile,
+          lastKnown: { ...contact.lastKnown },
+          observedAt: contact.observedAt,
+          confidenceBps: contact.confidenceBps,
+          source: contact.intelSource === "local-direct"
+            ? "direct-contact"
+            : "shared-contact",
+          distanceSquared: squaredGridDistance(platform.cell, contact.lastKnown),
+          effectivenessBps,
+          taskRelevanceBps: this.targetTaskRelevanceBps(group, contact.lastKnown),
+          retained: platform.fireMission?.snapshot.targetGroupId === contact.targetGroupId,
+        }], this.state.tick)[0]?.score ?? 0;
+        const score = rejectionReason
+          ? 0
+          : Math.max(1, baseScore - Math.floor(uncertainty.radiusMm / 1_000));
+        const evaluation: FireMissionEvaluationCandidateInspection = {
+          targetGroupId: contact.targetGroupId,
+          source: contact.intelSource,
+          ageTicks,
+          uncertaintyRadiusMm: uncertainty.radiusMm,
+          weaponCompatible,
+          dangerClose,
+          score,
+          ...(rejectionReason ? { rejectionReason } : {}),
+        };
+        if (
+          !fallbackEvaluation ||
+          score > fallbackEvaluation.score ||
+          (score === fallbackEvaluation.score &&
+            compareStrings(fireMode.id, fallbackFireModeId ?? "\uffff") < 0)
+        ) {
+          fallbackEvaluation = evaluation;
+          fallbackFireModeId = fireMode.id;
+        }
+        if (!rejectionReason) {
+          const option: ArtilleryMissionOption = {
+            contact,
+            weapon,
+            weaponComponentId: weaponState.componentId,
+            fireMode,
+            missionId,
+            uncertaintyRadiusMm: uncertainty.radiusMm,
+            selectedOffset: { ...scatter.offset },
+            plannedImpactCell: { ...scatter.cell },
+            score,
+            evaluation,
+          };
+          if (
+            !bestOption ||
+            option.score > bestOption.score ||
+            (option.score === bestOption.score &&
+              compareStrings(option.fireMode.id, bestOption.fireMode.id) < 0)
+          ) {
+            bestOption = option;
+          }
+        }
+      }
+      if (fallbackEvaluation) {
+        candidates.push(bestOption?.evaluation ?? fallbackEvaluation);
+      }
+      if (bestOption) {
+        options.push(bestOption);
+      }
+    }
+
+    options.sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.contact.observedAt - a.contact.observedAt ||
+        compareStrings(a.contact.targetGroupId, b.contact.targetGroupId) ||
+        compareStrings(a.weaponComponentId, b.weaponComponentId) ||
+        compareStrings(a.fireMode.id, b.fireMode.id),
+    );
+    candidates.sort(
+      (a, b) =>
+        b.score - a.score ||
+        compareStrings(a.targetGroupId, b.targetGroupId),
+    );
+    return { options, candidates };
+  }
+
+  private artilleryMissionContacts(group: GroupState): readonly ContactState[] {
+    const contacts = new Map<GroupId, ContactState>();
+    const addContact = (contact: ContactState): void => {
+      const known = contacts.get(contact.targetGroupId);
+      if (
+        !known ||
+        contact.observedAt > known.observedAt ||
+        (contact.observedAt === known.observedAt &&
+          this.fireMissionSourceRank(contact.intelSource) <
+            this.fireMissionSourceRank(known.intelSource)) ||
+        (contact.observedAt === known.observedAt &&
+          contact.intelSource === known.intelSource &&
+          contact.deliveredAt > known.deliveredAt)
+      ) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    };
+    sortedContacts(this.state.factionKnowledge.get(group.factionId)?.contacts ?? new Map())
+      .forEach(addContact);
+    sortedContacts(group.localContacts).forEach(addContact);
+    return [...contacts.values()].sort((a, b) =>
+      compareStrings(a.targetGroupId, b.targetGroupId),
+    );
+  }
+
+  private fireMissionSourceRank(source: FireMissionIntelSource): number {
+    return source === "local-direct" ? 0 : source === "same-faction" ? 1 : 2;
+  }
+
+  private selectArtilleryScatter(
+    missionId: string,
+    weaponEntityId: string,
+    aimCell: GridCoord,
+    radiusMm: number,
+    assignedAt: number,
+  ) {
+    const candidates = artilleryScatterCandidates(this.setup.map, aimCell, radiusMm);
+    const index = candidates.length === 0
+      ? 0
+      : deterministicUint32(
+          this.setup.seed,
+          "artillery-scatter-cell",
+          assignedAt,
+          `${missionId}:${weaponEntityId}`,
+          0,
+        ) % candidates.length;
+    return candidates[index] ?? {
+      cell: { ...aimCell },
+      offset: { dx: 0, dz: 0 },
+      distanceSquared: 0,
+    };
+  }
+
+  private isArtilleryDangerClose(
+    group: GroupState,
+    impactCell: GridCoord,
+    blastRadiusMm: number,
+  ): boolean {
+    for (const friendly of this.state.groups) {
+      if (
+        friendly.factionId === group.factionId &&
+        isGroupSpatiallyActive(friendly) &&
+        activeMemberCount(friendly) > 0 &&
+        blastFalloffBps(
+          impactCell,
+          friendly.cell,
+          this.setup.map.cellSizeMm,
+          blastRadiusMm,
+        ) > 0
+      ) {
+        return true;
+      }
+    }
+    for (const contact of this.artilleryMissionContacts(group)) {
+      if (
+        !this.isHostile(group.factionId, contact.targetFactionId) &&
+        contact.confidenceBps > 0 &&
+        blastFalloffBps(
+          impactCell,
+          contact.lastKnown,
+          this.setup.map.cellSizeMm,
+          blastRadiusMm,
+        ) > 0
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private gridDistanceSquaredMm(a: GridCoord, b: GridCoord): number {
+    const dxMm = (a.x - b.x) * this.setup.map.cellSizeMm;
+    const dzMm = (a.z - b.z) * this.setup.map.cellSizeMm;
+    return dxMm * dxMm + dzMm * dzMm;
+  }
+
+  private hasCurrentDirectHostileContact(group: GroupState): boolean {
+    return sortedContacts(group.localContacts).some(
+      (contact) =>
+        contact.lastDirectTick === this.state.tick &&
+        this.isHostile(group.factionId, contact.targetFactionId),
+    );
+  }
+
+  private assignArtilleryMission(
+    platform: PlatformState,
+    option: ArtilleryMissionOption,
+  ): ArtilleryFireMissionState {
+    const mission: ArtilleryFireMissionState = {
+      id: option.missionId,
+      platformId: platform.id,
+      weaponComponentId: option.weaponComponentId,
+      fireModeId: option.fireMode.id,
+      assignedAt: this.state.tick,
+      snapshot: {
+        targetGroupId: option.contact.targetGroupId,
+        targetFactionId: option.contact.targetFactionId,
+        targetProfile: option.contact.targetProfile,
+        lastKnown: { ...option.contact.lastKnown },
+        observedAt: option.contact.observedAt,
+        deliveredAt: option.contact.deliveredAt,
+        source: option.contact.intelSource,
+        confidenceBps: option.contact.confidenceBps,
+      },
+      uncertaintyRadiusMm: option.uncertaintyRadiusMm,
+      selectedOffset: { ...option.selectedOffset },
+      plannedImpactCell: { ...option.plannedImpactCell },
+      status: option.fireMode.aimTicks === 0 ? "ready" : "aiming",
+      aimTicksRemaining: option.fireMode.aimTicks,
+    };
+    platform.fireMission = mission;
+    if (platform.deployment) {
+      platform.deployment.missionsAssigned += 1;
+    }
+    this.emit({
+      type: "artillery-mission-changed",
+      missionId: mission.id,
+      platformId: platform.id,
+      groupId: platform.groupId,
+      phase: "assigned",
+    });
+    this.markMeaningfulProgress();
+    return mission;
+  }
+
+  private cancelArtilleryMission(
+    platform: PlatformState,
+    reason: "contact-expired" | "contact-replaced" | "danger-close" | "capability-lost",
+  ): void {
+    const mission = platform.fireMission;
+    if (!mission) {
+      return;
+    }
+    mission.status = "cancelled";
+    this.emit({
+      type: "artillery-mission-changed",
+      missionId: mission.id,
+      platformId: platform.id,
+      groupId: platform.groupId,
+      phase: "cancelled",
+      reason,
+    });
+    platform.fireMissionEvaluation = {
+      evaluatedAt: this.state.tick,
+      reason: reason === "danger-close"
+        ? "ARTILLERY_HOLD_DANGER_CLOSE"
+        : "ARTILLERY_HOLD_NO_LEGAL_CONTACT",
+      candidates: platform.fireMissionEvaluation?.candidates ?? [],
+    };
+    platform.fireMission = undefined;
+    this.markMeaningfulProgress();
+  }
+
+  private holdGroupForArtilleryMission(
+    group: GroupState,
+    platform: PlatformState,
+    mission: ArtilleryFireMissionState,
+  ): void {
+    this.cancelMovement(group);
+    group.action = "engaging";
+    group.decisionReason = platform.deployment?.state === "deployed"
+      ? "ARTILLERY_AIM_INDIRECT_MISSION"
+      : "ARTILLERY_DEPLOY_FOR_MISSION";
+    group.currentTargetId = mission.snapshot.targetGroupId;
+    group.goal = undefined;
+  }
+
   private updatePlatformDeployments(): void {
     for (const platform of [...this.state.platformsById.values()].sort(compareById)) {
       const deployment = platform.deployment;
@@ -1504,6 +2055,19 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private groupNeedsDeployedWeapon(group: GroupState, platform: PlatformState): boolean {
+    if (
+      platform.fireMission &&
+      (platform.fireMission.status === "aiming" || platform.fireMission.status === "ready")
+    ) {
+      const configuration = this.indirectWeaponConfigurations(platform).find(
+        (candidate) =>
+          candidate.weaponState.componentId === platform.fireMission?.weaponComponentId &&
+          candidate.fireMode.id === platform.fireMission?.fireModeId,
+      );
+      if (configuration?.available && configuration.fireMode.requiresDeployedPlatform) {
+        return true;
+      }
+    }
     if (group.action !== "engaging" || !group.currentTargetId) {
       return false;
     }
@@ -1518,12 +2082,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         (capability) => capability.componentId === weaponState.componentId,
       )?.available;
       const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
-      const mode = getPrimaryFireMode(weapon);
+      const mode = weapon.fireModes.find((candidate) => candidate.targeting === "direct");
       return (
         available &&
+        mode !== undefined &&
         mode.requiresDeployedPlatform &&
-        distanceSquared >= this.weaponMinimumRangeCells(weapon) ** 2 &&
-        distanceSquared <= this.weaponRangeCells(weapon) ** 2
+        distanceSquared >= this.fireModeMinimumRangeCells(mode) ** 2 &&
+        distanceSquared <= this.fireModeRangeCells(mode) ** 2
       );
     });
   }
@@ -2202,9 +2767,11 @@ class StageOneBattleSimulation implements BattleSimulation {
           targetProfile: message.targetProfile,
           lastKnown: { ...message.lastKnown },
           observedAt: message.observedAt,
+          deliveredAt: message.deliveryAt,
           lastDirectTick: -1,
           confidenceBps: message.confidenceBps,
           sourceGroupId: message.sourceGroupId,
+          intelSource: message.intelSource,
         });
         this.emit({
           type: "intel-delivered",
@@ -2282,9 +2849,11 @@ class StageOneBattleSimulation implements BattleSimulation {
               targetProfile: this.targetProfileForGroup(target),
               lastKnown: { ...target.cell },
               observedAt: this.state.tick,
+              deliveredAt: this.state.tick,
               lastDirectTick: this.state.tick,
               confidenceBps: 10_000,
               sourceGroupId: observer.id,
+              intelSource: "local-direct",
             });
             this.queueIntel(observer, target, detection);
           }
@@ -2373,6 +2942,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         deliveryAt: this.state.tick + recipient.deliveryDelayTicks,
         lastKnown: { ...target.cell },
         confidenceBps: 10_000,
+        intelSource: recipient.factionId === observer.factionId
+          ? "same-faction"
+          : "allied",
       });
       this.state.intelSequence += 1;
       if (recipient.factionId === observer.factionId) {
@@ -3777,11 +4349,12 @@ class StageOneBattleSimulation implements BattleSimulation {
     weapon: WeaponTemplate,
     fireMode: Extract<WeaponFireModeDefinition, { trajectory: "logical-projectile" }>,
     intendedAimCell: GridCoord,
+    plannedImpactCell: GridCoord,
     shotOrdinal: number,
   ): LogicalProjectileState {
     const totalFlightTicks = projectileFlightTicks(
       origin,
-      intendedAimCell,
+      plannedImpactCell,
       this.setup.map.cellSizeMm,
       fireMode.projectileSpeedMmPerTick,
     );
@@ -3796,7 +4369,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       scheduledGroundImpactAt: this.state.tick + totalFlightTicks,
       origin: { ...origin },
       intendedAimCell: { ...intendedAimCell },
-      plannedImpactCell: { ...intendedAimCell },
+      plannedImpactCell: { ...plannedImpactCell },
       totalFlightTicks,
       flightTicksElapsed: 0,
       muzzleHeightMm: fireMode.muzzleHeightMm,
@@ -3810,6 +4383,115 @@ class StageOneBattleSimulation implements BattleSimulation {
       ),
       suppressionBps: weapon.suppressionBps,
     };
+  }
+
+  private releaseReadyArtilleryMission(
+    group: GroupState,
+    platform: PlatformState,
+    shotCounts: Map<string, number>,
+    projectileIdsByShotKey: Map<string, string[]>,
+    fireModeIdByShotKey: Map<string, string>,
+  ): boolean {
+    const mission = platform.fireMission;
+    if (!mission || mission.status !== "ready") {
+      return false;
+    }
+    const configuration = this.indirectWeaponConfigurations(platform).find(
+      (candidate) =>
+        candidate.weaponState.componentId === mission.weaponComponentId &&
+        candidate.fireMode.id === mission.fireModeId,
+    );
+    if (!configuration?.available) {
+      this.cancelArtilleryMission(platform, "capability-lost");
+      return false;
+    }
+    const { weaponState, weapon, fireMode } = configuration;
+    if (
+      fireMode.requiresDeployedPlatform &&
+      platform.deployment?.state !== "deployed"
+    ) {
+      return false;
+    }
+    if (
+      !this.isHostile(group.factionId, mission.snapshot.targetFactionId) ||
+      this.state.tick - mission.snapshot.observedAt >
+        fireMode.uncertainty.maximumContactAgeTicks
+    ) {
+      this.cancelArtilleryMission(platform, "contact-expired");
+      return false;
+    }
+    if (weaponState.magazineRounds === 0) {
+      if (weaponState.reloadTicksRemaining === 0) {
+        weaponState.reloadTicksRemaining = weapon.reloadTicks;
+      }
+      return false;
+    }
+    if (weaponState.reloadTicksRemaining > 0 || weaponState.shotCooldownTicks > 0) {
+      return false;
+    }
+
+    const uncertainty = calculateArtilleryUncertainty(
+      fireMode.uncertainty,
+      mission.snapshot.source,
+      this.state.tick,
+      mission.snapshot.observedAt,
+      mission.snapshot.confidenceBps,
+    );
+    const scatter = this.selectArtilleryScatter(
+      mission.id,
+      `${platform.id}:${weaponState.componentId}`,
+      mission.snapshot.lastKnown,
+      uncertainty.radiusMm,
+      mission.assignedAt,
+    );
+    mission.uncertaintyRadiusMm = uncertainty.radiusMm;
+    mission.selectedOffset = { ...scatter.offset };
+    mission.plannedImpactCell = { ...scatter.cell };
+    if (this.isArtilleryDangerClose(group, scatter.cell, fireMode.blastRadiusMm)) {
+      platform.fireMissionEvaluation = {
+        evaluatedAt: this.state.tick,
+        reason: "ARTILLERY_HOLD_DANGER_CLOSE",
+        selectedTargetGroupId: mission.snapshot.targetGroupId,
+        candidates: platform.fireMissionEvaluation?.candidates ?? [],
+      };
+      this.cancelArtilleryMission(platform, "danger-close");
+      return false;
+    }
+
+    weaponState.magazineRounds -= 1;
+    weaponState.shotCooldownTicks = weapon.shotIntervalTicks;
+    if (platform.deployment) {
+      platform.deployment.indirectRoundsFired += 1;
+    }
+    mission.status = "released";
+    this.emit({
+      type: "artillery-mission-changed",
+      missionId: mission.id,
+      platformId: platform.id,
+      groupId: platform.groupId,
+      phase: "released",
+    });
+    const projectile = this.createLogicalProjectile(
+      group,
+      `${platform.id}:${weaponState.componentId}`,
+      platform.id,
+      platform.cell,
+      weapon,
+      fireMode,
+      mission.snapshot.lastKnown,
+      scatter.cell,
+      0,
+    );
+    this.state.projectiles.push(projectile);
+    const shotKey = `${group.id}\u0000${mission.snapshot.targetGroupId}`;
+    shotCounts.set(shotKey, (shotCounts.get(shotKey) ?? 0) + 1);
+    projectileIdsByShotKey.set(shotKey, [
+      ...(projectileIdsByShotKey.get(shotKey) ?? []),
+      projectile.id,
+    ]);
+    fireModeIdByShotKey.set(shotKey, fireMode.id);
+    group.lastFiredTick = this.state.tick;
+    return true;
   }
 
   private advanceLogicalProjectiles(): ProjectileImpactIntent[] {
@@ -3865,6 +4547,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     const projectileIdsByShotKey = new Map<string, string[]>();
     const fireModeIdByShotKey = new Map<string, string>();
     let logicalProjectilesCreated = 0;
+    const indirectReleasedPlatformIds = new Set<string>();
     const firingGroups = allowFiring ? this.state.groups : [];
     for (const group of firingGroups) {
       for (const member of group.members) {
@@ -3883,6 +4566,20 @@ class StageOneBattleSimulation implements BattleSimulation {
               getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
             );
           }
+        }
+      }
+      for (const platform of [...group.platforms].sort(compareById)) {
+        if (
+          this.releaseReadyArtilleryMission(
+            group,
+            platform,
+            shotCounts,
+            projectileIdsByShotKey,
+            fireModeIdByShotKey,
+          )
+        ) {
+          indirectReleasedPlatformIds.add(platform.id);
+          logicalProjectilesCreated += 1;
         }
       }
       const advancingAttacker =
@@ -3961,6 +4658,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             weapon,
             fireMode,
             target.cell,
+            target.cell,
             shotOrdinal,
           );
           this.state.projectiles.push(projectile);
@@ -3988,6 +4686,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         shotOrdinal += 1;
       }
       for (const platform of group.platforms) {
+        if (indirectReleasedPlatformIds.has(platform.id)) {
+          continue;
+        }
         const capabilities = this.platformCapabilities(platform);
         for (const weaponState of [...platform.weaponStates].sort((a, b) =>
           compareStrings(a.componentId, b.componentId),
@@ -4000,7 +4701,12 @@ class StageOneBattleSimulation implements BattleSimulation {
             continue;
           }
           const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
-          const fireMode = getPrimaryFireMode(weapon);
+          const fireMode = weapon.fireModes.find(
+            (candidate) => candidate.targeting === "direct",
+          );
+          if (!fireMode) {
+            continue;
+          }
           if (
             fireMode.requiresDeployedPlatform &&
             platform.deployment?.state !== "deployed"
@@ -4050,6 +4756,7 @@ class StageOneBattleSimulation implements BattleSimulation {
               platform.cell,
               weapon,
               fireMode,
+              target.cell,
               target.cell,
               shotOrdinal,
             );
@@ -5673,27 +6380,35 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private weaponRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
-    return Math.max(
-      0,
-      Math.floor(getPrimaryFireMode(weapon).maximumRangeMm / this.setup.map.cellSizeMm),
-    );
+    const mode = weapon.fireModes.find((candidate) => candidate.targeting === "direct");
+    return mode ? this.fireModeRangeCells(mode) : 0;
   }
 
   private weaponMinimumRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
-    return Math.max(
-      0,
-      Math.ceil(getPrimaryFireMode(weapon).minimumRangeMm / this.setup.map.cellSizeMm),
-    );
+    const mode = weapon.fireModes.find((candidate) => candidate.targeting === "direct");
+    return mode ? this.fireModeMinimumRangeCells(mode) : 0;
   }
 
   private weaponPreferredRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
+    const mode = weapon.fireModes.find((candidate) => candidate.targeting === "direct");
+    if (!mode) {
+      return 0;
+    }
     return Math.min(
       this.setup.rules.preferredRangeCells,
       Math.max(
         0,
-        Math.floor(getPrimaryFireMode(weapon).optimalRangeMm / this.setup.map.cellSizeMm),
+        Math.floor(mode.optimalRangeMm / this.setup.map.cellSizeMm),
       ),
     );
+  }
+
+  private fireModeRangeCells(mode: WeaponFireModeDefinition): number {
+    return Math.max(0, Math.floor(mode.maximumRangeMm / this.setup.map.cellSizeMm));
+  }
+
+  private fireModeMinimumRangeCells(mode: WeaponFireModeDefinition): number {
+    return Math.max(0, Math.ceil(mode.minimumRangeMm / this.setup.map.cellSizeMm));
   }
 
   private groupWeaponRangeCells(group: GroupState): number {
@@ -6091,9 +6806,11 @@ function addContactToHash(hasher: StateHasher, contact: ContactState): void {
   hasher.addNumber(contact.lastKnown.x);
   hasher.addNumber(contact.lastKnown.z);
   hasher.addNumber(contact.observedAt);
+  hasher.addNumber(contact.deliveredAt ?? contact.observedAt);
   hasher.addNumber(contact.lastDirectTick);
   hasher.addNumber(contact.confidenceBps);
   hasher.addString(contact.sourceGroupId);
+  hasher.addString(contact.intelSource ?? "local-direct");
 }
 
 function hashEffectDefinition(hasher: StateHasher, effect: EffectDefinition): void {

@@ -21,6 +21,7 @@ import {
   BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_INDIRECT_BATTLE_RULES_VERSION,
   PRE_COMBINED_ARMS_BATTLE_RULES_VERSION,
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
@@ -90,6 +91,9 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isPreProjectile =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_PROJECTILE_BATTLE_RULES_VERSION;
+  const isPreIndirect =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_INDIRECT_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
@@ -118,7 +122,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreCombinedArms ||
     isPreStableVehicleMovement ||
     isPreArtillery ||
-    isPreProjectile
+    isPreProjectile ||
+    isPreIndirect
   ) {
     if (
       candidate.content?.contentVersion !== "content-2" &&
@@ -162,7 +167,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreCombinedArms ||
     isPreStableVehicleMovement ||
     isPreArtillery ||
-    isPreProjectile
+    isPreProjectile ||
+    isPreIndirect
   ) {
     return {
       ...inputSetup,
@@ -178,7 +184,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
           isPreCombinedArms ||
           isPreStableVehicleMovement ||
           isPreArtillery ||
-          isPreProjectile
+          isPreProjectile ||
+          isPreIndirect
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),

@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
-export const BATTLE_RULES_VERSION = "stage-3.7" as const;
+export const BATTLE_RULES_VERSION = "stage-3.8" as const;
+/** The authoritative projectile contract before indirect fire missions. */
+export const PRE_INDIRECT_BATTLE_RULES_VERSION = "stage-3.7" as const;
 /** The deployment-capable artillery rules before authoritative logical projectiles. */
 export const PRE_PROJECTILE_BATTLE_RULES_VERSION = "stage-3.6" as const;
 /** The content-3 artillery contract before platform deployment behavior. */
@@ -315,6 +317,7 @@ export interface MemberTemplate {
 export type WeaponTargetDomain = "ground" | "air";
 export type WeaponTrajectory = "resolved" | "logical-projectile";
 export type WeaponTargeting = "direct" | "indirect";
+export type FireMissionIntelSource = "local-direct" | "same-faction" | "allied";
 
 export interface FirePattern {
   readonly kind: "single" | "burst";
@@ -965,9 +968,43 @@ export interface PlatformWeaponInspection extends PlatformCapabilityInspection {
 
 export type PlatformDeploymentState = "packed" | "deploying" | "deployed" | "packing";
 
+export interface FireMissionEvaluationCandidateInspection {
+  readonly targetGroupId: GroupId;
+  readonly source: FireMissionIntelSource;
+  readonly ageTicks: Tick;
+  readonly uncertaintyRadiusMm: number;
+  readonly weaponCompatible: boolean;
+  readonly dangerClose: boolean;
+  readonly score: number;
+  readonly rejectionReason?: string;
+}
+
+export interface FireMissionEvaluationInspection {
+  readonly evaluatedAt: Tick;
+  readonly reason: string;
+  readonly selectedTargetGroupId?: GroupId;
+  readonly candidates: readonly FireMissionEvaluationCandidateInspection[];
+}
+
+export interface ArtilleryMissionInspection {
+  readonly id: string;
+  readonly fireModeId: string;
+  readonly targetGroupId: GroupId;
+  readonly source: FireMissionIntelSource;
+  readonly observedAt: Tick;
+  readonly deliveredAt: Tick;
+  readonly confidenceBps: number;
+  readonly uncertaintyRadiusMm: number;
+  readonly selectedOffset: { readonly dx: number; readonly dz: number };
+  readonly plannedImpactCell: GridCoord;
+  readonly aimTicksRemaining: Tick;
+}
+
 export interface ArtilleryPlatformInspection {
   readonly deployment: PlatformDeploymentState;
   readonly deploymentTicksRemaining: Tick;
+  readonly mission?: ArtilleryMissionInspection;
+  readonly evaluation?: FireMissionEvaluationInspection;
 }
 
 export interface PlatformInspection extends PlatformSummaryInspection {
@@ -1108,6 +1145,18 @@ export type BattleEvent =
       readonly to: PlatformDeploymentState;
       readonly phase: "started" | "completed" | "cancelled";
       readonly reason?: "move-requested" | "capability-lost" | "platform-unavailable";
+    })
+  | (BattleEventBase & {
+      readonly type: "artillery-mission-changed";
+      readonly missionId: string;
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly phase: "assigned" | "released" | "cancelled";
+      readonly reason?:
+        | "contact-expired"
+        | "contact-replaced"
+        | "danger-close"
+        | "capability-lost";
     })
   | (BattleEventBase & {
       readonly type: "embarkation-changed";

@@ -12,13 +12,14 @@ import {
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+  PRE_INDIRECT_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION,
-  PRE_PROJECTILE_BATTLE_RULES_VERSION,
   STATIC_OBJECT_DEFINITIONS,
   cloneBattleContent,
   createDefaultBattleContent,
   createSimulation,
+  defaultRelation,
   migrateBattleSetup,
   validateBattleContent,
   validateBattleSetup,
@@ -33,6 +34,8 @@ import type {
   WeaponFireModeDefinition,
 } from "./types";
 import {
+  artilleryScatterCandidates,
+  calculateArtilleryUncertainty,
   firstProjectileCollision,
   projectileFlightTicks,
   projectilePositionAtElapsed,
@@ -73,6 +76,39 @@ describe("artillery trajectory rules", () => {
       { xMm: 34_000, zMm: 42_000, heightMm: 2_000 },
     )).toEqual({ x: 6, z: 10 });
   });
+
+  it("derives source-aware uncertainty and stable in-bounds scatter candidates", () => {
+    const rule = {
+      baseScatterMm: 4_000,
+      ageScatterMmPerSecond: 1_000,
+      sameFactionRelayPenaltyMm: 2_000,
+      alliedRelayPenaltyMm: 6_000,
+      zeroConfidencePenaltyMm: 12_000,
+      maximumScatterMm: 40_000,
+      maximumContactAgeTicks: 200,
+    };
+    expect(calculateArtilleryUncertainty(rule, "local-direct", 100, 60, 7_500)).toEqual({
+      ageTicks: 40,
+      baseScatterMm: 4_000,
+      ageScatterMm: 2_000,
+      relayPenaltyMm: 0,
+      confidencePenaltyMm: 3_000,
+      radiusMm: 9_000,
+    });
+    expect(calculateArtilleryUncertainty(rule, "same-faction", 100, 60, 7_500).radiusMm)
+      .toBe(11_000);
+    expect(calculateArtilleryUncertainty(rule, "allied", 100, 60, 7_500).radiusMm)
+      .toBe(15_000);
+
+    const map = createArtillerySetup().map;
+    expect(artilleryScatterCandidates(map, { x: 10, z: 10 }, 4_000)).toEqual([
+      { cell: { x: 10, z: 10 }, offset: { dx: 0, dz: 0 }, distanceSquared: 0 },
+      { cell: { x: 10, z: 9 }, offset: { dx: 0, dz: -1 }, distanceSquared: 1 },
+      { cell: { x: 9, z: 10 }, offset: { dx: -1, dz: 0 }, distanceSquared: 1 },
+      { cell: { x: 11, z: 10 }, offset: { dx: 1, dz: 0 }, distanceSquared: 1 },
+      { cell: { x: 10, z: 11 }, offset: { dx: 0, dz: 1 }, distanceSquared: 1 },
+    ]);
+  });
 });
 
 describe("artillery content contract", () => {
@@ -110,11 +146,11 @@ describe("artillery content contract", () => {
     expect(() => validateBattleSetup(migrated)).not.toThrow();
   });
 
-  it("migrates the deployment-only rules contract to stage-3.7", () => {
+  it("migrates the direct-projectile rules contract to stage-3.8", () => {
     const current = createArtillerySetup();
     const migrated = migrateBattleSetup({
       ...current,
-      rulesVersion: PRE_PROJECTILE_BATTLE_RULES_VERSION,
+      rulesVersion: PRE_INDIRECT_BATTLE_RULES_VERSION,
     });
 
     expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
@@ -144,7 +180,7 @@ describe("artillery content contract", () => {
       requiredStationIds: ["gunner"],
       requiredComponentIds: ["primary-weapon"],
     });
-    expect(weapon.fireModes).toEqual([
+    expect(weapon.fireModes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "direct",
         targeting: "direct",
@@ -153,11 +189,18 @@ describe("artillery content contract", () => {
         projectileSpeedMmPerTick: expect.any(Number),
         blastRadiusMm: expect.any(Number),
       }),
-    ]);
+      expect.objectContaining({
+        id: "indirect",
+        targeting: "indirect",
+        trajectory: "logical-projectile",
+        requiresDeployedPlatform: true,
+        uncertainty: expect.objectContaining({ maximumContactAgeTicks: expect.any(Number) }),
+      }),
+    ]));
     expect(() => validateBattleContent(content)).not.toThrow();
   });
 
-  it("accepts direct logical projectiles but rejects indirect fire and invalid deployment references", () => {
+  it("accepts indirect logical fire but rejects invalid uncertainty and deployment references", () => {
     const projectileBase = cloneBattleContent(createDefaultBattleContent());
     const artilleryWeapon = projectileBase.weaponTemplates[DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID]!;
     const projectileContent: BattleContentBundle = {
@@ -208,7 +251,45 @@ describe("artillery content contract", () => {
         },
       },
     };
-    expect(() => validateBattleContent(indirectContent)).toThrow(/not supported/i);
+    expect(() => validateBattleContent(indirectContent)).not.toThrow();
+
+    const invalidUncertainty: BattleContentBundle = {
+      ...indirectContent,
+      weaponTemplates: {
+        ...indirectContent.weaponTemplates,
+        [artilleryWeapon.id]: {
+          ...indirectContent.weaponTemplates[artilleryWeapon.id]!,
+          fireModes: [{
+            ...(indirectContent.weaponTemplates[artilleryWeapon.id]!.fireModes[0] as Extract<
+              WeaponFireModeDefinition,
+              { targeting: "indirect" }
+            >),
+            uncertainty: {
+              ...(indirectContent.weaponTemplates[artilleryWeapon.id]!.fireModes[0] as Extract<
+                WeaponFireModeDefinition,
+                { targeting: "indirect" }
+              >).uncertainty,
+              maximumContactAgeTicks: 0,
+            },
+          }],
+        },
+      },
+    };
+    expect(() => validateBattleContent(invalidUncertainty)).toThrow(/uncertainty/i);
+
+    const invalidUndeployedIndirect: BattleContentBundle = {
+      ...indirectContent,
+      weaponTemplates: {
+        ...indirectContent.weaponTemplates,
+        [artilleryWeapon.id]: {
+          ...indirectContent.weaponTemplates[artilleryWeapon.id]!,
+          fireModes: indirectContent.weaponTemplates[artilleryWeapon.id]!.fireModes.map(
+            (mode) => ({ ...mode, requiresDeployedPlatform: false }),
+          ),
+        },
+      },
+    };
+    expect(() => validateBattleContent(invalidUndeployedIndirect)).toThrow(/not supported/i);
 
     const invalidDeploymentBase = cloneBattleContent(createDefaultBattleContent());
     const platform = invalidDeploymentBase.platformTemplates[DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID]!;
@@ -296,6 +377,308 @@ describe("artillery-direct-002", () => {
     expect(artilleryInternals(simulation).state.projectiles).toHaveLength(0);
     expect(targetHealthStates(simulation).some((health) => health !== "healthy")).toBe(true);
   });
+});
+
+describe("artillery-intel-003", () => {
+  it("preserves same-faction source and delivery tick through the intel queue", () => {
+    const base = createIndirectArtillerySetup();
+    const simulation = createSimulation({
+      ...base,
+      battleId: "artillery-intel-relay",
+      groups: [...base.groups, createObserverGroup()],
+    });
+    const observer = artilleryInternals(simulation).state.groupsById.get("ember-observer")!;
+    for (const member of observer.members) {
+      member.shotCooldownTicks = 1_000;
+    }
+    let deliveredAt: number | undefined;
+    let mission: {
+      readonly source: string;
+      readonly observedAt: number;
+      readonly deliveredAt: number;
+    } | undefined;
+
+    for (let tick = 0; tick < 80 && !mission; tick += 1) {
+      simulation.step();
+      const events = simulation.drainEvents();
+      deliveredAt ??= events.find(
+        (event) =>
+          event.type === "intel-delivered" &&
+          event.factionId === "ember" &&
+          event.targetGroupId === "azure-target",
+      )?.tick;
+      const inspection = simulation.inspect("ember-artillery-platform", "ember");
+      if (inspection?.kind === "platform" && inspection.artillery?.mission) {
+        mission = inspection.artillery.mission;
+      }
+    }
+
+    expect(deliveredAt).toBeDefined();
+    expect(mission).toMatchObject({
+      source: "same-faction",
+      deliveredAt,
+    });
+    expect(mission!.deliveredAt).toBeGreaterThan(mission!.observedAt);
+  });
+
+  it("binds delivered intel to one deterministic indirect mission and freezes the snapshot", () => {
+    const setup = createIndirectArtillerySetup();
+    const simulation = createSimulation(setup);
+    seedFactionContact(simulation, {
+      targetGroupId: "azure-target",
+      targetFactionId: "azure",
+      lastKnown: { x: 18, z: 10 },
+      observedAt: 0,
+      deliveredAt: 0,
+      intelSource: "same-faction",
+    });
+    const events: ReturnType<typeof simulation.drainEvents>[number][] = [];
+    let assignedMissionId: string | undefined;
+    let releasedAt: number | undefined;
+
+    for (let tick = 0; tick < 100 && releasedAt === undefined; tick += 1) {
+      simulation.step();
+      const inspection = simulation.inspect("ember-artillery-platform", "ember");
+      if (inspection?.kind === "platform" && inspection.artillery?.mission) {
+        assignedMissionId ??= inspection.artillery.mission.id;
+        expect(inspection.artillery.mission).toMatchObject({
+          fireModeId: "indirect",
+          targetGroupId: "azure-target",
+          source: "same-faction",
+          observedAt: 0,
+          deliveredAt: 0,
+        });
+        seedFactionContact(simulation, {
+          targetGroupId: "azure-target",
+          targetFactionId: "azure",
+          lastKnown: { x: 16, z: 8 },
+          observedAt: simulation.tick,
+          deliveredAt: simulation.tick,
+          intelSource: "same-faction",
+        });
+      }
+      const tickEvents = simulation.drainEvents();
+      events.push(...tickEvents);
+      releasedAt = tickEvents.find(
+        (event) =>
+          event.type === "weapon-fired" &&
+          event.groupId === "ember-artillery" &&
+          event.fireModeId === "indirect",
+      )?.tick;
+    }
+
+    expect(assignedMissionId).toBeDefined();
+    expect(releasedAt).toBeDefined();
+    const assignedIndex = events.findIndex(
+      (event) => event.type === "artillery-mission-changed" && event.phase === "assigned",
+    );
+    const releasedIndex = events.findIndex(
+      (event) => event.type === "artillery-mission-changed" && event.phase === "released",
+    );
+    const firedIndex = events.findIndex(
+      (event) => event.type === "weapon-fired" && event.fireModeId === "indirect",
+    );
+    expect(assignedIndex).toBeGreaterThanOrEqual(0);
+    expect(releasedIndex).toBeGreaterThan(assignedIndex);
+    expect(firedIndex).toBeGreaterThan(releasedIndex);
+
+    const projectile = artilleryInternals(simulation).state.projectiles[0]!;
+    expect(projectile).toMatchObject({
+      fireModeId: "indirect",
+      intendedAimCell: { x: 18, z: 10 },
+      launchedAt: releasedAt,
+    });
+    const mode = setup.content.weaponTemplates[DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID]!
+      .fireModes.find(
+        (candidate): candidate is Extract<WeaponFireModeDefinition, { targeting: "indirect" }> =>
+          candidate.targeting === "indirect",
+      )!;
+    const releasedInspection = simulation.inspect("ember-artillery-platform", "ember");
+    if (releasedInspection?.kind !== "platform" || !releasedInspection.artillery?.mission) {
+      throw new Error("Expected the released mission to remain inspectable for one tick.");
+    }
+    const expectedUncertainty = calculateArtilleryUncertainty(
+      mode.uncertainty,
+      "same-faction",
+      releasedAt!,
+      0,
+      releasedInspection.artillery.mission.confidenceBps,
+    );
+    expect(releasedInspection).toMatchObject({
+      artillery: {
+        mission: {
+          id: assignedMissionId,
+          uncertaintyRadiusMm: expectedUncertainty.radiusMm,
+          plannedImpactCell: projectile.plannedImpactCell,
+        },
+      },
+    });
+    const dxMm = (projectile.plannedImpactCell.x - 18) * setup.map.cellSizeMm;
+    const dzMm = (projectile.plannedImpactCell.z - 10) * setup.map.cellSizeMm;
+    expect(dxMm * dxMm + dzMm * dzMm).toBeLessThanOrEqual(
+      expectedUncertainty.radiusMm ** 2,
+    );
+  });
+
+  it("artillery-no-leak-004: keeps mission decisions and scatter independent from hidden target truth", () => {
+    const setup = createIndirectArtillerySetup();
+    const first = createSimulation(setup);
+    const second = createSimulation(setup);
+    for (const simulation of [first, second]) {
+      seedFactionContact(simulation, {
+        targetGroupId: "azure-target",
+        targetFactionId: "azure",
+        lastKnown: { x: 18, z: 10 },
+        observedAt: 0,
+        deliveredAt: 0,
+        intelSource: "same-faction",
+      });
+    }
+    const hiddenTarget = artilleryInternals(second).state.groupsById.get("azure-target")!;
+    hiddenTarget.cell.x = 22;
+    hiddenTarget.cell.z = 4;
+
+    let fired = false;
+    for (let tick = 0; tick < 100 && !fired; tick += 1) {
+      first.step();
+      second.step();
+      expect(first.inspect("ember-artillery-platform", "ember")?.kind).toBe("platform");
+      expect(second.inspect("ember-artillery-platform", "ember")?.kind).toBe("platform");
+      const firstInspection = first.inspect("ember-artillery-platform", "ember");
+      const secondInspection = second.inspect("ember-artillery-platform", "ember");
+      if (firstInspection?.kind === "platform" && secondInspection?.kind === "platform") {
+        expect(secondInspection.artillery).toEqual(firstInspection.artillery);
+      }
+      const firstEvents = first.drainEvents().filter(isArtilleryDecisionEvent);
+      const secondEvents = second.drainEvents().filter(isArtilleryDecisionEvent);
+      expect(secondEvents).toEqual(firstEvents);
+      fired = firstEvents.some(
+        (event) => event.type === "weapon-fired" && event.fireModeId === "indirect",
+      );
+    }
+
+    expect(fired).toBe(true);
+    const firstProjectile = artilleryInternals(first).state.projectiles[0]!;
+    const secondProjectile = artilleryInternals(second).state.projectiles[0]!;
+    expect({
+      intendedAimCell: secondProjectile.intendedAimCell,
+      plannedImpactCell: secondProjectile.plannedImpactCell,
+      launchedAt: secondProjectile.launchedAt,
+      scheduledGroundImpactAt: secondProjectile.scheduledGroundImpactAt,
+    }).toEqual({
+      intendedAimCell: firstProjectile.intendedAimCell,
+      plannedImpactCell: firstProjectile.plannedImpactCell,
+      launchedAt: firstProjectile.launchedAt,
+      scheduledGroundImpactAt: firstProjectile.scheduledGroundImpactAt,
+    });
+  });
+
+  it("rejects known danger close and neutral contacts without consulting hidden neutral truth", () => {
+    const dangerSetup = createIndirectArtillerySetup(true);
+    const danger = createSimulation(dangerSetup);
+    seedFactionContact(danger, {
+      targetGroupId: "azure-target",
+      targetFactionId: "azure",
+      lastKnown: { x: 18, z: 10 },
+      observedAt: 0,
+      deliveredAt: 0,
+      intelSource: "same-faction",
+    });
+    danger.step(5);
+    expect(danger.inspect("ember-artillery-platform", "ember")).toMatchObject({
+      artillery: {
+        mission: undefined,
+        evaluation: { reason: "ARTILLERY_HOLD_DANGER_CLOSE" },
+      },
+    });
+    expect(danger.drainEvents().some(
+      (event) => event.type === "artillery-mission-changed" && event.phase === "assigned",
+    )).toBe(false);
+
+    const multiFactionSetup = createMultiFactionIndirectSetup();
+    const hiddenNeutral = createSimulation(multiFactionSetup);
+    seedFactionContact(hiddenNeutral, {
+      targetGroupId: "azure-target",
+      targetFactionId: "azure",
+      lastKnown: { x: 18, z: 10 },
+      observedAt: 0,
+      deliveredAt: 0,
+      intelSource: "same-faction",
+    });
+    seedFactionContact(hiddenNeutral, {
+      targetGroupId: "olive-neutral",
+      targetFactionId: "olive",
+      lastKnown: { x: 2, z: 2 },
+      observedAt: 0,
+      deliveredAt: 0,
+      intelSource: "allied",
+    });
+    hiddenNeutral.step(5);
+    const inspection = hiddenNeutral.inspect("ember-artillery-platform", "ember");
+    expect(inspection).toMatchObject({
+      artillery: {
+        mission: { targetGroupId: "azure-target" },
+        evaluation: { selectedTargetGroupId: "azure-target" },
+      },
+    });
+    if (inspection?.kind === "platform") {
+      expect(inspection.artillery?.evaluation?.candidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          targetGroupId: "olive-neutral",
+          rejectionReason: "CONTACT_NOT_HOSTILE",
+        }),
+      ]));
+    }
+  });
+});
+
+describe("artillery long scenarios", () => {
+  it.each(["conflict", "defense"] as const)(
+    "finishes a deterministic %s battle after indirect missions",
+    (mode) => {
+      const base = createIndirectArtillerySetup();
+      const setup: BattleSetup = {
+        ...base,
+        battleId: `artillery-long-${mode}`,
+        mode: mode === "conflict"
+          ? { kind: "conflict" }
+          : {
+              kind: "defense",
+              attackerFactionId: "azure",
+              defenderFactionId: "ember",
+              objective: {
+                id: "artillery-objective",
+                center: { x: 12, z: 10 },
+                radiusCells: 2,
+              },
+            },
+      };
+      const first = createSimulation(setup);
+      const second = createSimulation(setup);
+      for (const simulation of [first, second]) {
+        seedFactionContact(simulation, {
+          targetGroupId: "azure-target",
+          targetFactionId: "azure",
+          lastKnown: { x: 18, z: 10 },
+          observedAt: 0,
+          deliveredAt: 0,
+          intelSource: "same-faction",
+        });
+        simulation.step(500);
+      }
+
+      expect(second.getStateHash()).toBe(first.getStateHash());
+      expect(second.drainEvents()).toEqual(first.drainEvents());
+      expect(second.getResult()).toEqual(first.getResult());
+      expect(first.status).toBe("finished");
+      const artillery = first.getResult()?.platforms.find(
+        (platform) => platform.id === "ember-artillery-platform",
+      )?.artillery;
+      expect(artillery?.missionsAssigned).toBeGreaterThan(0);
+      expect(artillery?.indirectRoundsFired).toBeGreaterThan(0);
+      expect(artilleryInternals(first).state.projectiles).toEqual([]);
+    },
+  );
 });
 
 describe("artillery-impact-005", () => {
@@ -603,6 +986,62 @@ function createArtillerySetup(): BattleSetup {
   };
 }
 
+function createIndirectArtillerySetup(dangerClose = false): BattleSetup {
+  const base = createArtillerySetup();
+  const target = createTargetGroup();
+  const groups: GroupSpawn[] = [
+    createArtilleryGroup(),
+    {
+      ...target,
+      spawn: { x: 20, z: 10 },
+      evacuation: { x: 22, z: 10 },
+    },
+  ];
+  if (dangerClose) {
+    groups.push({
+      ...createFriendlyGroup(),
+      spawn: { x: 18, z: 10 },
+      evacuation: { x: 1, z: 11 },
+    });
+  }
+  return {
+    ...base,
+    battleId: dangerClose ? "artillery-danger-close" : "artillery-intel-003",
+    groups,
+  };
+}
+
+function createMultiFactionIndirectSetup(): BattleSetup {
+  const base = createIndirectArtillerySetup();
+  return {
+    ...base,
+    battleId: "artillery-multi-faction-negative",
+    factions: [
+      ...base.factions,
+      { id: "olive", displayName: "Olive", color: "#71824a" },
+    ],
+    relations: [
+      defaultRelation("ember", "azure", "hostile"),
+      defaultRelation("ember", "olive", "neutral"),
+      defaultRelation("azure", "olive", "neutral"),
+    ],
+    groups: [
+      ...base.groups,
+      {
+        ...createTargetGroup(),
+        id: "olive-neutral",
+        factionId: "olive",
+        spawn: { x: 18, z: 10 },
+        evacuation: { x: 22, z: 12 },
+        members: Array.from({ length: 8 }, (_, index) => ({
+          id: `olive-neutral-member-${index + 1}`,
+          memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+        })),
+      },
+    ],
+  };
+}
+
 function createArtilleryGroup(): GroupSpawn {
   return {
     id: "ember-artillery",
@@ -660,6 +1099,21 @@ function createFriendlyGroup(): GroupSpawn {
   };
 }
 
+function createObserverGroup(): GroupSpawn {
+  return {
+    id: "ember-observer",
+    factionId: "ember",
+    groupTemplateId: DEFAULT_GROUP_TEMPLATE_ID,
+    spawn: { x: 14, z: 10 },
+    evacuation: { x: 1, z: 8 },
+    members: Array.from({ length: 8 }, (_, index) => ({
+      id: `ember-observer-member-${index + 1}`,
+      memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+    })),
+    platforms: [],
+  };
+}
+
 function targetHealthStates(
   simulation: ReturnType<typeof createSimulation>,
 ): string[] {
@@ -699,11 +1153,47 @@ function prepareAzureDirectFireOnNextImpact(
     targetProfile: "personnel",
     lastKnown: { ...target.cell },
     observedAt: internals.state.tick,
+    deliveredAt: internals.state.tick,
     lastDirectTick: internals.state.tick,
     confidenceBps: 10_000,
     sourceGroupId: shooter.id,
+    intelSource: "local-direct",
   });
   return true;
+}
+
+function seedFactionContact(
+  simulation: ReturnType<typeof createSimulation>,
+  contact: {
+    readonly targetGroupId: string;
+    readonly targetFactionId: string;
+    readonly lastKnown: { readonly x: number; readonly z: number };
+    readonly observedAt: number;
+    readonly deliveredAt: number;
+    readonly intelSource: "local-direct" | "same-faction" | "allied";
+  },
+): void {
+  artilleryInternals(simulation).state.factionKnowledge.get("ember")!.contacts.set(
+    contact.targetGroupId,
+    {
+      ...contact,
+      targetProfile: "personnel",
+      lastKnown: { ...contact.lastKnown },
+      lastDirectTick: -1,
+      confidenceBps: 10_000,
+      sourceGroupId: "ember-observer",
+    },
+  );
+}
+
+function isArtilleryDecisionEvent(
+  event: ReturnType<ReturnType<typeof createSimulation>["drainEvents"]>[number],
+): boolean {
+  return (
+    event.type === "artillery-mission-changed" ||
+    event.type === "platform-deployment-changed" ||
+    (event.type === "weapon-fired" && event.groupId === "ember-artillery")
+  );
 }
 
 function resolvePreparedImpact(
@@ -782,9 +1272,11 @@ function artilleryInternals(simulation: ReturnType<typeof createSimulation>) {
           targetProfile: "personnel" | "platform";
           lastKnown: { x: number; z: number };
           observedAt: number;
+          deliveredAt: number;
           lastDirectTick: number;
           confidenceBps: number;
           sourceGroupId: string;
+          intelSource: "local-direct" | "same-faction" | "allied";
         }>;
         readonly members: {
           health: string;
@@ -802,9 +1294,28 @@ function artilleryInternals(simulation: ReturnType<typeof createSimulation>) {
           ticksRemaining: number;
         };
       }>;
+      readonly factionKnowledge: Map<string, {
+        readonly contacts: Map<string, {
+          targetGroupId: string;
+          targetFactionId: string;
+          targetProfile: "personnel" | "platform";
+          lastKnown: { x: number; z: number };
+          observedAt: number;
+          deliveredAt: number;
+          lastDirectTick: number;
+          confidenceBps: number;
+          sourceGroupId: string;
+          intelSource: "local-direct" | "same-faction" | "allied";
+        }>;
+      }>;
       readonly membersById: Map<string, { health: string }>;
       readonly projectiles: readonly {
         readonly id: string;
+        readonly fireModeId: string;
+        readonly launchedAt: number;
+        readonly scheduledGroundImpactAt: number;
+        readonly intendedAimCell: { readonly x: number; readonly z: number };
+        readonly plannedImpactCell: { readonly x: number; readonly z: number };
         readonly totalFlightTicks: number;
         readonly flightTicksElapsed: number;
       }[];
