@@ -4,7 +4,7 @@ import type {
   PlatformState,
   TransportAssignmentState,
 } from "./internal";
-import { cellIndex, isWalkable } from "./map";
+import { cellIndex, isWalkable, squaredGridDistance } from "./map";
 import { compareById } from "./ordering";
 import type {
   BattleContentBundle,
@@ -13,6 +13,8 @@ import type {
   GridCoord,
   GroupId,
   PlatformId,
+  TransportDismountScoreComponentsInspection,
+  TransportKnownThreatInspection,
 } from "./types";
 
 const ADJACENT_OFFSETS: readonly (readonly [number, number])[] = [
@@ -38,6 +40,17 @@ export interface TransportCellOccupancy {
   readonly reservations: ReadonlyMap<number, GroupId>;
 }
 
+export interface TransportDismountContext {
+  readonly knownThreats: readonly TransportKnownThreatInspection[];
+  readonly objectiveCell?: GridCoord;
+}
+
+export interface TransportDismountSelection {
+  readonly cell: GridCoord;
+  readonly score: number;
+  readonly components: TransportDismountScoreComponentsInspection;
+}
+
 export function createTransportRuntimeCollections(
   setup: BattleSetup,
   groupsById: ReadonlyMap<GroupId, GroupState>,
@@ -50,6 +63,7 @@ export function createTransportRuntimeCollections(
       ticksRemaining: 0,
       lastTransitionTick: 0,
       passengerDamageResolved: false,
+      dismountEvaluation: undefined,
     }))
     .sort(compareById);
   const byPassengerGroupId = new Map(
@@ -179,6 +193,54 @@ export function selectTransportAdjacentCell(
   occupancy: TransportCellOccupancy,
   passengerGroupId: GroupId,
 ): GridCoord | undefined {
+  return transportAdjacentCandidates(
+    map,
+    platformCell,
+    occupancy,
+    passengerGroupId,
+  )[0];
+}
+
+export function selectTransportDismountCell(
+  map: BattleMap,
+  platformCell: GridCoord,
+  occupancy: TransportCellOccupancy,
+  passengerGroupId: GroupId,
+  context: TransportDismountContext,
+): TransportDismountSelection | undefined {
+  return transportAdjacentCandidates(
+    map,
+    platformCell,
+    occupancy,
+    passengerGroupId,
+  )
+    .map((cell) => {
+      const components = scoreTransportDismountCell(
+        cell,
+        platformCell,
+        context,
+      );
+      return {
+        cell,
+        score:
+          components.threatSeparation +
+          components.platformShielding +
+          components.objectiveProximity,
+        components,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score || cellIndex(map, a.cell) - cellIndex(map, b.cell),
+    )[0];
+}
+
+function transportAdjacentCandidates(
+  map: BattleMap,
+  platformCell: GridCoord,
+  occupancy: TransportCellOccupancy,
+  passengerGroupId: GroupId,
+): GridCoord[] {
   return ADJACENT_OFFSETS
     .map(([dx, dz]) => ({ x: platformCell.x + dx, z: platformCell.z + dz }))
     .filter((candidate) => {
@@ -194,7 +256,29 @@ export function selectTransportAdjacentCell(
         (reservingGroupId === undefined || reservingGroupId === passengerGroupId)
       );
     })
-    .sort((a, b) => cellIndex(map, a) - cellIndex(map, b))[0];
+    .sort((a, b) => cellIndex(map, a) - cellIndex(map, b));
+}
+
+function scoreTransportDismountCell(
+  candidate: GridCoord,
+  platformCell: GridCoord,
+  context: TransportDismountContext,
+): TransportDismountScoreComponentsInspection {
+  const threatDistances = context.knownThreats.map((threat) =>
+    squaredGridDistance(candidate, threat.lastKnown),
+  );
+  const threatSeparation = threatDistances.length > 0
+    ? Math.min(6_000, Math.min(...threatDistances) * 300)
+    : 0;
+  const platformShielding = context.knownThreats.reduce((best, threat) => {
+    const platformDistance = squaredGridDistance(platformCell, threat.lastKnown);
+    const candidateDistance = squaredGridDistance(candidate, threat.lastKnown);
+    return Math.max(best, Math.min(1_500, Math.max(0, candidateDistance - platformDistance) * 150));
+  }, 0);
+  const objectiveProximity = context.objectiveCell
+    ? Math.max(0, 2_400 - squaredGridDistance(candidate, context.objectiveCell) * 40)
+    : 0;
+  return { threatSeparation, platformShielding, objectiveProximity };
 }
 
 export function isTransportDestinationAvailable(

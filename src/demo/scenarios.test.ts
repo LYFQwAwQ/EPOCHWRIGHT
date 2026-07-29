@@ -47,6 +47,51 @@ describe("manual demo scenarios", () => {
     );
   });
 
+  it("exposes vehicles and paired passengers in the combined-arms defense scenario", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("vehicle-defense", "scenario-vehicle-defense"),
+    );
+
+    expect(setup.mode.kind).toBe("defense");
+    expect(setup.groups.flatMap((group) => group.platforms)).toHaveLength(2);
+    expect(setup.transportAssignments).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      id: "vehicle-skirmish",
+      reasons: [
+        "hostiles-eliminated",
+        "hostiles-routed",
+        "stalemate",
+        "maximum-duration",
+      ],
+    },
+    {
+      id: "vehicle-defense",
+      reasons: ["objective-captured", "attackers-eliminated", "defense-time-expired"],
+    },
+  ] as const)("replays $id decisions and terminates with an explicit mode reason", ({ id, reasons }) => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions(id, `termination-${id}`),
+    );
+    const first = createSimulation(setup);
+    const second = createSimulation(setup);
+    const replayTicks = Math.min(400, setup.rules.maximumDurationTicks);
+
+    while (!first.getResult() && first.tick < setup.rules.maximumDurationTicks) {
+      first.step();
+      if (first.tick <= replayTicks) {
+        second.step();
+        expect(second.getStateHash()).toBe(first.getStateHash());
+      }
+    }
+
+    expect(first.getResult()).toBeDefined();
+    expect(reasons).toContain(first.getResult()!.terminationReason);
+    expect(second.tick).toBe(replayTicks);
+  }, 30_000);
+
   it("keeps pursuing groups mobile after a rout in the default vehicle scenario", () => {
     const setup = createDemoBattleSetup(
       createDemoScenarioOptions("vehicle-skirmish", "ridge-0712"),

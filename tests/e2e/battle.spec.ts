@@ -303,6 +303,7 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
   await page.evaluate(() => window.__battleTest?.selectGroup("ember-wheeled-1"));
   await expect(page.getByTestId("platform-status")).toContainText("轮式可机动");
   await expect(page.getByTestId("platform-status")).toContainText("1 乘客组");
+  await expect(page.getByTestId("mode-effectiveness")).toContainText("有效");
 
   await page.evaluate(() => window.__battleTest?.selectGroup("ember-squad-2"));
   await expect(page.getByTestId("transport-status")).toContainText("已搭载");
@@ -325,6 +326,13 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
     );
   }
   expect(sawEmbarkationEvent).toBe(true);
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("azure-tracked-1"));
+  await expect(page.getByTestId("target-evaluation")).toBeVisible();
+  await expect(page.getByTestId("vehicle-engagement")).toBeVisible();
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("azure-squad-2"));
+  await expect(page.getByTestId("transport-dismount-evaluation")).toBeVisible();
 
   const metrics = await readCanvasMetrics(page);
   expect(metrics.opaqueRatio).toBeGreaterThan(0.98);

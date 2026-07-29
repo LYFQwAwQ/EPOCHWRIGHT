@@ -10,6 +10,7 @@ import type {
   PlatformComponentState,
   PlatformTemplate,
   StaticObjectFacing,
+  VehicleEngagementScoreComponentsInspection,
 } from "./types";
 
 function compareIds(a: string, b: string): number {
@@ -47,6 +48,37 @@ export interface CrewReassignmentProposal {
   readonly fromStationId: string;
   readonly toStationId: string;
   readonly efficiencyBps: number;
+}
+
+export interface VehicleEngagementScoreInput {
+  readonly rangeCells: number;
+  readonly preferredRangeCells: number;
+  readonly pathCost: number;
+  readonly facingSteps: number;
+  readonly retainedPosition: boolean;
+}
+
+export interface VehicleEngagementScore {
+  readonly score: number;
+  readonly components: VehicleEngagementScoreComponentsInspection;
+}
+
+export function scoreVehicleEngagementPosition(
+  input: VehicleEngagementScoreInput,
+): VehicleEngagementScore {
+  const components = {
+    range: Math.max(
+      0,
+      4_000 - Math.abs(input.rangeCells - input.preferredRangeCells) * 800,
+    ),
+    route: Math.max(0, 2_400 - Math.floor(input.pathCost / 5)),
+    facing: Math.max(0, 1_600 - input.facingSteps * 400),
+    retention: input.retainedPosition ? 600 : 0,
+  };
+  return {
+    score: components.range + components.route + components.facing + components.retention,
+    components,
+  };
 }
 
 interface ComponentStateInput {

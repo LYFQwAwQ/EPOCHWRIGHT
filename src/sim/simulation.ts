@@ -83,6 +83,7 @@ import {
   componentStateForIntegrity,
   derivePlatformCapabilities,
   penetrationChanceBps,
+  scoreVehicleEngagementPosition,
   selectWeightedPlatformComponent,
   selectCrewReassignment,
 } from "./vehicle";
@@ -94,7 +95,13 @@ import {
   isTransportDestinationAvailable,
   runtimeTransportOccupancyUnits,
   selectTransportAdjacentCell,
+  selectTransportDismountCell,
 } from "./transport";
+import {
+  scoreTargetCandidates,
+  weaponTargetEffectivenessBps,
+  type TargetCandidateScoreInput,
+} from "./targeting";
 import type {
   BattleEvent,
   BattleResult,
@@ -126,6 +133,10 @@ import type {
   RenderPlatform,
   SimulationStatus,
   StaticObjectFacing,
+  TargetProfile,
+  TransportDismountReason,
+  TransportKnownThreatInspection,
+  VehicleEngagementReason,
 } from "./types";
 
 const MOVE_POINTS_PER_TICK = 52;
@@ -140,6 +151,7 @@ const COVER_SEARCH_RADIUS_CELLS = 6;
 const COVER_CURRENT_SLOT_BONUS = 900;
 const COVER_SELECTED_SLOT_BONUS = 450;
 const TRANSPORT_REEMBARK_DELAY_TICKS = 40;
+const VEHICLE_ENGAGEMENT_PATH_CANDIDATE_LIMIT = 12;
 const GROUP_SLOT_OFFSETS: readonly (readonly [number, number])[] = [
   [-0.27, -0.25],
   [0, -0.29],
@@ -183,6 +195,20 @@ interface CoverOption {
   readonly pathCost: number;
   readonly score: number;
   readonly effect: DirectionalCoverEffect;
+}
+
+interface VehicleEngagementOption {
+  readonly cell: GridCoord;
+  readonly path: readonly GridCoord[];
+  readonly pathCost: number;
+  readonly desiredFacing: StaticObjectFacing;
+  readonly score: number;
+  readonly components: {
+    readonly range: number;
+    readonly route: number;
+    readonly facing: number;
+    readonly retention: number;
+  };
 }
 
 type PendingBattleEvent = BattleEvent extends infer Event
@@ -508,6 +534,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(group.moveProgress);
       hasher.addNumber(group.moveCost);
       hasher.addNumber(group.turnTicksRemaining);
+      hasher.addNumber(group.turnGoalFacing ?? -1);
       hasher.addString(group.movementType);
       hasher.addString(group.action);
       hasher.addNumber(group.moraleBps);
@@ -536,6 +563,37 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(group.coverDecision?.threat?.lastKnown.z ?? -1);
       hasher.addNumber(group.coverDecision?.threat?.observedAt ?? -1);
       hasher.addString(group.coverDecision?.threat?.source ?? "");
+      hasher.addNumber(group.targetEvaluation?.evaluatedAt ?? -1);
+      hasher.addString(group.targetEvaluation?.selectedTargetId ?? "");
+      for (const candidate of group.targetEvaluation?.candidates ?? []) {
+        hasher.addString(candidate.targetGroupId);
+        hasher.addString(candidate.targetProfile);
+        hasher.addNumber(candidate.lastKnown.x);
+        hasher.addNumber(candidate.lastKnown.z);
+        hasher.addNumber(candidate.observedAt);
+        hasher.addNumber(candidate.confidenceBps);
+        hasher.addString(candidate.source);
+        hasher.addNumber(candidate.compatible ? 1 : 0);
+        hasher.addNumber(candidate.score);
+        hasher.addNumber(candidate.components.effect);
+        hasher.addNumber(candidate.components.confidence);
+        hasher.addNumber(candidate.components.recency);
+        hasher.addNumber(candidate.components.distance);
+        hasher.addNumber(candidate.components.task);
+        hasher.addNumber(candidate.components.retention);
+        hasher.addNumber(candidate.components.direct);
+      }
+      hasher.addString(group.vehicleEngagement?.targetGroupId ?? "");
+      hasher.addString(group.vehicleEngagement?.reason ?? "");
+      hasher.addNumber(group.vehicleEngagement?.evaluatedAt ?? -1);
+      hasher.addNumber(group.vehicleEngagement?.selectedCell?.x ?? -1);
+      hasher.addNumber(group.vehicleEngagement?.selectedCell?.z ?? -1);
+      hasher.addNumber(group.vehicleEngagement?.desiredFacing ?? -1);
+      hasher.addNumber(group.vehicleEngagement?.score ?? 0);
+      hasher.addNumber(group.vehicleEngagement?.components.range ?? 0);
+      hasher.addNumber(group.vehicleEngagement?.components.route ?? 0);
+      hasher.addNumber(group.vehicleEngagement?.components.facing ?? 0);
+      hasher.addNumber(group.vehicleEngagement?.components.retention ?? 0);
       for (const member of group.members) {
         hasher.addString(member.id);
         hasher.addString(member.memberTemplateId);
@@ -627,6 +685,24 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addNumber(assignment.destination?.z ?? -1);
       hasher.addNumber(assignment.lastTransitionTick);
       hasher.addNumber(assignment.passengerDamageResolved ? 1 : 0);
+      const dismountEvaluation = assignment.dismountEvaluation;
+      hasher.addString(dismountEvaluation?.reason ?? "");
+      hasher.addNumber(dismountEvaluation?.evaluatedAt ?? -1);
+      hasher.addNumber(dismountEvaluation?.selectedCell?.x ?? -1);
+      hasher.addNumber(dismountEvaluation?.selectedCell?.z ?? -1);
+      hasher.addNumber(dismountEvaluation?.score ?? 0);
+      hasher.addNumber(dismountEvaluation?.components.threatSeparation ?? 0);
+      hasher.addNumber(dismountEvaluation?.components.platformShielding ?? 0);
+      hasher.addNumber(dismountEvaluation?.components.objectiveProximity ?? 0);
+      for (const threat of dismountEvaluation?.knownThreats ?? []) {
+        hasher.addString(threat.targetGroupId);
+        hasher.addString(threat.targetFactionId);
+        hasher.addString(threat.targetProfile);
+        hasher.addNumber(threat.lastKnown.x);
+        hasher.addNumber(threat.lastKnown.z);
+        hasher.addNumber(threat.observedAt);
+        hasher.addNumber(threat.confidenceBps);
+      }
     }
 
     for (const [slotId, groupId] of [...this.state.coverOccupancy].sort(([a], [b]) =>
@@ -647,6 +723,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addString(message.factionId);
       hasher.addString(message.sourceGroupId);
       hasher.addString(message.targetGroupId);
+      hasher.addString(message.targetFactionId);
+      hasher.addString(message.targetProfile);
       hasher.addNumber(message.observedAt);
       hasher.addNumber(message.deliveryAt);
       hasher.addNumber(message.lastKnown.x);
@@ -1389,8 +1467,17 @@ class StageOneBattleSimulation implements BattleSimulation {
           this.forcePassengerDismount(assignment, passengerGroup, platform);
           continue;
         }
-        if (this.shouldDisembarkTransport(assignment, passengerGroup, platform)) {
-          this.startDisembarkation(assignment, passengerGroup, platform);
+        const dismountReason = this.transportDismountReason(
+          passengerGroup,
+          platform,
+        );
+        if (dismountReason) {
+          this.startDisembarkation(
+            assignment,
+            passengerGroup,
+            platform,
+            dismountReason,
+          );
         }
         continue;
       }
@@ -1462,6 +1549,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     assignment.status = "embarked";
     assignment.ticksRemaining = 0;
     assignment.destination = undefined;
+    assignment.dismountEvaluation = undefined;
     assignment.lastTransitionTick = this.state.tick;
     passengerGroup.action = "searching";
     passengerGroup.decisionReason = "transport-embarked";
@@ -1480,15 +1568,16 @@ class StageOneBattleSimulation implements BattleSimulation {
     assignment: TransportAssignmentState,
     passengerGroup: GroupState,
     platform: PlatformState,
+    reason: TransportDismountReason,
   ): void {
     if (this.platformHasActiveTransportAction(platform.id)) {
       return;
     }
-    const destination = selectTransportAdjacentCell(
-      this.setup.map,
-      platform.cell,
-      this.transportCellOccupancy(),
-      passengerGroup.id,
+    const destination = this.selectAndRecordTransportDismount(
+      assignment,
+      passengerGroup,
+      platform,
+      reason,
     );
     if (!destination) {
       return;
@@ -1613,11 +1702,11 @@ class StageOneBattleSimulation implements BattleSimulation {
         });
       });
     }
-    const destination = selectTransportAdjacentCell(
-      this.setup.map,
-      platform.cell,
-      this.transportCellOccupancy(),
-      passengerGroup.id,
+    const destination = this.selectAndRecordTransportDismount(
+      assignment,
+      passengerGroup,
+      platform,
+      "forced",
     );
     if (destination) {
       this.completeDisembarkation(
@@ -1657,20 +1746,26 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
-  private shouldDisembarkTransport(
-    _assignment: TransportAssignmentState,
+  private transportDismountReason(
     passengerGroup: GroupState,
     platform: PlatformState,
-  ): boolean {
+  ): TransportDismountReason | undefined {
     if (passengerGroup.moraleState === "routing") {
-      return true;
+      return "routing";
     }
     const platformGroup = this.state.groupsById.get(platform.groupId);
     if (!platformGroup) {
-      return false;
+      return undefined;
+    }
+    if (
+      platform.mobility === "immobilized" ||
+      platform.combat === "ineffective" ||
+      platform.components.some((component) => component.integrityBps < 10_000)
+    ) {
+      return "platform-risk";
     }
     if (this.hasFreshHostileContact(platformGroup)) {
-      return true;
+      return "direct-contact";
     }
     return this.state.objectives.some(
       (objective) =>
@@ -1679,7 +1774,101 @@ class StageOneBattleSimulation implements BattleSimulation {
           platformGroup.factionId === objective.defenderFactionId) &&
         squaredGridDistance(platform.cell, objective.center) <=
           (objective.radiusCells + 4) ** 2,
+    )
+      ? "objective-proximity"
+      : undefined;
+  }
+
+  private selectAndRecordTransportDismount(
+    assignment: TransportAssignmentState,
+    passengerGroup: GroupState,
+    platform: PlatformState,
+    reason: TransportDismountReason,
+  ): GridCoord | undefined {
+    const platformGroup = this.state.groupsById.get(platform.groupId);
+    const knownThreats = platformGroup
+      ? this.transportKnownThreats(platformGroup)
+      : [];
+    const objective = platformGroup
+      ? this.transportObjective(platformGroup, platform.cell)
+      : undefined;
+    const selection = selectTransportDismountCell(
+      this.setup.map,
+      platform.cell,
+      this.transportCellOccupancy(),
+      passengerGroup.id,
+      { knownThreats, objectiveCell: objective?.center },
     );
+    assignment.dismountEvaluation = {
+      reason,
+      evaluatedAt: this.state.tick,
+      selectedCell: selection ? { ...selection.cell } : undefined,
+      score: selection?.score ?? 0,
+      components: selection
+        ? { ...selection.components }
+        : { threatSeparation: 0, platformShielding: 0, objectiveProximity: 0 },
+      knownThreats: knownThreats.map((threat) => ({
+        ...threat,
+        lastKnown: { ...threat.lastKnown },
+      })),
+    };
+    return selection ? { ...selection.cell } : undefined;
+  }
+
+  private transportKnownThreats(
+    group: GroupState,
+  ): TransportKnownThreatInspection[] {
+    const contacts = new Map<GroupId, ContactState>();
+    const addContact = (contact: ContactState) => {
+      if (
+        contact.confidenceBps <= 0 ||
+        !this.isHostile(group.factionId, contact.targetFactionId)
+      ) {
+        return;
+      }
+      const previous = contacts.get(contact.targetGroupId);
+      if (
+        !previous ||
+        contact.observedAt > previous.observedAt ||
+        (contact.observedAt === previous.observedAt &&
+          compareStrings(contact.sourceGroupId, previous.sourceGroupId) < 0)
+      ) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    };
+    sortedContacts(group.localContacts).forEach(addContact);
+    const factionContacts = this.state.factionKnowledge.get(group.factionId)?.contacts;
+    if (factionContacts) {
+      sortedContacts(factionContacts).forEach(addContact);
+    }
+    return [...contacts.values()]
+      .sort((a, b) => compareStrings(a.targetGroupId, b.targetGroupId))
+      .map((contact) => ({
+        targetGroupId: contact.targetGroupId,
+        targetFactionId: contact.targetFactionId,
+        targetProfile: contact.targetProfile,
+        lastKnown: { ...contact.lastKnown },
+        observedAt: contact.observedAt,
+        confidenceBps: contact.confidenceBps,
+      }));
+  }
+
+  private transportObjective(
+    group: GroupState,
+    cell: GridCoord,
+  ): ObjectiveRuntimeState | undefined {
+    return this.state.objectives
+      .filter(
+        (objective) =>
+          objective.unlocked &&
+          (group.factionId === objective.attackerFactionId ||
+            group.factionId === objective.defenderFactionId),
+      )
+      .sort(
+        (a, b) =>
+          squaredGridDistance(cell, a.center) - squaredGridDistance(cell, b.center) ||
+          compareStrings(a.id, b.id),
+      )[0];
   }
 
   private shouldEmbarkTransport(
@@ -1726,11 +1915,9 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private hasFreshHostileContact(group: GroupState): boolean {
     return [...group.localContacts.values()].some((contact) => {
-      const target = this.state.groupsById.get(contact.targetGroupId);
-      return Boolean(
-        target &&
-          this.isHostile(group.factionId, target.factionId) &&
-          this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS + 1,
+      return (
+        this.isHostile(group.factionId, contact.targetFactionId) &&
+        this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS + 1
       );
     });
   }
@@ -1766,6 +1953,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!current || message.observedAt > current.observedAt) {
         knowledge.contacts.set(message.targetGroupId, {
           targetGroupId: message.targetGroupId,
+          targetFactionId: message.targetFactionId,
+          targetProfile: message.targetProfile,
           lastKnown: { ...message.lastKnown },
           observedAt: message.observedAt,
           lastDirectTick: -1,
@@ -1844,6 +2033,8 @@ class StageOneBattleSimulation implements BattleSimulation {
             }
             observer.localContacts.set(target.id, {
               targetGroupId: target.id,
+              targetFactionId: target.factionId,
+              targetProfile: this.targetProfileForGroup(target),
               lastKnown: { ...target.cell },
               observedAt: this.state.tick,
               lastDirectTick: this.state.tick,
@@ -1931,6 +2122,8 @@ class StageOneBattleSimulation implements BattleSimulation {
         factionId: recipient.factionId,
         sourceGroupId: observer.id,
         targetGroupId: target.id,
+        targetFactionId: target.factionId,
+        targetProfile: this.targetProfileForGroup(target),
         observedAt: this.state.tick,
         deliveryAt: this.state.tick + recipient.deliveryDelayTicks,
         lastKnown: { ...target.cell },
@@ -2099,6 +2292,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         }
       }
       if (
+        this.activeTargetPlatform(group)?.combat === "effective" &&
+        this.decideVehicleEngagement(group, directTarget)
+      ) {
+        return;
+      }
+      if (
         group.suppressionBps >= HIGH_SUPPRESSION_COVER_THRESHOLD_BPS &&
         !holdingSuppressionCover
       ) {
@@ -2115,7 +2314,12 @@ class StageOneBattleSimulation implements BattleSimulation {
           return;
         }
       }
-      if (isAttacker && objective && !isInsideObjective(group.cell, objective)) {
+      if (
+        isAttacker &&
+        objective &&
+        !isInsideObjective(group.cell, objective) &&
+        this.groupCapturePower(group) > 0
+      ) {
         group.action = "moving-to-contact";
         group.decisionReason = "assault-objective";
         group.currentTargetId = directTarget.id;
@@ -2324,105 +2528,465 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private chooseDirectTarget(group: GroupState): GroupState | undefined {
-    const candidates = [...group.localContacts.values()]
-      .filter(
-        (contact) =>
-          this.state.tick - contact.lastDirectTick <= DIRECT_CONTACT_FRESH_TICKS,
-      )
-      .map((contact) => this.state.groupsById.get(contact.targetGroupId))
-      .filter(
-        (target): target is GroupState =>
-          Boolean(
-            target &&
-              activeMemberCount(target) > 0 &&
-              isGroupSpatiallyActive(target) &&
-              this.isHostile(group.factionId, target.factionId) &&
-              this.canGroupAffectTarget(group, target),
-          ),
-      )
-      .sort((a, b) => {
-        const distanceDifference =
-          squaredGridDistance(group.cell, a.cell) - squaredGridDistance(group.cell, b.cell);
-        return distanceDifference || compareStrings(a.id, b.id);
-      });
-    return candidates[0];
-  }
-
-  private canGroupAffectTarget(group: GroupState, target: GroupState): boolean {
-    const targetPlatform = this.activeTargetPlatform(target);
-    const weaponCanAffectTarget = (
-      weapon: ReturnType<typeof getWeaponTemplate>,
-    ): boolean =>
-      targetPlatform
-        ? firstPlatformDamageEffect(weapon) !== undefined
-        : weapon.suppressionBps > 0 ||
-          firstEffectAmount(weapon, "damage", 0) > 0 ||
-          firstEffectAmount(weapon, "suppression", 0) > 0;
-
-    if (
-      group.members.some(
-        (member) =>
-          canMemberFight(member) &&
-          member.placement.kind === "dismounted" &&
-          weaponCanAffectTarget(this.weaponForMember(member)),
-      )
-    ) {
-      return true;
-    }
-
-    return group.platforms.some((platform) => {
-      if (platform.disposition !== "crewed") {
-        return false;
+    const targetsById = new Map<GroupId, GroupState>();
+    const candidateInputs: TargetCandidateScoreInput[] = [];
+    for (const contact of sortedContacts(group.localContacts)) {
+      if (this.state.tick - contact.lastDirectTick > DIRECT_CONTACT_FRESH_TICKS) {
+        continue;
       }
-      const capabilities = this.platformCapabilities(platform);
-      return platform.weaponStates.some((weaponState) => {
-        const available = capabilities.weapons.find(
-          (capability) => capability.componentId === weaponState.componentId,
-        )?.available;
-        return Boolean(
-          available &&
-            this.platformWeaponOperator(platform, weaponState.componentId) &&
-            weaponCanAffectTarget(
-              getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
-            ),
-        );
-      });
-    });
+      const target = this.state.groupsById.get(contact.targetGroupId);
+      if (
+        !target ||
+        activeMemberCount(target) === 0 ||
+        !isGroupSpatiallyActive(target) ||
+        !this.isHostile(group.factionId, target.factionId)
+      ) {
+        continue;
+      }
+      const observedContact: ContactState = {
+        ...contact,
+        targetFactionId: contact.targetFactionId ?? target.factionId,
+        targetProfile: contact.targetProfile ?? this.targetProfileForGroup(target),
+        lastKnown: { ...target.cell },
+      };
+      targetsById.set(target.id, target);
+      candidateInputs.push(
+        this.targetCandidateScoreInput(group, observedContact, "direct-contact"),
+      );
+    }
+    const selectedTargetId = this.recordTargetEvaluation(group, candidateInputs);
+    return selectedTargetId ? targetsById.get(selectedTargetId) : undefined;
   }
 
   private chooseBestKnownContact(group: GroupState): ContactState | undefined {
-    const merged = new Map<GroupId, ContactState>();
+    const merged = new Map<
+      GroupId,
+      { readonly contact: ContactState; readonly source: "local-contact" | "shared-contact" }
+    >();
     const factionContacts = this.state.factionKnowledge.get(group.factionId)?.contacts;
     for (const contact of factionContacts?.values() ?? []) {
-      merged.set(contact.targetGroupId, contact);
+      merged.set(contact.targetGroupId, { contact, source: "shared-contact" });
     }
     for (const contact of group.localContacts.values()) {
-      const known = merged.get(contact.targetGroupId);
+      const known = merged.get(contact.targetGroupId)?.contact;
       if (!known || contact.observedAt >= known.observedAt) {
-        merged.set(contact.targetGroupId, contact);
+        merged.set(contact.targetGroupId, { contact, source: "local-contact" });
       }
     }
-    return [...merged.values()]
+    const candidates = [...merged.values()].filter(
+      ({ contact }) =>
+        contact.confidenceBps > 0 &&
+        contact.observedAt > (group.searchedContacts.get(contact.targetGroupId) ?? -1) &&
+        this.isHostile(group.factionId, contact.targetFactionId),
+    );
+    const selectedTargetId = this.recordTargetEvaluation(
+      group,
+      candidates.map(({ contact, source }) =>
+        this.targetCandidateScoreInput(group, contact, source),
+      ),
+    );
+    return selectedTargetId ? merged.get(selectedTargetId)?.contact : undefined;
+  }
+
+  private targetCandidateScoreInput(
+    group: GroupState,
+    contact: ContactState,
+    source: "direct-contact" | "local-contact" | "shared-contact",
+  ): TargetCandidateScoreInput {
+    return {
+      targetGroupId: contact.targetGroupId,
+      targetProfile: contact.targetProfile,
+      lastKnown: { ...contact.lastKnown },
+      observedAt: contact.observedAt,
+      confidenceBps: contact.confidenceBps,
+      source,
+      distanceSquared: squaredGridDistance(group.cell, contact.lastKnown),
+      effectivenessBps: this.groupTargetEffectivenessBps(group, contact.targetProfile),
+      taskRelevanceBps: this.targetTaskRelevanceBps(group, contact.lastKnown),
+      retained: group.currentTargetId === contact.targetGroupId,
+    };
+  }
+
+  private recordTargetEvaluation(
+    group: GroupState,
+    candidateInputs: readonly TargetCandidateScoreInput[],
+  ): GroupId | undefined {
+    const candidates = scoreTargetCandidates(candidateInputs, this.state.tick);
+    const selectedTargetId = candidates.find((candidate) => candidate.compatible)?.targetGroupId;
+    group.targetEvaluation = {
+      evaluatedAt: this.state.tick,
+      selectedTargetId,
+      candidates,
+    };
+    return selectedTargetId;
+  }
+
+  private groupTargetEffectivenessBps(
+    group: GroupState,
+    targetProfile: TargetProfile,
+  ): number {
+    let effectivenessBps = 0;
+    for (const member of group.members) {
+      if (!canMemberFight(member) || member.placement.kind !== "dismounted") {
+        continue;
+      }
+      effectivenessBps += weaponTargetEffectivenessBps(
+        this.weaponForMember(member),
+        targetProfile,
+      );
+    }
+    for (const platform of group.platforms) {
+      if (platform.disposition !== "crewed") {
+        continue;
+      }
+      const capabilities = this.platformCapabilities(platform);
+      for (const weaponState of platform.weaponStates) {
+        const available = capabilities.weapons.find(
+          (capability) => capability.componentId === weaponState.componentId,
+        )?.available;
+        if (!available || !this.platformWeaponOperator(platform, weaponState.componentId)) {
+          continue;
+        }
+        effectivenessBps += weaponTargetEffectivenessBps(
+          getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
+          targetProfile,
+        );
+      }
+    }
+    return Math.min(40_000, effectivenessBps);
+  }
+
+  private targetTaskRelevanceBps(group: GroupState, targetCell: GridCoord): number {
+    if (this.setup.mode.kind !== "defense") {
+      return 0;
+    }
+    const objectives = this.state.objectives
       .filter(
-        (contact) =>
-          contact.confidenceBps > 0 &&
-          contact.observedAt > (group.searchedContacts.get(contact.targetGroupId) ?? -1) &&
-          this.state.groupsById.get(contact.targetGroupId) !== undefined &&
-          this.isHostile(
-            group.factionId,
-            this.state.groupsById.get(contact.targetGroupId)!.factionId,
-          ),
+        (objective) =>
+          objective.unlocked &&
+          (objective.attackerFactionId === group.factionId ||
+            objective.defenderFactionId === group.factionId),
       )
       .sort((a, b) => {
-        const recency = b.observedAt - a.observedAt;
-        if (recency !== 0) {
-          return recency;
+        if (a.id === group.assignedObjectiveId) {
+          return -1;
         }
-        const distance =
-          squaredGridDistance(group.cell, a.lastKnown) -
-          squaredGridDistance(group.cell, b.lastKnown);
-        return distance || compareStrings(a.targetGroupId, b.targetGroupId);
-      })[0];
+        if (b.id === group.assignedObjectiveId) {
+          return 1;
+        }
+        return compareStrings(a.id, b.id);
+      });
+    const objective = objectives[0];
+    if (!objective) {
+      return 0;
+    }
+    const relevanceRadius = objective.radiusCells + 8;
+    const relevanceRadiusSquared = relevanceRadius ** 2;
+    const distanceSquared = squaredGridDistance(targetCell, objective.center);
+    return distanceSquared >= relevanceRadiusSquared
+      ? 0
+      : Math.floor(
+          ((relevanceRadiusSquared - distanceSquared) * 10_000) /
+            relevanceRadiusSquared,
+        );
+  }
+
+  private targetProfileForGroup(group: GroupState): TargetProfile {
+    return this.activeTargetPlatform(group) ? "platform" : "personnel";
+  }
+
+  private decideVehicleEngagement(group: GroupState, target: GroupState): boolean {
+    const platform = this.activeTargetPlatform(group);
+    if (!platform || platform.combat !== "effective" || platform.mobility !== "mobile") {
+      return false;
+    }
+    if (this.hasInFlightVehicleEngagementPlan(group)) {
+      return true;
+    }
+    const option = this.findVehicleEngagementOption(group, target, platform);
+    if (!option) {
+      this.recordVehicleEngagement(group, target.id, "no-firing-position");
+      return false;
+    }
+
+    if (!sameCoord(option.cell, group.cell)) {
+      this.cancelMovement(group);
+      group.action = "moving-to-contact";
+      group.decisionReason = "vehicle-engagement-position";
+      group.currentTargetId = target.id;
+      group.goal = { ...option.cell };
+      group.pathGoal = { ...option.cell };
+      group.path = option.path.map((coord) => ({ ...coord }));
+      group.waitAge = 0;
+      this.recordVehicleEngagement(
+        group,
+        target.id,
+        "move-to-firing-position",
+        option,
+      );
+      return true;
+    }
+
+    if (platform.facing !== option.desiredFacing) {
+      if (group.turnGoalFacing !== option.desiredFacing) {
+        this.cancelMovement(group);
+        group.turnGoalFacing = option.desiredFacing;
+        const template = getPlatformTemplate(
+          this.setup.content,
+          platform.platformTemplateId,
+        );
+        group.turnTicksRemaining =
+          shortestFacingSteps(platform.facing, option.desiredFacing) *
+          template.turnTicksPer45Degrees;
+        if (group.turnTicksRemaining === 0) {
+          this.applyFacing(group, option.desiredFacing);
+          group.turnGoalFacing = undefined;
+        }
+      }
+      if (platform.facing !== option.desiredFacing) {
+        group.action = "moving-to-contact";
+        group.decisionReason = "orient-armor";
+        group.currentTargetId = target.id;
+        group.goal = undefined;
+        group.path = [];
+        this.recordVehicleEngagement(group, target.id, "orient-armor", option);
+        return true;
+      }
+    }
+
+    this.cancelMovement(group);
+    group.action = "engaging";
+    group.decisionReason = "preferred-range";
+    group.currentTargetId = target.id;
+    group.goal = undefined;
+    group.path = [];
+    this.recordVehicleEngagement(group, target.id, "hold-firing-position", option);
+    return true;
+  }
+
+  private hasInFlightVehicleEngagementPlan(group: GroupState): boolean {
+    const engagement = group.vehicleEngagement;
+    if (!engagement) {
+      return false;
+    }
+    if (
+      group.decisionReason === "vehicle-engagement-position" &&
+      engagement.reason === "move-to-firing-position"
+    ) {
+      return group.movingTo !== undefined || group.turnGoalFacing !== undefined;
+    }
+    return (
+      group.decisionReason === "orient-armor" &&
+      engagement.reason === "orient-armor" &&
+      group.turnGoalFacing !== undefined
+    );
+  }
+
+  private findVehicleEngagementOption(
+    group: GroupState,
+    target: GroupState,
+    platform: PlatformState,
+  ): VehicleEngagementOption | undefined {
+    const targetProfile = this.targetProfileForGroup(target);
+    const rangeBand = this.groupTargetRangeBand(group, targetProfile);
+    if (!rangeBand) {
+      return undefined;
+    }
+    const blocked = this.getStationaryFriendlyBlockedCellIndices(group);
+    const pathStart = group.cell;
+    const searchRadius = 6;
+    const isLegalFiringCell = (candidate: GridCoord): boolean => {
+      const candidateIndex = cellIndex(this.setup.map, candidate);
+      const occupyingGroupId = this.state.occupancy.get(candidateIndex);
+      const occupyingPlatformId = this.state.staticPlatformOccupancy.get(candidateIndex);
+      const reservingGroupId = this.state.reservations.get(candidateIndex);
+      const rangeCells = Math.max(
+        Math.abs(candidate.x - target.cell.x),
+        Math.abs(candidate.z - target.cell.z),
+      );
+      return (
+        isWalkable(this.setup.map, candidate, group.movementType) &&
+        (occupyingGroupId === undefined || occupyingGroupId === group.id) &&
+        (occupyingPlatformId === undefined || occupyingPlatformId === platform.id) &&
+        (reservingGroupId === undefined || reservingGroupId === group.id) &&
+        rangeCells >= rangeBand.minimum &&
+        rangeCells <= rangeBand.maximum &&
+        hasLineOfSight(this.setup.map, candidate, target.cell) &&
+        !this.hasFriendlyBlockerFrom(group, candidate, target)
+      );
+    };
+
+    if (isLegalFiringCell(group.cell)) {
+      const rangeCells = Math.max(
+        Math.abs(group.cell.x - target.cell.x),
+        Math.abs(group.cell.z - target.cell.z),
+      );
+      const desiredFacing = facingForStep(group.cell, target.cell);
+      const scored = scoreVehicleEngagementPosition({
+        rangeCells,
+        preferredRangeCells: rangeBand.preferred,
+        pathCost: 0,
+        facingSteps: shortestFacingSteps(platform.facing, desiredFacing),
+        retainedPosition: true,
+      });
+      return {
+        cell: { ...group.cell },
+        path: [{ ...group.cell }],
+        pathCost: 0,
+        desiredFacing,
+        score: scored.score,
+        components: scored.components,
+      };
+    }
+
+    const candidates: {
+      readonly cell: GridCoord;
+      readonly rangeCells: number;
+      readonly desiredFacing: StaticObjectFacing;
+      readonly estimatedScore: number;
+    }[] = [];
+
+    for (let dz = -searchRadius; dz <= searchRadius; dz += 1) {
+      for (let dx = -searchRadius; dx <= searchRadius; dx += 1) {
+        if (dx === 0 && dz === 0) {
+          continue;
+        }
+        const candidate = { x: group.cell.x + dx, z: group.cell.z + dz };
+        const rangeCells = Math.max(
+          Math.abs(candidate.x - target.cell.x),
+          Math.abs(candidate.z - target.cell.z),
+        );
+        if (!isLegalFiringCell(candidate)) {
+          continue;
+        }
+        const desiredFacing = facingForStep(candidate, target.cell);
+        const estimatedArrivalFacing = facingForStep(group.cell, candidate);
+        const estimatedPathCost =
+          (Math.max(Math.abs(dx), Math.abs(dz)) + Math.min(Math.abs(dx), Math.abs(dz))) *
+          500;
+        const estimated = scoreVehicleEngagementPosition({
+          rangeCells,
+          preferredRangeCells: rangeBand.preferred,
+          pathCost: estimatedPathCost,
+          facingSteps: shortestFacingSteps(estimatedArrivalFacing, desiredFacing),
+          retainedPosition: false,
+        });
+        candidates.push({
+          cell: candidate,
+          rangeCells,
+          desiredFacing,
+          estimatedScore: estimated.score,
+        });
+      }
+    }
+
+    const options: VehicleEngagementOption[] = [];
+    for (const candidate of candidates
+      .sort(
+        (a, b) =>
+          b.estimatedScore - a.estimatedScore ||
+          cellIndex(this.setup.map, a.cell) - cellIndex(this.setup.map, b.cell),
+      )
+      .slice(0, VEHICLE_ENGAGEMENT_PATH_CANDIDATE_LIMIT)) {
+        const path = this.pathfinderFor(group).findPath(pathStart, candidate.cell, blocked);
+        if (path.length === 0) {
+          continue;
+        }
+        const pathCost = pathMovementCost(this.setup.map, path, group.movementType);
+        const arrivalFacing = path.length >= 2
+          ? facingForStep(path[path.length - 2]!, candidate.cell)
+          : platform.facing;
+        const scored = scoreVehicleEngagementPosition({
+          rangeCells: candidate.rangeCells,
+          preferredRangeCells: rangeBand.preferred,
+          pathCost,
+          facingSteps: shortestFacingSteps(arrivalFacing, candidate.desiredFacing),
+          retainedPosition: false,
+        });
+        options.push({
+          cell: candidate.cell,
+          path,
+          pathCost,
+          desiredFacing: candidate.desiredFacing,
+          score: scored.score,
+          components: scored.components,
+        });
+    }
+
+    return options.sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.pathCost - b.pathCost ||
+        cellIndex(this.setup.map, a.cell) - cellIndex(this.setup.map, b.cell),
+    )[0];
+  }
+
+  private recordVehicleEngagement(
+    group: GroupState,
+    targetGroupId: GroupId,
+    reason: VehicleEngagementReason,
+    option?: VehicleEngagementOption,
+  ): void {
+    group.vehicleEngagement = {
+      targetGroupId,
+      reason,
+      evaluatedAt: this.state.tick,
+      selectedCell: option ? { ...option.cell } : undefined,
+      desiredFacing: option?.desiredFacing,
+      score: option?.score ?? 0,
+      components: option
+        ? { ...option.components }
+        : { range: 0, route: 0, facing: 0, retention: 0 },
+    };
+  }
+
+  private groupTargetRangeBand(
+    group: GroupState,
+    targetProfile: TargetProfile,
+  ): { readonly minimum: number; readonly preferred: number; readonly maximum: number } | undefined {
+    const weapons: ReturnType<typeof getWeaponTemplate>[] = [];
+    for (const member of group.members) {
+      if (!canMemberFight(member) || member.placement.kind !== "dismounted") {
+        continue;
+      }
+      const weapon = this.weaponForMember(member);
+      if (weaponTargetEffectivenessBps(weapon, targetProfile) > 0) {
+        weapons.push(weapon);
+      }
+    }
+    for (const platform of group.platforms) {
+      if (platform.disposition !== "crewed") {
+        continue;
+      }
+      const capabilities = this.platformCapabilities(platform);
+      for (const weaponState of platform.weaponStates) {
+        const available = capabilities.weapons.find(
+          (capability) => capability.componentId === weaponState.componentId,
+        )?.available;
+        const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+        if (
+          available &&
+          this.platformWeaponOperator(platform, weaponState.componentId) &&
+          weaponTargetEffectivenessBps(weapon, targetProfile) > 0
+        ) {
+          weapons.push(weapon);
+        }
+      }
+    }
+    if (weapons.length === 0) {
+      return undefined;
+    }
+    return {
+      minimum: Math.min(...weapons.map((weapon) => this.weaponMinimumRangeCells(weapon))),
+      preferred: Math.min(
+        this.setup.rules.preferredRangeCells,
+        Math.max(...weapons.map((weapon) => this.weaponPreferredRangeCells(weapon))),
+      ),
+      maximum: Math.min(
+        this.setup.rules.weaponRangeCells,
+        Math.max(...weapons.map((weapon) => this.weaponRangeCells(weapon))),
+      ),
+    };
   }
 
   private markContactSearched(group: GroupState, contact: ContactState): void {
@@ -2789,6 +3353,22 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private advanceMovement(): void {
     for (const group of this.state.groups) {
+      if (!group.movingTo && group.turnGoalFacing !== undefined) {
+        const platform = this.activeTargetPlatform(group);
+        if (!platform || platform.mobility !== "mobile") {
+          group.turnGoalFacing = undefined;
+          group.turnTicksRemaining = 0;
+          continue;
+        }
+        if (group.turnTicksRemaining > 0) {
+          group.turnTicksRemaining -= 1;
+        }
+        if (group.turnTicksRemaining === 0) {
+          this.applyFacing(group, group.turnGoalFacing);
+          group.turnGoalFacing = undefined;
+        }
+        continue;
+      }
       if (!group.movingTo) {
         continue;
       }
@@ -2803,6 +3383,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         group.turnTicksRemaining -= 1;
         if (group.turnTicksRemaining === 0) {
           this.applyMovementFacing(group, group.movingTo);
+          group.turnGoalFacing = undefined;
         }
         continue;
       }
@@ -2916,8 +3497,10 @@ class StageOneBattleSimulation implements BattleSimulation {
           platform.platformTemplateId,
         );
         proposal.group.turnTicksRemaining = turnSteps * template.turnTicksPer45Degrees;
+        proposal.group.turnGoalFacing = desiredFacing;
         if (proposal.group.turnTicksRemaining === 0) {
           this.applyMovementFacing(proposal.group, proposal.destination);
+          proposal.group.turnGoalFacing = undefined;
         }
       }
       proposal.group.waitAge = 0;
@@ -4116,6 +4699,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.moveProgress = 0;
     group.moveCost = 0;
     group.turnTicksRemaining = 0;
+    group.turnGoalFacing = undefined;
     group.waitAge = 0;
     group.path = [];
     group.pathGoal = undefined;
@@ -4183,6 +4767,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       moraleBps: group.moraleBps,
       moraleState: group.moraleState,
       suppressionBps: group.suppressionBps,
+      modeEffective: this.isGroupModeEffective(group),
       activeMembers: activeMemberCount(group),
       woundedMembers: group.members.filter((member) => member.health === "wounded").length,
       incapacitatedMembers: group.members.filter(
@@ -4194,6 +4779,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       ).map(
         (contact) => ({
           targetGroupId: contact.targetGroupId,
+          targetFactionId: contact.targetFactionId,
+          targetProfile: contact.targetProfile,
           lastKnown: { ...contact.lastKnown },
           observedAt: contact.observedAt,
           confidenceBps: confidenceAtAge(
@@ -4230,6 +4817,26 @@ class StageOneBattleSimulation implements BattleSimulation {
                   lastKnown: { ...group.coverDecision.threat.lastKnown },
                 }
               : undefined,
+          }
+        : undefined,
+      targetEvaluation: group.targetEvaluation
+        ? {
+            evaluatedAt: group.targetEvaluation.evaluatedAt,
+            selectedTargetId: group.targetEvaluation.selectedTargetId,
+            candidates: group.targetEvaluation.candidates.map((candidate) => ({
+              ...candidate,
+              lastKnown: { ...candidate.lastKnown },
+              components: { ...candidate.components },
+            })),
+          }
+        : undefined,
+      vehicleEngagement: group.vehicleEngagement
+        ? {
+            ...group.vehicleEngagement,
+            selectedCell: group.vehicleEngagement.selectedCell
+              ? { ...group.vehicleEngagement.selectedCell }
+              : undefined,
+            components: { ...group.vehicleEngagement.components },
           }
         : undefined,
       platforms: group.platforms.map((platform) => this.platformSummary(platform)),
@@ -4289,6 +4896,18 @@ class StageOneBattleSimulation implements BattleSimulation {
       ticksRemaining: assignment.ticksRemaining,
       destination: assignment.destination
         ? { ...assignment.destination }
+        : undefined,
+      dismountEvaluation: assignment.dismountEvaluation
+        ? {
+            ...assignment.dismountEvaluation,
+            selectedCell: assignment.dismountEvaluation.selectedCell
+              ? { ...assignment.dismountEvaluation.selectedCell }
+              : undefined,
+            components: { ...assignment.dismountEvaluation.components },
+            knownThreats: assignment.dismountEvaluation.knownThreats.map(
+              (threat) => ({ ...threat, lastKnown: { ...threat.lastKnown } }),
+            ),
+          }
         : undefined,
     };
   }
@@ -4630,6 +5249,10 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private applyMovementFacing(group: GroupState, destination: GridCoord): void {
     const facing = facingForStep(group.cell, destination);
+    this.applyFacing(group, facing);
+  }
+
+  private applyFacing(group: GroupState, facing: StaticObjectFacing): void {
     group.headingRadians = facing * (Math.PI / 4);
     for (const platform of group.platforms) {
       if (platform.disposition === "crewed") {
@@ -4766,6 +5389,8 @@ function shortestFacingSteps(
 
 function addContactToHash(hasher: StateHasher, contact: ContactState): void {
   hasher.addString(contact.targetGroupId);
+  hasher.addString(contact.targetFactionId);
+  hasher.addString(contact.targetProfile);
   hasher.addNumber(contact.lastKnown.x);
   hasher.addNumber(contact.lastKnown.z);
   hasher.addNumber(contact.observedAt);

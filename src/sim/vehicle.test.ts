@@ -19,6 +19,7 @@ import {
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION,
   SURFACE_TYPE_IDS,
   WATER_DEPTH_UNITS,
   createDefaultBattleContent,
@@ -188,6 +189,20 @@ describe("single-platform vehicle slice", () => {
     expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
     expect(migrated.groups).toEqual(current.groups);
+  });
+
+  it("migrates stage-3.4 setups to stable vehicle movement rules without changing inputs", () => {
+    const current = createDemoBattleSetup(
+      createDemoScenarioOptions("vehicle-defense", "vehicle-movement-migration"),
+    );
+    const migrated = migrateBattleSetup({
+      ...current,
+      rulesVersion: PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION,
+    } satisfies BattleSetupInput);
+
+    expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
+    expect(migrated.groups).toEqual(current.groups);
+    expect(migrated.transportAssignments).toEqual(current.transportAssignments);
   });
 
   it("migrates stage-2.2 content and spawns to the explicit stage-3 platform contract", () => {
@@ -592,6 +607,9 @@ describe("single-platform vehicle slice", () => {
     const fixedGun = createSimulation(createVehicleSetup("tracked"));
     setPlatformComponent(fixedGun, "ember-vehicle-platform", "running-gear", 0, "destroyed");
     refreshPlatform(fixedGun, "ember-vehicle-platform");
+    expect(fixedGun.inspect("ember-vehicle", "ember")).toMatchObject({
+      modeEffective: true,
+    });
     fixedGun.step(300);
     expect(fixedGun.inspect("ember-vehicle-platform", "ember")).toMatchObject({
       mobility: "immobilized",
@@ -608,6 +626,9 @@ describe("single-platform vehicle slice", () => {
     const withdrawal = createSimulation(createVehicleSetup("tracked"));
     setPlatformComponent(withdrawal, "ember-vehicle-platform", "primary-weapon", 0, "destroyed");
     refreshPlatform(withdrawal, "ember-vehicle-platform");
+    expect(withdrawal.inspect("ember-vehicle", "ember")).toMatchObject({
+      modeEffective: false,
+    });
     withdrawal.step(5);
     expect(withdrawal.inspect("ember-vehicle", "ember")).toMatchObject({
       action: "routing",
@@ -802,6 +823,219 @@ describe("single-platform vehicle slice", () => {
     }
 
     expect(internals.chooseDirectTarget(attacker)?.id).toBe(routingSquad.id);
+  });
+
+  it("uses observed target profiles without reading stale contacts' live state", () => {
+    const simulation = createSimulation(
+      createDemoBattleSetup(
+        createDemoScenarioOptions("vehicle-skirmish", "known-target-suitability"),
+      ),
+    );
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly tick: number;
+        readonly groupsById: Map<
+          string,
+          {
+            readonly id: string;
+            cell: { x: number; z: number };
+            readonly platforms: { disposition: string }[];
+            readonly searchedContacts: Map<string, number>;
+          }
+        >;
+        readonly factionKnowledge: Map<
+          string,
+          { readonly contacts: Map<string, unknown> }
+        >;
+      };
+      chooseBestKnownContact(group: unknown):
+        | { readonly targetGroupId: string }
+        | undefined;
+    };
+    const attacker = internals.state.groupsById.get("azure-squad-3")!;
+    const vehicle = internals.state.groupsById.get("ember-wheeled-1")!;
+    const infantry = internals.state.groupsById.get("ember-squad-3")!;
+    const contacts = internals.state.factionKnowledge.get("azure")!.contacts;
+    contacts.clear();
+    attacker.searchedContacts.clear();
+    contacts.set(vehicle.id, {
+      targetGroupId: vehicle.id,
+      targetFactionId: "ember",
+      targetProfile: "platform",
+      lastKnown: { x: 14, z: 10 },
+      observedAt: internals.state.tick,
+      lastDirectTick: -100,
+      confidenceBps: 10_000,
+      sourceGroupId: "azure-squad-1",
+    });
+    contacts.set(infantry.id, {
+      targetGroupId: infantry.id,
+      targetFactionId: "ember",
+      targetProfile: "personnel",
+      lastKnown: { x: 22, z: 10 },
+      observedAt: internals.state.tick,
+      lastDirectTick: -100,
+      confidenceBps: 9_900,
+      sourceGroupId: "azure-squad-1",
+    });
+
+    expect(internals.chooseBestKnownContact(attacker)?.targetGroupId).toBe(infantry.id);
+    expect((simulation.inspect(attacker.id) as GroupInspection).targetEvaluation).toMatchObject({
+      selectedTargetId: infantry.id,
+      candidates: [
+        { targetGroupId: infantry.id, targetProfile: "personnel", compatible: true },
+        { targetGroupId: vehicle.id, targetProfile: "platform", compatible: false, score: 0 },
+      ],
+    });
+
+    vehicle.cell = { x: 40, z: 30 };
+    vehicle.platforms[0]!.disposition = "destroyed";
+    infantry.cell = { x: 1, z: 1 };
+
+    expect(internals.chooseBestKnownContact(attacker)?.targetGroupId).toBe(infantry.id);
+  });
+
+  it("holds a valid firing position and turns frontal armor toward direct contact", () => {
+    const setup = createVehicleDuelSetup({
+      kind: "platform-damage",
+      penetrationRating: 110,
+      componentDamageBps: 4_000,
+      crewDamageBps: 8_000,
+      externalDamageBps: 1_500,
+      attackTags: [],
+    });
+    const simulation = createSimulation({
+      ...setup,
+      groups: setup.groups.map((group) =>
+        group.id === "azure-vehicle"
+          ? { ...group, spawn: { x: 7, z: 10 }, evacuation: { x: 7, z: 10 } }
+          : group,
+      ),
+    });
+    primeDirectVehicleDuel(simulation);
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly groupsById: Map<
+          string,
+          {
+            readonly cell: { x: number; z: number };
+            action: string;
+            decisionReason: string;
+            turnTicksRemaining: number;
+            readonly platforms: { facing: number }[];
+          }
+        >;
+      };
+      decideForGroup(group: unknown): void;
+      advanceMovement(): void;
+    };
+    const group = internals.state.groupsById.get("ember-vehicle")!;
+    const initialCell = { ...group.cell };
+
+    internals.decideForGroup(group);
+
+    expect(group).toMatchObject({
+      cell: initialCell,
+      action: "moving-to-contact",
+      decisionReason: "orient-armor",
+    });
+    expect(group.turnTicksRemaining).toBeGreaterThan(0);
+    expect((simulation.inspect("ember-vehicle") as GroupInspection).vehicleEngagement).toMatchObject({
+      targetGroupId: "azure-vehicle",
+      reason: "orient-armor",
+      selectedCell: initialCell,
+      desiredFacing: 2,
+    });
+
+    while (group.turnTicksRemaining > 0) {
+      internals.advanceMovement();
+    }
+    internals.decideForGroup(group);
+
+    expect(group.cell).toEqual(initialCell);
+    expect(group.platforms[0]?.facing).toBe(2);
+    expect(group.action).toBe("engaging");
+  });
+
+  it("keeps an in-flight vehicle engagement move through an AI refresh", () => {
+    const base = createVehicleDuelSetup({
+      kind: "platform-damage",
+      penetrationRating: 110,
+      componentDamageBps: 4_000,
+      crewDamageBps: 8_000,
+      externalDamageBps: 1_500,
+      attackTags: [],
+    });
+    const simulation = createSimulation({
+      ...base,
+      groups: base.groups.map((group) => {
+        if (group.id === "ember-vehicle") {
+          return {
+            ...group,
+            platforms: group.platforms.map((platform) => ({ ...platform, initialFacing: 2 })),
+          };
+        }
+        if (group.id === "azure-vehicle") {
+          return {
+            ...group,
+            spawn: { x: 15, z: 10 },
+            evacuation: { x: 21, z: 10 },
+          };
+        }
+        return group;
+      }),
+    });
+    primeDirectVehicleDuel(simulation);
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly groupsById: Map<
+          string,
+          {
+            readonly cell: { x: number; z: number };
+            movingTo?: { x: number; z: number };
+            moveProgress: number;
+            readonly moveCost: number;
+            readonly decisionReason: string;
+            readonly platforms: readonly unknown[];
+          }
+        >;
+      };
+      decideForGroup(group: unknown): void;
+      findVehicleEngagementOption(
+        group: unknown,
+        target: unknown,
+        platform: unknown,
+      ): { readonly path: readonly { x: number; z: number }[] } | undefined;
+      advanceMovement(): void;
+    };
+    const group = internals.state.groupsById.get("ember-vehicle")!;
+    const target = internals.state.groupsById.get("azure-vehicle")!;
+    const initialCell = { ...group.cell };
+
+    internals.decideForGroup(group);
+    expect(group.decisionReason).toBe("vehicle-engagement-position");
+    internals.advanceMovement();
+    internals.advanceMovement();
+
+    const inFlightCell = { ...group.movingTo! };
+    const progressBeforeRefresh = group.moveProgress;
+    expect(progressBeforeRefresh).toBeGreaterThan(0);
+    expect(progressBeforeRefresh).toBeLessThan(group.moveCost);
+    expect(
+      internals.findVehicleEngagementOption(group, target, group.platforms[0])?.path[0],
+    ).toEqual(initialCell);
+
+    internals.decideForGroup(group);
+
+    expect(group.movingTo).toEqual(inFlightCell);
+    expect(group.moveProgress).toBe(progressBeforeRefresh);
+
+    for (let tick = 0; tick < 30; tick += 1) {
+      internals.advanceMovement();
+    }
+
+    expect(group.cell).not.toEqual(initialCell);
+    expect(group.cell).toEqual(inFlightCell);
   });
 
   it("freezes an unfinished crew action in the final result and state hash", () => {

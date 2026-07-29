@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createDemoBattleSetup } from "../demo/setup";
 import {
+  BATTLE_RULES_VERSION,
   DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+  PRE_COMBINED_ARMS_BATTLE_RULES_VERSION,
   PRE_TRANSPORT_BATTLE_RULES_VERSION,
   createSimulation,
   migrateBattleSetup,
@@ -28,6 +30,18 @@ describe("explicit transport assignments", () => {
       rulesVersion: PRE_TRANSPORT_BATTLE_RULES_VERSION,
     });
 
+    expect(migrated.transportAssignments).toEqual(setup.transportAssignments);
+    expect(migrated.groups).toEqual(setup.groups);
+  });
+
+  it("preserves stage-3.3 fields while upgrading combined-arms rules", () => {
+    const setup = createTransportSetup();
+    const migrated = migrateBattleSetup({
+      ...setup,
+      rulesVersion: PRE_COMBINED_ARMS_BATTLE_RULES_VERSION,
+    });
+
+    expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
     expect(migrated.transportAssignments).toEqual(setup.transportAssignments);
     expect(migrated.groups).toEqual(setup.groups);
   });
@@ -173,6 +187,97 @@ describe("explicit transport assignments", () => {
         (member) => member.groupId === EMBER_PASSENGER_GROUP_ID,
       ),
     ).toHaveLength(8);
+  });
+
+  it("selects a safer dismount cell from the observed threat snapshot", () => {
+    const first = createSimulation(createTransportSetup());
+    const second = createSimulation(createTransportSetup());
+    const platform = first.inspect(EMBER_PLATFORM_ID) as PlatformInspection;
+    const observedThreat = { x: platform.cell.x - 4, z: platform.cell.z - 4 };
+    addDirectContact(first, observedThreat);
+    addDirectContact(second, observedThreat);
+
+    const firstInternals = first as unknown as {
+      updateTransportAssignments(): void;
+    };
+    const secondInternals = second as unknown as {
+      readonly state: {
+        readonly groupsById: Map<string, { cell: { x: number; z: number } }>;
+      };
+      updateTransportAssignments(): void;
+    };
+    secondInternals.state.groupsById.get(AZURE_TARGET_GROUP_ID)!.cell = {
+      x: platform.cell.x - 8,
+      z: platform.cell.z + 6,
+    };
+
+    firstInternals.updateTransportAssignments();
+    secondInternals.updateTransportAssignments();
+
+    const firstTransport = (
+      first.inspect(EMBER_PASSENGER_GROUP_ID) as GroupInspection
+    ).transport;
+    const secondTransport = (
+      second.inspect(EMBER_PASSENGER_GROUP_ID) as GroupInspection
+    ).transport;
+    expect(firstTransport?.destination).toEqual(secondTransport?.destination);
+    expect(firstTransport?.destination?.x).toBeGreaterThan(platform.cell.x);
+    expect(firstTransport?.destination?.z).toBeGreaterThan(platform.cell.z);
+    expect(firstTransport?.dismountEvaluation).toMatchObject({
+      reason: "direct-contact",
+      knownThreats: [
+        {
+          targetGroupId: AZURE_TARGET_GROUP_ID,
+          lastKnown: observedThreat,
+        },
+      ],
+    });
+  });
+
+  it("does not react to an unobserved enemy beside the transport", () => {
+    const simulation = createSimulation(createTransportSetup());
+    const platform = simulation.inspect(EMBER_PLATFORM_ID) as PlatformInspection;
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly groupsById: Map<string, { cell: { x: number; z: number } }>;
+      };
+      updateTransportAssignments(): void;
+    };
+    internals.state.groupsById.get(AZURE_TARGET_GROUP_ID)!.cell = {
+      x: platform.cell.x + 1,
+      z: platform.cell.z,
+    };
+
+    internals.updateTransportAssignments();
+
+    expect(
+      (simulation.inspect(EMBER_PASSENGER_GROUP_ID) as GroupInspection).transport,
+    ).toMatchObject({ status: "embarked" });
+  });
+
+  it("dismounts passengers when the platform becomes damaged", () => {
+    const simulation = createSimulation(createTransportSetup());
+    const internals = simulation as unknown as {
+      readonly state: {
+        readonly platformsById: Map<
+          string,
+          { readonly components: { integrityBps: number; state: string }[] }
+        >;
+      };
+      updateTransportAssignments(): void;
+    };
+    const platform = internals.state.platformsById.get(EMBER_PLATFORM_ID)!;
+    platform.components[0]!.integrityBps = 8_000;
+    platform.components[0]!.state = "damaged";
+
+    internals.updateTransportAssignments();
+
+    expect(
+      (simulation.inspect(EMBER_PASSENGER_GROUP_ID) as GroupInspection).transport,
+    ).toMatchObject({
+      status: "disembarking",
+      dismountEvaluation: { reason: "platform-risk" },
+    });
   });
 
   it("allows the same explicit pair to embark again after dismounting", () => {
@@ -375,7 +480,10 @@ function transportOptions(mode: "conflict" | "defense") {
   } as const;
 }
 
-function addDirectContact(simulation: ReturnType<typeof createSimulation>): void {
+function addDirectContact(
+  simulation: ReturnType<typeof createSimulation>,
+  lastKnown = { x: 30, z: 8 },
+): void {
   const internals = simulation as unknown as {
     readonly state: {
       readonly tick: number;
@@ -391,7 +499,9 @@ function addDirectContact(simulation: ReturnType<typeof createSimulation>): void
     AZURE_TARGET_GROUP_ID,
     {
       targetGroupId: AZURE_TARGET_GROUP_ID,
-      lastKnown: { x: 30, z: 8 },
+      targetFactionId: "azure",
+      targetProfile: "platform",
+      lastKnown,
       observedAt: internals.state.tick,
       lastDirectTick: internals.state.tick,
       confidenceBps: 10_000,

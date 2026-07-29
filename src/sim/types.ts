@@ -1,7 +1,11 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
-export const BATTLE_RULES_VERSION = "stage-3.3" as const;
+export const BATTLE_RULES_VERSION = "stage-3.5" as const;
+/** The combined-arms tactical contract before stable vehicle engagement movement. */
+export const PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION = "stage-3.4" as const;
+/** The transport-capable contract before combined-arms tactical AI. */
+export const PRE_COMBINED_ARMS_BATTLE_RULES_VERSION = "stage-3.3" as const;
 /** The armor-capable contract before explicit transport runtime behavior. */
 export const PRE_TRANSPORT_BATTLE_RULES_VERSION = "stage-3.2" as const;
 /** The crew-capable contract before armor penetration and component damage. */
@@ -79,6 +83,7 @@ export type MemberId = string;
 export type PlatformId = string;
 export type ObjectiveId = string;
 export type TemplateId = string;
+export type TargetProfile = "personnel" | "platform";
 
 export interface GridCoord {
   readonly x: number;
@@ -156,6 +161,57 @@ export interface CoverEvaluationInspection {
   readonly score: number;
   readonly evaluatedAt: Tick;
   readonly threat?: CoverThreatInspection;
+}
+
+export interface TargetScoreComponentsInspection {
+  readonly effect: number;
+  readonly confidence: number;
+  readonly recency: number;
+  readonly distance: number;
+  readonly task: number;
+  readonly retention: number;
+  readonly direct: number;
+}
+
+export interface TargetCandidateInspection {
+  readonly targetGroupId: GroupId;
+  readonly targetProfile: TargetProfile;
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly confidenceBps: number;
+  readonly source: CoverThreatSource;
+  readonly compatible: boolean;
+  readonly score: number;
+  readonly components: TargetScoreComponentsInspection;
+}
+
+export interface TargetEvaluationInspection {
+  readonly evaluatedAt: Tick;
+  readonly selectedTargetId?: GroupId;
+  readonly candidates: readonly TargetCandidateInspection[];
+}
+
+export type VehicleEngagementReason =
+  | "move-to-firing-position"
+  | "hold-firing-position"
+  | "orient-armor"
+  | "no-firing-position";
+
+export interface VehicleEngagementScoreComponentsInspection {
+  readonly range: number;
+  readonly route: number;
+  readonly facing: number;
+  readonly retention: number;
+}
+
+export interface VehicleEngagementInspection {
+  readonly targetGroupId: GroupId;
+  readonly reason: VehicleEngagementReason;
+  readonly evaluatedAt: Tick;
+  readonly selectedCell?: GridCoord;
+  readonly desiredFacing?: StaticObjectFacing;
+  readonly score: number;
+  readonly components: VehicleEngagementScoreComponentsInspection;
 }
 
 export interface BattleMapLayers {
@@ -591,6 +647,38 @@ export interface TransportInspection {
   readonly status: TransportStatus;
   readonly ticksRemaining: Tick;
   readonly destination?: GridCoord;
+  readonly dismountEvaluation?: TransportDismountEvaluationInspection;
+}
+
+export type TransportDismountReason =
+  | "routing"
+  | "platform-risk"
+  | "direct-contact"
+  | "objective-proximity"
+  | "forced";
+
+export interface TransportKnownThreatInspection {
+  readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: TargetProfile;
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly confidenceBps: number;
+}
+
+export interface TransportDismountScoreComponentsInspection {
+  readonly threatSeparation: number;
+  readonly platformShielding: number;
+  readonly objectiveProximity: number;
+}
+
+export interface TransportDismountEvaluationInspection {
+  readonly reason: TransportDismountReason;
+  readonly evaluatedAt: Tick;
+  readonly selectedCell?: GridCoord;
+  readonly score: number;
+  readonly components: TransportDismountScoreComponentsInspection;
+  readonly knownThreats: readonly TransportKnownThreatInspection[];
 }
 
 export type MemberPlacement =
@@ -694,6 +782,8 @@ export interface RenderFrame {
 
 export interface ContactInspection {
   readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: TargetProfile;
   readonly lastKnown: GridCoord;
   readonly observedAt: Tick;
   readonly confidenceBps: number;
@@ -713,6 +803,7 @@ export interface GroupInspection {
   readonly moraleBps: number;
   readonly moraleState: MoraleState;
   readonly suppressionBps: number;
+  readonly modeEffective?: boolean;
   readonly activeMembers: number;
   readonly woundedMembers: number;
   readonly incapacitatedMembers: number;
@@ -724,6 +815,8 @@ export interface GroupInspection {
   readonly assignedObjectiveId?: ObjectiveId;
   readonly currentCover?: CoverInspection;
   readonly coverEvaluation?: CoverEvaluationInspection;
+  readonly targetEvaluation?: TargetEvaluationInspection;
+  readonly vehicleEngagement?: VehicleEngagementInspection;
   readonly platforms: readonly PlatformSummaryInspection[];
   readonly transport?: TransportInspection;
 }

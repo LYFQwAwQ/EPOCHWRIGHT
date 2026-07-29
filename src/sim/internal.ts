@@ -28,7 +28,11 @@ import type {
   PlatformMobilityState,
   PlatformMovementType,
   StaticObjectFacing,
+  TargetEvaluationInspection,
+  TargetProfile,
+  TransportDismountEvaluationInspection,
   TransportStatus,
+  VehicleEngagementInspection,
   ReinforcementBlockedPolicy,
   Tick,
 } from "./types";
@@ -100,6 +104,7 @@ export interface TransportAssignmentState {
   destination?: GridCoord;
   lastTransitionTick: Tick;
   passengerDamageResolved: boolean;
+  dismountEvaluation?: TransportDismountEvaluationInspection;
 }
 
 export interface DetectionState {
@@ -113,6 +118,8 @@ export interface DetectionState {
 
 export interface ContactState {
   readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: TargetProfile;
   lastKnown: GridCoord;
   observedAt: Tick;
   lastDirectTick: Tick;
@@ -148,6 +155,7 @@ export interface GroupState {
   moveProgress: number;
   moveCost: number;
   turnTicksRemaining: Tick;
+  turnGoalFacing?: StaticObjectFacing;
   waitAge: number;
   headingRadians: number;
   path: GridCoord[];
@@ -169,6 +177,8 @@ export interface GroupState {
   defenseRole?: "frontline" | "reserve";
   assignedObjectiveId?: ObjectiveId;
   coverDecision?: CoverDecisionState;
+  targetEvaluation?: TargetEvaluationInspection;
+  vehicleEngagement?: VehicleEngagementInspection;
 }
 
 export interface IntelMessage {
@@ -176,6 +186,8 @@ export interface IntelMessage {
   readonly factionId: FactionId;
   readonly sourceGroupId: GroupId;
   readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: TargetProfile;
   readonly observedAt: Tick;
   readonly deliveryAt: Tick;
   readonly lastKnown: GridCoord;

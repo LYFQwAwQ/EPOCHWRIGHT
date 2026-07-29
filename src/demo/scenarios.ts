@@ -19,6 +19,7 @@ export type DemoScenarioId =
   | "alliance-conflict"
   | "duel-conflict"
   | "vehicle-skirmish"
+  | "vehicle-defense"
   | "single-defense"
   | "sequence-defense"
   | "reinforcement-conflict";
@@ -49,6 +50,7 @@ export const DEMO_SCENARIOS: readonly DemoScenarioDefinition[] = [
   { id: "alliance-conflict", label: "三方同盟冲突", mode: "conflict" },
   { id: "duel-conflict", label: "双边正面冲突", mode: "conflict" },
   { id: "vehicle-skirmish", label: "车辆遭遇战", mode: "conflict" },
+  { id: "vehicle-defense", label: "合成兵种防守", mode: "defense" },
   { id: "single-defense", label: "单目标防守", mode: "defense" },
   { id: "sequence-defense", label: "三段纵深防守", mode: "defense" },
   { id: "reinforcement-conflict", label: "增援波次冲突", mode: "conflict" },
@@ -122,6 +124,26 @@ export function createDemoScenarioOptions(
         rockCoverage: 0,
         wallCoverage: 0,
         mode: "conflict",
+      };
+    case "vehicle-defense":
+      return {
+        ...shared,
+        maximumDurationSeconds: 60,
+        stalemateSeconds: 35,
+        width: 56,
+        height: 36,
+        groupsPerFaction: 3,
+        vehicleGroupsPerFaction: 1,
+        transportPairsPerFaction: 1,
+        factions: TWO_FACTIONS,
+        mountainDensity: 0,
+        roughness: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+        treeCoverage: 0,
+        rockCoverage: 0,
+        wallCoverage: 0,
+        mode: "defense",
       };
     case "single-defense":
       return {

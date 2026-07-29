@@ -36,6 +36,8 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "advance-objective": "向防守目标推进",
   "assault-objective": "在交火中突击目标区",
   "capture-objective": "驻留目标区并完成占领",
+  "vehicle-engagement-position": "前往车辆射击位置",
+  "orient-armor": "调整车体正面朝向",
   "transport-rendezvous": "与配对运输平台会合",
   "transport-embarking": "整组搭载中",
   "transport-embarked": "已搭载，随平台机动",
@@ -73,6 +75,26 @@ const threatSourceLabels: Readonly<Record<string, string>> = {
   "direct-contact": "直接接触",
   "local-contact": "本组最后已知",
   "shared-contact": "共享情报",
+};
+
+const targetProfileLabels: Readonly<Record<string, string>> = {
+  personnel: "人员",
+  platform: "平台",
+};
+
+const vehicleEngagementReasonLabels: Readonly<Record<string, string>> = {
+  "move-to-firing-position": "转移至有效射击位",
+  "orient-armor": "以正面装甲对敌",
+  "hold-firing-position": "保持当前射击位",
+  "no-firing-position": "暂无合法射击位",
+};
+
+const transportDismountReasonLabels: Readonly<Record<string, string>> = {
+  routing: "乘客组撤离",
+  "platform-risk": "平台受损或能力下降",
+  "direct-contact": "运输组发现直接威胁",
+  "objective-proximity": "接近任务目标",
+  forced: "平台失效强制下车",
 };
 
 function currentCoverLabel(inspection: GroupInspection): string {
@@ -178,7 +200,57 @@ export function Inspector({
             </div>
             <strong className="action-label">{actionLabels[inspection.action] ?? inspection.action}</strong>
             <p>{reasonLabels[inspection.decisionReason] ?? inspection.decisionReason}</p>
+            {inspection.modeEffective !== undefined && (
+              <div className="metric-label metric-label--spaced" data-testid="mode-effectiveness">
+                <span>模式有效战力</span>
+                <strong>{inspection.modeEffective ? "有效" : "无效"}</strong>
+              </div>
+            )}
           </section>
+
+          {inspection.targetEvaluation && (
+            <section className="inspector-section" data-testid="target-evaluation">
+              <div className="section-title">
+                <Target size={15} />
+                <span>目标效用</span>
+                <b>{inspection.targetEvaluation.candidates.length}</b>
+              </div>
+              <strong className="action-label">
+                {inspection.targetEvaluation.selectedTargetId ?? "暂无兼容目标"}
+              </strong>
+              {inspection.targetEvaluation.candidates.slice(0, 3).map((candidate) => (
+                <div className="contact-row" key={candidate.targetGroupId}>
+                  <Target size={14} />
+                  <span>
+                    {candidate.targetGroupId} · {targetProfileLabels[candidate.targetProfile] ?? candidate.targetProfile}
+                  </span>
+                  <strong>{candidate.compatible ? candidate.score : "不适配"}</strong>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {inspection.vehicleEngagement && (
+            <section className="inspector-section" data-testid="vehicle-engagement">
+              <div className="section-title">
+                <Truck size={15} />
+                <span>车辆交战位</span>
+                <b>{inspection.vehicleEngagement.score} 分</b>
+              </div>
+              <strong className="action-label">
+                {vehicleEngagementReasonLabels[inspection.vehicleEngagement.reason] ??
+                  inspection.vehicleEngagement.reason}
+              </strong>
+              {inspection.vehicleEngagement.selectedCell && (
+                <p>
+                  网格 {inspection.vehicleEngagement.selectedCell.x}, {inspection.vehicleEngagement.selectedCell.z}
+                  {inspection.vehicleEngagement.desiredFacing !== undefined
+                    ? ` · 朝向 ${inspection.vehicleEngagement.desiredFacing}`
+                    : ""}
+                </p>
+              )}
+            </section>
+          )}
 
           {inspection.platforms.length > 0 && (
             <section className="inspector-section" data-testid="platform-status">
@@ -222,6 +294,16 @@ export function Inspector({
               {(inspection.transport.status === "embarking" ||
                 inspection.transport.status === "disembarking") && (
                 <p>剩余 {inspection.transport.ticksRemaining} tick</p>
+              )}
+              {inspection.transport.dismountEvaluation && (
+                <p data-testid="transport-dismount-evaluation">
+                  {transportDismountReasonLabels[inspection.transport.dismountEvaluation.reason] ??
+                    inspection.transport.dismountEvaluation.reason}
+                  {inspection.transport.dismountEvaluation.selectedCell
+                    ? ` · 下车格 ${inspection.transport.dismountEvaluation.selectedCell.x},${inspection.transport.dismountEvaluation.selectedCell.z}`
+                    : " · 无合法下车格"}
+                  {` · ${inspection.transport.dismountEvaluation.knownThreats.length} 个已知威胁`}
+                </p>
               )}
             </section>
           )}

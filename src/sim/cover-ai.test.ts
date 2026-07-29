@@ -167,6 +167,8 @@ function createSuppressionScenario(
   group.suppressionBps = 8_000;
   group.localContacts.set("azure-hidden", {
     targetGroupId: "azure-hidden",
+    targetFactionId: "azure",
+    targetProfile: "personnel",
     lastKnown: { x: 12, z: 18 },
     observedAt: 0,
     lastDirectTick: -100,
@@ -238,6 +240,8 @@ interface MutableGroupForCoverTest {
     string,
     {
       targetGroupId: string;
+      targetFactionId: string;
+      targetProfile: "personnel" | "platform";
       lastKnown: GridCoord;
       observedAt: number;
       lastDirectTick: number;

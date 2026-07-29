@@ -692,7 +692,7 @@ type BattleEvent =
 
 阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
 
-当前 `stage-3.3` 已实现四类：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和 `started|completed|cancelled` 阶段；`embarkation-changed` 携带运输关系、平台、乘客编组、动作、阶段和可选取消/强制原因。四者都携带稳定实体关系，观察端只消费事实而不反推状态。
+自 `stage-3.3` 起已实现四类：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和 `started|completed|cancelled` 阶段；`embarkation-changed` 携带运输关系、平台、乘客编组、动作、阶段和可选取消/强制原因。四者都携带稳定实体关系，观察端只消费事实而不反推状态。
 
 ## 16. 战斗结果
 
@@ -753,7 +753,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.3`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把字段不变的 `stage-3/stage-3.0`、`stage-3.1` 与 `stage-3.2` 输入显式升级到当前规则；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.5`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把字段不变的 `stage-3/stage-3.0`、`stage-3.1`、`stage-3.2`、`stage-3.3` 与 `stage-3.4` 输入显式升级到当前规则；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -767,5 +767,9 @@ interface PlatformResult {
 `VEHICLE-005` 继续保持 setup schema 和 `content-2` 字段版本，把规则升级到 `stage-3.2`：`platform-damage` 效果驱动装甲面、穿透、外露/内部部件与乘员伤害；平台独立格、部件状态、弃车后的移动类型和静态占用进入状态哈希。`stage-3.1` 输入迁移只更新规则版本，不改写调用方内容；没有 `platform-damage` 的既有武器仍不能伤害平台。
 
 `VEHICLE-006` 继续保持 setup schema 和 `content-2` 字段版本，把规则升级到 `stage-3.3`：非空 `transportAssignments` 在初始化时验证并建立运行时关系；上下车动作、取消、受困、一次性乘客损伤、最终乘客列表和成员位置进入哈希、inspection、事件与结果。`stage-3.2` 输入迁移只更新规则版本并保留调用方显式字段；没有运输关系的既有战斗除版本化 setup hash 外不产生运输状态或行为。
+
+`VEHICLE-007` 继续保持 setup schema 和 `content-2` 字段版本，把规则升级到 `stage-3.4`：目标效用只消费武器效果、任务与接触快照；车辆交战位、车体朝向和运输下车格使用稳定整数评分；目标、车辆与下车评估进入状态哈希和本方 inspection。`stage-3.3` 输入迁移只更新规则版本并完整保留内容、平台和运输字段；观察端只显示模拟投影，不复制效用或模式有效战力规则。
+
+`stage-3.5` 保持 setup schema 和内容字段不变：车辆交战位计划不会在单格转向或移动完成前被 AI 刷新重置；完成该格后的重规划总是从当前实际锚格开始。`stage-3.4` 输入只更新规则版本并完整保留调用方字段。
 
 内容规范哈希参与 setup 哈希，因此固定 seed 回归比较“同输入同哈希”，不承诺跨 schema 的旧哈希字面值不变。版本不匹配、内容版本不支持、模板引用缺失或编制槽位不一致都会在创建运行时状态前明确拒绝。
