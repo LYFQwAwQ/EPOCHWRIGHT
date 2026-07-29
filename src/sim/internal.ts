@@ -25,6 +25,7 @@ import type {
   PlatformDisposition,
   PlatformId,
   PlatformDamageEffectDefinition,
+  PlatformDeploymentState,
   PlatformMobilityState,
   PlatformMovementType,
   StaticObjectFacing,
@@ -74,6 +75,16 @@ export interface PlatformWeaponStateValue {
   shotCooldownTicks: Tick;
 }
 
+export interface PlatformDeploymentStateValue {
+  state: PlatformDeploymentState;
+  ticksRemaining: Tick;
+  startedAt?: Tick;
+  returnState?: Extract<PlatformDeploymentState, "packed" | "deployed">;
+  directRoundsFired: number;
+  indirectRoundsFired: number;
+  missionsAssigned: number;
+}
+
 export interface PlatformState {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -91,6 +102,7 @@ export interface PlatformState {
   readonly crewReassignments: CrewReassignmentState[];
   readonly components: PlatformComponentStateValue[];
   readonly weaponStates: PlatformWeaponStateValue[];
+  readonly deployment?: PlatformDeploymentStateValue;
   readonly passengerGroupIds: GroupId[];
 }
 

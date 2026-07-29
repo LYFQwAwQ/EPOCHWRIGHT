@@ -8,26 +8,32 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreArtilleryBattleContentBundle,
+  PreArtilleryWeaponTemplate,
   SensorTemplate,
   StatusTemplate,
   TemplateId,
+  WeaponFireModeDefinition,
   WeaponTemplate,
 } from "./types";
 
-export const BATTLE_CONTENT_VERSION = "content-2" as const;
+export const BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
 export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
 export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
+export const DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID = "artillery-howitzer-v1" as const;
 export const DEFAULT_CREW_MEMBER_TEMPLATE_ID = "vehicle-driver-v1" as const;
 export const DEFAULT_GUNNER_MEMBER_TEMPLATE_ID = "vehicle-gunner-v1" as const;
 export const DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID = "vehicle-relief-crew-v1" as const;
 export const DEFAULT_WHEELED_GROUP_TEMPLATE_ID = "vehicle-wheeled-scout-group-v1" as const;
 export const DEFAULT_TRACKED_GROUP_TEMPLATE_ID = "vehicle-tracked-scout-group-v1" as const;
+export const DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID = "artillery-self-propelled-group-v1" as const;
 export const DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID = "vehicle-wheeled-scout-v1" as const;
 export const DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID = "vehicle-tracked-scout-v1" as const;
+export const DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID = "artillery-self-propelled-v1" as const;
 
 const DEFAULT_CELL_SIZE_MM = 4_000;
 
@@ -53,6 +59,7 @@ export function createDefaultBattleContent(
       DEFAULT_GROUP_TEMPLATE_ID,
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
+      DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
     ],
     allowedMemberTemplateIds: [
       DEFAULT_MEMBER_TEMPLATE_ID,
@@ -63,8 +70,13 @@ export function createDefaultBattleContent(
     allowedPlatformTemplateIds: [
       DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
       DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+      DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
     ],
-    allowedWeaponTemplateIds: [DEFAULT_WEAPON_TEMPLATE_ID, DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID],
+    allowedWeaponTemplateIds: [
+      DEFAULT_WEAPON_TEMPLATE_ID,
+      DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
+      DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID,
+    ],
     allowedSensorTemplateIds: [DEFAULT_SENSOR_TEMPLATE_ID],
   };
   const group: GroupTemplate = {
@@ -139,6 +151,22 @@ export function createDefaultBattleContent(
     "vehicle-tracked-scout",
     1,
   );
+  const artilleryPlatform = createDefaultPlatformTemplate(
+    DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+    "tracked",
+    "artillery-self-propelled",
+    1,
+    {
+      weaponTemplateId: DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID,
+      tags: ["vehicle", "artillery", "tracked"],
+      deploymentRule: {
+        deployTicks: 20,
+        packTicks: 16,
+        requiredStationIds: ["gunner"],
+        requiredComponentIds: ["primary-weapon"],
+      },
+    },
+  );
   const wheeledGroup = createDefaultVehicleGroupTemplate(
     DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
@@ -146,6 +174,11 @@ export function createDefaultBattleContent(
   const trackedGroup = createDefaultVehicleGroupTemplate(
     DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
     DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+  );
+  const artilleryGroup = createDefaultVehicleGroupTemplate(
+    DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
+    DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+    ["vehicle", "artillery"],
   );
   const sensor: SensorTemplate = {
     id: DEFAULT_SENSOR_TEMPLATE_ID,
@@ -160,15 +193,22 @@ export function createDefaultBattleContent(
     eraTags: [DEFAULT_ERA_ID],
     techTags: ["basic-firearms"],
     targetDomains: ["ground"],
-    minimumRangeMm: Math.min(1, weaponRangeCells) * cellSizeMm,
-    optimalRangeMm: preferredRangeCells * cellSizeMm,
-    maximumRangeMm: weaponRangeCells * cellSizeMm,
-    aimTicks: 0,
+    fireModes: [
+      {
+        id: "direct",
+        targeting: "direct",
+        trajectory: "resolved",
+        minimumRangeMm: Math.min(1, weaponRangeCells) * cellSizeMm,
+        optimalRangeMm: preferredRangeCells * cellSizeMm,
+        maximumRangeMm: weaponRangeCells * cellSizeMm,
+        aimTicks: 0,
+        requiresDeployedPlatform: false,
+      },
+    ],
     magazineSize: 12,
     reloadTicks: 36,
     shotIntervalTicks: 7,
     firePattern: { kind: "single", shotsPerAction: 1 },
-    trajectory: "resolved",
     damageEffects: [
       { kind: "damage", amountBps: 10_000 },
       { kind: "suppression", amountBps: 90 },
@@ -199,6 +239,21 @@ export function createDefaultBattleContent(
     suppressionBps: 75,
     exposureOnFireBps: 2_400,
   };
+  const artilleryWeapon: WeaponTemplate = {
+    ...platformWeapon,
+    id: DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID,
+    tags: ["artillery", "howitzer", "anti-vehicle"],
+    techTags: ["basic-artillery"],
+    fireModes: platformWeapon.fireModes.map((mode) => ({
+      ...mode,
+      requiresDeployedPlatform: true,
+    })),
+    magazineSize: 6,
+    reloadTicks: 60,
+    shotIntervalTicks: 20,
+    suppressionBps: 120,
+    exposureOnFireBps: 3_000,
+  };
 
   return {
     contentVersion: BATTLE_CONTENT_VERSION,
@@ -208,6 +263,7 @@ export function createDefaultBattleContent(
       [group.id]: group,
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
+      [artilleryGroup.id]: artilleryGroup,
     },
     memberTemplates: {
       [member.id]: member,
@@ -218,8 +274,13 @@ export function createDefaultBattleContent(
     platformTemplates: {
       [wheeledPlatform.id]: wheeledPlatform,
       [trackedPlatform.id]: trackedPlatform,
+      [artilleryPlatform.id]: artilleryPlatform,
     },
-    weaponTemplates: { [weapon.id]: weapon, [platformWeapon.id]: platformWeapon },
+    weaponTemplates: {
+      [weapon.id]: weapon,
+      [platformWeapon.id]: platformWeapon,
+      [artilleryWeapon.id]: artilleryWeapon,
+    },
     sensorTemplates: { [sensor.id]: sensor },
     abilityTemplates: {},
     statusTemplates: {},
@@ -230,10 +291,11 @@ export function createDefaultBattleContent(
 function createDefaultVehicleGroupTemplate(
   id: string,
   platformTemplateId: string,
+  tags: readonly string[] = ["vehicle", "scout"],
 ): GroupTemplate {
   return {
     id,
-    tags: ["vehicle", "scout"],
+    tags: [...tags],
     eraTags: [DEFAULT_ERA_ID],
     techTags: ["basic-vehicles"],
     memberSlotRules: [
@@ -270,10 +332,15 @@ function createDefaultPlatformTemplate(
   movementType: PlatformTemplate["movementType"],
   visualTypeId: string,
   turnTicksPer45Degrees: number,
+  options: {
+    readonly weaponTemplateId?: string;
+    readonly tags?: readonly string[];
+    readonly deploymentRule?: PlatformTemplate["deploymentRule"];
+  } = {},
 ): PlatformTemplate {
   return {
     id,
-    tags: ["vehicle", "scout", movementType],
+    tags: [...(options.tags ?? ["vehicle", "scout", movementType])],
     eraTags: [DEFAULT_ERA_ID],
     techTags: ["basic-vehicles"],
     movementType,
@@ -323,7 +390,8 @@ function createDefaultPlatformTemplate(
         external: true,
         disabledAtBps: 2_500,
         requiredStationIds: ["gunner"],
-        weaponTemplateId: DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
+        weaponTemplateId:
+          options.weaponTemplateId ?? DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
       },
     ],
     crewStationRules: [
@@ -349,6 +417,13 @@ function createDefaultPlatformTemplate(
         substituteEfficiencyBps: 10_000,
       },
     ],
+    deploymentRule: options.deploymentRule
+      ? {
+          ...options.deploymentRule,
+          requiredStationIds: [...options.deploymentRule.requiredStationIds],
+          requiredComponentIds: [...options.deploymentRule.requiredComponentIds],
+        }
+      : undefined,
     transportCapacityUnits: 8,
     embarkTicks: 20,
     disembarkTicks: 16,
@@ -357,10 +432,33 @@ function createDefaultPlatformTemplate(
 }
 
 export function migrateBattleContent(
-  content: BattleContentBundle | LegacyBattleContentBundle,
+  content:
+    | BattleContentBundle
+    | PreArtilleryBattleContentBundle
+    | LegacyBattleContentBundle,
 ): BattleContentBundle {
   if (content.contentVersion === BATTLE_CONTENT_VERSION) {
     return cloneBattleContent(content);
+  }
+  if (content.contentVersion === "content-2") {
+    return {
+      ...content,
+      contentVersion: BATTLE_CONTENT_VERSION,
+      eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
+      groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
+      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
+      weaponTemplates: Object.fromEntries(
+        Object.entries(content.weaponTemplates).map(([id, template]) => [
+          id,
+          migratePreArtilleryWeaponTemplate(template),
+        ]),
+      ),
+      sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
+      abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+      statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
+      terrainCatalog: { ...content.terrainCatalog },
+    };
   }
   if (
     Object.keys(content.platformTemplates).length > 0 ||
@@ -370,9 +468,9 @@ export function migrateBattleContent(
   ) {
     throw new Error("content-1 cannot migrate referenced platform templates.");
   }
-  return {
+  const migratedLegacy: PreArtilleryBattleContentBundle = {
     ...content,
-    contentVersion: BATTLE_CONTENT_VERSION,
+    contentVersion: "content-2",
     eraTemplates: Object.fromEntries(
       Object.entries(content.eraTemplates).map(([id, era]) => [
         id,
@@ -407,12 +505,13 @@ export function migrateBattleContent(
       ]),
     ),
     platformTemplates: {},
-    weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
+    weaponTemplates: cloneRecord(content.weaponTemplates, clonePreArtilleryWeaponTemplate),
     sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
     abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
     statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
     terrainCatalog: { ...content.terrainCatalog },
   };
+  return migrateBattleContent(migratedLegacy);
 }
 
 export function cloneBattleContent(content: BattleContentBundle): BattleContentBundle {
@@ -469,6 +568,15 @@ export function validateBattleContent(content: BattleContentBundle): void {
       if (!content.weaponTemplates[slot.weaponTemplateId]) {
         throw new Error(`Member template ${member.id} references an unknown weapon template.`);
       }
+      if (
+        content.weaponTemplates[slot.weaponTemplateId]!.fireModes.some(
+          (mode) => mode.requiresDeployedPlatform,
+        )
+      ) {
+        throw new Error(
+          `Member weapon ${slot.weaponTemplateId} cannot require platform deployment.`,
+        );
+      }
     }
   }
 
@@ -482,12 +590,14 @@ export function validateBattleContent(content: BattleContentBundle): void {
     const weapon = content.weaponTemplates[weaponId]!;
     if (
       !weapon.targetDomains.includes("ground") ||
-      weapon.trajectory !== "resolved" ||
+      weapon.fireModes.length !== 1 ||
+      weapon.fireModes[0]!.targeting !== "direct" ||
+      weapon.fireModes[0]!.trajectory !== "resolved" ||
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1 ||
-      weapon.aimTicks !== 0
+      weapon.fireModes[0]!.aimTicks !== 0
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-2.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-3.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -536,6 +646,17 @@ export function validateBattleContent(content: BattleContentBundle): void {
       ) {
         throw new Error(`Platform template ${platform.id} references a weapon outside era ${era.id}.`);
       }
+      if (
+        component.weaponTemplateId &&
+        content.weaponTemplates[component.weaponTemplateId]!.fireModes.some(
+          (mode) => mode.requiresDeployedPlatform,
+        ) &&
+        !platform.deploymentRule
+      ) {
+        throw new Error(
+          `Platform template ${platform.id} requires a deployment rule for weapon ${component.weaponTemplateId}.`,
+        );
+      }
     }
   }
 }
@@ -568,6 +689,14 @@ export function getMemberTemplate(content: BattleContentBundle, id?: TemplateId)
 
 export function getWeaponTemplate(content: BattleContentBundle, id: TemplateId): WeaponTemplate {
   return content.weaponTemplates[id] ?? missingTemplate("weapon", id);
+}
+
+export function getPrimaryFireMode(weapon: WeaponTemplate): WeaponFireModeDefinition {
+  const mode = weapon.fireModes[0];
+  if (!mode) {
+    throw new Error(`Weapon template ${weapon.id} has no usable fire mode.`);
+  }
+  return mode;
 }
 
 export function getPlatformTemplate(content: BattleContentBundle, id: TemplateId): PlatformTemplate {
@@ -649,14 +778,57 @@ function validateMemberTemplate(template: MemberTemplate): void {
 function validateWeaponTemplate(template: WeaponTemplate): void {
   validateTags(template.id, template.tags, template.eraTags, template.techTags);
   if (
-    !Number.isInteger(template.minimumRangeMm) ||
-    !Number.isInteger(template.optimalRangeMm) ||
-    !Number.isInteger(template.maximumRangeMm) ||
-    template.minimumRangeMm < 0 ||
-    template.minimumRangeMm > template.optimalRangeMm ||
-    template.optimalRangeMm > template.maximumRangeMm
+    template.fireModes.length === 0 ||
+    new Set(template.fireModes.map((mode) => mode.id)).size !== template.fireModes.length ||
+    template.fireModes.some((mode) => !mode.id)
   ) {
-    throw new Error(`Weapon template ${template.id} has invalid range bounds.`);
+    throw new Error(`Weapon template ${template.id} requires unique non-empty fire modes.`);
+  }
+  for (const mode of template.fireModes) {
+    if (
+      !Number.isInteger(mode.minimumRangeMm) ||
+      !Number.isInteger(mode.optimalRangeMm) ||
+      !Number.isInteger(mode.maximumRangeMm) ||
+      mode.minimumRangeMm < 0 ||
+      mode.minimumRangeMm > mode.optimalRangeMm ||
+      mode.optimalRangeMm > mode.maximumRangeMm ||
+      !Number.isInteger(mode.aimTicks) ||
+      mode.aimTicks < 0 ||
+      typeof mode.requiresDeployedPlatform !== "boolean"
+    ) {
+      throw new Error(`Weapon template ${template.id} has an invalid fire mode.`);
+    }
+    if (mode.trajectory === "logical-projectile") {
+      for (const value of [
+        mode.projectileSpeedMmPerTick,
+        mode.muzzleHeightMm,
+        mode.apexHeightMm,
+        mode.blastRadiusMm,
+      ]) {
+        if (!Number.isInteger(value) || value < 0) {
+          throw new Error(`Weapon template ${template.id} has invalid projectile fields.`);
+        }
+      }
+      if (!mode.visualTypeId) {
+        throw new Error(`Weapon template ${template.id} requires a projectile visual type.`);
+      }
+      if (mode.targeting === "indirect") {
+        const uncertainty = mode.uncertainty;
+        for (const value of [
+          uncertainty.baseScatterMm,
+          uncertainty.ageScatterMmPerSecond,
+          uncertainty.sameFactionRelayPenaltyMm,
+          uncertainty.alliedRelayPenaltyMm,
+          uncertainty.zeroConfidencePenaltyMm,
+          uncertainty.maximumScatterMm,
+          uncertainty.maximumContactAgeTicks,
+        ]) {
+          if (!Number.isInteger(value) || value < 0) {
+            throw new Error(`Weapon template ${template.id} has invalid uncertainty fields.`);
+          }
+        }
+      }
+    }
   }
   if (
     !template.targetDomains.length ||
@@ -666,7 +838,6 @@ function validateWeaponTemplate(template: WeaponTemplate): void {
     throw new Error(`Weapon template ${template.id} has invalid target domains.`);
   }
   for (const [label, value, minimum] of [
-    ["aimTicks", template.aimTicks, 0],
     ["magazineSize", template.magazineSize, 1],
     ["reloadTicks", template.reloadTicks, 0],
     ["shotIntervalTicks", template.shotIntervalTicks, 1],
@@ -681,9 +852,6 @@ function validateWeaponTemplate(template: WeaponTemplate): void {
     (template.firePattern.kind !== "single" && template.firePattern.kind !== "burst")
   ) {
     throw new Error(`Weapon template ${template.id} has an invalid fire pattern.`);
-  }
-  if (template.trajectory !== "resolved" && template.trajectory !== "logical-projectile") {
-    throw new Error(`Weapon template ${template.id} has an invalid trajectory.`);
   }
   validateBps(template.suppressionBps, `Weapon template ${template.id}`, 10_000);
   validateBps(template.exposureOnFireBps, `Weapon template ${template.id}`, 10_000);
@@ -804,6 +972,21 @@ function validatePlatformTemplate(template: PlatformTemplate): void {
       (component.kind === "weapon") !== (component.weaponTemplateId !== undefined)
     ) {
       throw new Error(`Platform template ${template.id} has an invalid component.`);
+    }
+  }
+  if (template.deploymentRule) {
+    const rule = template.deploymentRule;
+    if (
+      !Number.isInteger(rule.deployTicks) ||
+      rule.deployTicks < 1 ||
+      !Number.isInteger(rule.packTicks) ||
+      rule.packTicks < 1 ||
+      new Set(rule.requiredStationIds).size !== rule.requiredStationIds.length ||
+      new Set(rule.requiredComponentIds).size !== rule.requiredComponentIds.length ||
+      rule.requiredStationIds.some((stationId) => !stationIds.has(stationId)) ||
+      rule.requiredComponentIds.some((componentId) => !componentIds.has(componentId))
+    ) {
+      throw new Error(`Platform template ${template.id} has an invalid deployment rule.`);
     }
   }
 }
@@ -946,6 +1129,13 @@ function hashPlatformTemplate(hasher: StateHasher, template: PlatformTemplate): 
     hasher.addNumber(station.replacementTicks);
     hasher.addNumber(station.substituteEfficiencyBps);
   }
+  hasher.addNumber(template.deploymentRule ? 1 : 0);
+  if (template.deploymentRule) {
+    hasher.addNumber(template.deploymentRule.deployTicks);
+    hasher.addNumber(template.deploymentRule.packTicks);
+    addSortedStrings(hasher, template.deploymentRule.requiredStationIds);
+    addSortedStrings(hasher, template.deploymentRule.requiredComponentIds);
+  }
   hasher.addNumber(template.transportCapacityUnits);
   hasher.addNumber(template.embarkTicks);
   hasher.addNumber(template.disembarkTicks);
@@ -958,16 +1148,37 @@ function hashWeaponTemplate(hasher: StateHasher, template: WeaponTemplate): void
   addSortedStrings(hasher, template.eraTags);
   addSortedStrings(hasher, template.techTags);
   addSortedStrings(hasher, template.targetDomains);
-  hasher.addNumber(template.minimumRangeMm);
-  hasher.addNumber(template.optimalRangeMm);
-  hasher.addNumber(template.maximumRangeMm);
-  hasher.addNumber(template.aimTicks);
+  for (const mode of template.fireModes) {
+    hasher.addString(mode.id);
+    hasher.addString(mode.targeting);
+    hasher.addString(mode.trajectory);
+    hasher.addNumber(mode.minimumRangeMm);
+    hasher.addNumber(mode.optimalRangeMm);
+    hasher.addNumber(mode.maximumRangeMm);
+    hasher.addNumber(mode.aimTicks);
+    hasher.addNumber(mode.requiresDeployedPlatform ? 1 : 0);
+    if (mode.trajectory === "logical-projectile") {
+      hasher.addNumber(mode.projectileSpeedMmPerTick);
+      hasher.addNumber(mode.muzzleHeightMm);
+      hasher.addNumber(mode.apexHeightMm);
+      hasher.addNumber(mode.blastRadiusMm);
+      hasher.addString(mode.visualTypeId);
+      if (mode.targeting === "indirect") {
+        hasher.addNumber(mode.uncertainty.baseScatterMm);
+        hasher.addNumber(mode.uncertainty.ageScatterMmPerSecond);
+        hasher.addNumber(mode.uncertainty.sameFactionRelayPenaltyMm);
+        hasher.addNumber(mode.uncertainty.alliedRelayPenaltyMm);
+        hasher.addNumber(mode.uncertainty.zeroConfidencePenaltyMm);
+        hasher.addNumber(mode.uncertainty.maximumScatterMm);
+        hasher.addNumber(mode.uncertainty.maximumContactAgeTicks);
+      }
+    }
+  }
   hasher.addNumber(template.magazineSize);
   hasher.addNumber(template.reloadTicks);
   hasher.addNumber(template.shotIntervalTicks);
   hasher.addString(template.firePattern.kind);
   hasher.addNumber(template.firePattern.shotsPerAction);
-  hasher.addString(template.trajectory);
   for (const effect of template.damageEffects) {
     hashEffect(hasher, effect);
   }
@@ -1053,6 +1264,13 @@ function clonePlatformTemplate(template: PlatformTemplate): PlatformTemplate {
       ...station,
       requiredRoleTags: [...station.requiredRoleTags],
     })),
+    deploymentRule: template.deploymentRule
+      ? {
+          ...template.deploymentRule,
+          requiredStationIds: [...template.deploymentRule.requiredStationIds],
+          requiredComponentIds: [...template.deploymentRule.requiredComponentIds],
+        }
+      : undefined,
   };
 }
 
@@ -1074,12 +1292,79 @@ function cloneWeaponTemplate(template: WeaponTemplate): WeaponTemplate {
     eraTags: [...template.eraTags],
     techTags: [...template.techTags],
     targetDomains: [...template.targetDomains],
+    fireModes: template.fireModes.map((mode) =>
+      mode.targeting === "indirect"
+        ? { ...mode, uncertainty: { ...mode.uncertainty } }
+        : { ...mode },
+    ),
     firePattern: { ...template.firePattern },
     damageEffects: template.damageEffects.map((effect) =>
       effect.kind === "platform-damage"
         ? { ...effect, attackTags: [...effect.attackTags] }
         : { ...effect },
     ),
+  };
+}
+
+function clonePreArtilleryWeaponTemplate(
+  template: PreArtilleryWeaponTemplate,
+): PreArtilleryWeaponTemplate {
+  return {
+    ...template,
+    tags: [...template.tags],
+    eraTags: [...template.eraTags],
+    techTags: [...template.techTags],
+    targetDomains: [...template.targetDomains],
+    firePattern: { ...template.firePattern },
+    damageEffects: template.damageEffects.map((effect) =>
+      effect.kind === "platform-damage"
+        ? { ...effect, attackTags: [...effect.attackTags] }
+        : { ...effect },
+    ),
+  };
+}
+
+function migratePreArtilleryWeaponTemplate(
+  template: PreArtilleryWeaponTemplate,
+): WeaponTemplate {
+  const {
+    minimumRangeMm,
+    optimalRangeMm,
+    maximumRangeMm,
+    aimTicks,
+    trajectory,
+    ...rest
+  } = clonePreArtilleryWeaponTemplate(template);
+  const fireMode: WeaponFireModeDefinition =
+    trajectory === "resolved"
+      ? {
+          id: "direct",
+          targeting: "direct",
+          trajectory,
+          minimumRangeMm,
+          optimalRangeMm,
+          maximumRangeMm,
+          aimTicks,
+          requiresDeployedPlatform: false,
+        }
+      : {
+          id: "direct",
+          targeting: "direct",
+          trajectory,
+          minimumRangeMm,
+          optimalRangeMm,
+          maximumRangeMm,
+          aimTicks,
+          requiresDeployedPlatform: false,
+          projectileSpeedMmPerTick: 0,
+          muzzleHeightMm: 0,
+          apexHeightMm: 0,
+          blastRadiusMm: 0,
+          visualTypeId: "legacy-projectile",
+        };
+  return {
+    ...rest,
+    fireModes: [fireMode],
   };
 }
 

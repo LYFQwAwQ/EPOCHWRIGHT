@@ -129,6 +129,7 @@ function filterObservationEvents(
       case "crew-station-changed":
       case "platform-state-changed":
       case "platform-component-changed":
+      case "platform-deployment-changed":
         return visibleGroupIds.has(event.groupId);
       case "weapon-fired":
         return visibleGroupIds.has(event.groupId) && visibleGroupIds.has(event.targetGroupId);

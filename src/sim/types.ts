@@ -1,7 +1,10 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
-export const BATTLE_RULES_VERSION = "stage-3.5" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
+export const BATTLE_RULES_VERSION = "stage-3.6" as const;
+/** The content-3 artillery contract before platform deployment behavior. */
+export const PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
+export const PRE_ARTILLERY_BATTLE_RULES_VERSION = "stage-3.5" as const;
 /** The combined-arms tactical contract before stable vehicle engagement movement. */
 export const PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION = "stage-3.4" as const;
 /** The transport-capable contract before combined-arms tactical AI. */
@@ -309,6 +312,7 @@ export interface MemberTemplate {
 
 export type WeaponTargetDomain = "ground" | "air";
 export type WeaponTrajectory = "resolved" | "logical-projectile";
+export type WeaponTargeting = "direct" | "indirect";
 
 export interface FirePattern {
   readonly kind: "single" | "burst";
@@ -333,21 +337,62 @@ export interface PlatformDamageEffectDefinition {
 
 export type EffectDefinition = MemberEffectDefinition | PlatformDamageEffectDefinition;
 
+export interface WeaponFireModeBase {
+  readonly id: string;
+  readonly targeting: WeaponTargeting;
+  readonly minimumRangeMm: number;
+  readonly optimalRangeMm: number;
+  readonly maximumRangeMm: number;
+  readonly aimTicks: Tick;
+  readonly requiresDeployedPlatform: boolean;
+}
+
+export type WeaponFireModeDefinition =
+  | (WeaponFireModeBase & {
+      readonly targeting: "direct";
+      readonly trajectory: "resolved";
+    })
+  | (WeaponFireModeBase & {
+      readonly targeting: "direct";
+      readonly trajectory: "logical-projectile";
+      readonly projectileSpeedMmPerTick: number;
+      readonly muzzleHeightMm: number;
+      readonly apexHeightMm: number;
+      readonly blastRadiusMm: number;
+      readonly visualTypeId: string;
+    })
+  | (WeaponFireModeBase & {
+      readonly targeting: "indirect";
+      readonly trajectory: "logical-projectile";
+      readonly projectileSpeedMmPerTick: number;
+      readonly muzzleHeightMm: number;
+      readonly apexHeightMm: number;
+      readonly blastRadiusMm: number;
+      readonly visualTypeId: string;
+      readonly uncertainty: IndirectFireUncertaintyRule;
+    });
+
+export interface IndirectFireUncertaintyRule {
+  readonly baseScatterMm: number;
+  readonly ageScatterMmPerSecond: number;
+  readonly sameFactionRelayPenaltyMm: number;
+  readonly alliedRelayPenaltyMm: number;
+  readonly zeroConfidencePenaltyMm: number;
+  readonly maximumScatterMm: number;
+  readonly maximumContactAgeTicks: Tick;
+}
+
 export interface WeaponTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
   readonly eraTags: readonly string[];
   readonly techTags: readonly string[];
   readonly targetDomains: readonly WeaponTargetDomain[];
-  readonly minimumRangeMm: number;
-  readonly optimalRangeMm: number;
-  readonly maximumRangeMm: number;
-  readonly aimTicks: Tick;
+  readonly fireModes: readonly WeaponFireModeDefinition[];
   readonly magazineSize: number;
   readonly reloadTicks: Tick;
   readonly shotIntervalTicks: Tick;
   readonly firePattern: FirePattern;
-  readonly trajectory: WeaponTrajectory;
   readonly damageEffects: readonly EffectDefinition[];
   readonly suppressionBps: number;
   readonly exposureOnFireBps: number;
@@ -393,6 +438,13 @@ export interface CrewStationRule {
   readonly substituteEfficiencyBps: number;
 }
 
+export interface PlatformDeploymentRule {
+  readonly deployTicks: Tick;
+  readonly packTicks: Tick;
+  readonly requiredStationIds: readonly string[];
+  readonly requiredComponentIds: readonly string[];
+}
+
 export interface PlatformTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
@@ -405,6 +457,7 @@ export interface PlatformTemplate {
   readonly armorRatingByFace: Readonly<Record<ArmorFace, number>>;
   readonly componentRules: readonly PlatformComponentRule[];
   readonly crewStationRules: readonly CrewStationRule[];
+  readonly deploymentRule?: PlatformDeploymentRule;
   readonly transportCapacityUnits: number;
   readonly embarkTicks: Tick;
   readonly disembarkTicks: Tick;
@@ -426,13 +479,47 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-2";
+  readonly contentVersion: "content-3";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
   readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
   readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
   readonly weaponTemplates: Readonly<Record<TemplateId, WeaponTemplate>>;
+  readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
+  readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
+  readonly terrainCatalog: TerrainCatalog;
+}
+
+export interface PreArtilleryWeaponTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+  readonly eraTags: readonly string[];
+  readonly techTags: readonly string[];
+  readonly targetDomains: readonly WeaponTargetDomain[];
+  readonly minimumRangeMm: number;
+  readonly optimalRangeMm: number;
+  readonly maximumRangeMm: number;
+  readonly aimTicks: Tick;
+  readonly magazineSize: number;
+  readonly reloadTicks: Tick;
+  readonly shotIntervalTicks: Tick;
+  readonly firePattern: FirePattern;
+  readonly trajectory: WeaponTrajectory;
+  readonly damageEffects: readonly EffectDefinition[];
+  readonly suppressionBps: number;
+  readonly exposureOnFireBps: number;
+}
+
+export interface PreArtilleryBattleContentBundle {
+  readonly contentVersion: "content-2";
+  readonly eraId: TemplateId;
+  readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
+  readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
+  readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
+  readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
+  readonly weaponTemplates: Readonly<Record<TemplateId, PreArtilleryWeaponTemplate>>;
   readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
   readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
@@ -452,7 +539,7 @@ export interface LegacyBattleContentBundle {
   readonly groupTemplates: Readonly<Record<TemplateId, LegacyGroupTemplate>>;
   readonly memberTemplates: Readonly<Record<TemplateId, LegacyMemberTemplate>>;
   readonly platformTemplates: Readonly<Record<TemplateId, { readonly id: string; readonly tags: readonly string[] }>>;
-  readonly weaponTemplates: Readonly<Record<TemplateId, WeaponTemplate>>;
+  readonly weaponTemplates: Readonly<Record<TemplateId, PreArtilleryWeaponTemplate>>;
   readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
   readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
@@ -616,7 +703,10 @@ export type BattleSetupInput = Omit<
 > & {
   readonly schemaVersion: string;
   readonly rulesVersion: string;
-  readonly content?: BattleContentBundle | LegacyBattleContentBundle;
+  readonly content?:
+    | BattleContentBundle
+    | PreArtilleryBattleContentBundle
+    | LegacyBattleContentBundle;
   readonly relations?: readonly RelationSetup[];
   readonly groups: readonly GroupSpawnInput[];
   readonly transportAssignments?: readonly TransportAssignment[];
@@ -871,6 +961,13 @@ export interface PlatformWeaponInspection extends PlatformCapabilityInspection {
   readonly shotCooldownTicks: Tick;
 }
 
+export type PlatformDeploymentState = "packed" | "deploying" | "deployed" | "packing";
+
+export interface ArtilleryPlatformInspection {
+  readonly deployment: PlatformDeploymentState;
+  readonly deploymentTicksRemaining: Tick;
+}
+
 export interface PlatformInspection extends PlatformSummaryInspection {
   readonly kind: "platform";
   readonly groupId: GroupId;
@@ -886,6 +983,7 @@ export interface PlatformInspection extends PlatformSummaryInspection {
   readonly observation: PlatformCapabilityInspection;
   readonly weapons: readonly PlatformWeaponInspection[];
   readonly transportAssignments: readonly TransportInspection[];
+  readonly artillery?: ArtilleryPlatformInspection;
 }
 
 export interface MemberInspection {
@@ -989,6 +1087,15 @@ export type BattleEvent =
         readonly integrityBps: number;
         readonly state: PlatformComponentState;
       };
+    })
+  | (BattleEventBase & {
+      readonly type: "platform-deployment-changed";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly from: PlatformDeploymentState;
+      readonly to: PlatformDeploymentState;
+      readonly phase: "started" | "completed" | "cancelled";
+      readonly reason?: "move-requested" | "capability-lost" | "platform-unavailable";
     })
   | (BattleEventBase & {
       readonly type: "embarkation-changed";
@@ -1103,6 +1210,12 @@ export interface PlatformResult {
   readonly finalCrewAssignments: readonly CrewAssignment[];
   readonly finalCrewReassignments: readonly CrewReassignment[];
   readonly weaponStates: readonly PlatformWeaponInspection[];
+  readonly artillery?: {
+    readonly finalDeploymentState: PlatformDeploymentState;
+    readonly directRoundsFired: number;
+    readonly indirectRoundsFired: number;
+    readonly missionsAssigned: number;
+  };
   readonly finalPassengerGroupIds: readonly GroupId[];
 }
 
@@ -1110,6 +1223,11 @@ export interface BattleResult {
   readonly battleId: string;
   readonly rulesVersion: typeof BATTLE_RULES_VERSION;
   readonly finalTick: Tick;
+  readonly settlement: {
+    readonly triggeredAt: Tick;
+    readonly completedAt: Tick;
+    readonly projectileCountAtTrigger: number;
+  };
   readonly outcome: "win" | "draw";
   readonly terminationReason: BattleTerminationReason;
   readonly winnerFactionIds: readonly FactionId[];

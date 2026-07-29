@@ -417,10 +417,18 @@ interface PlatformTemplate {
   readonly armorRatingByFace: Readonly<Record<ArmorFace, number>>;
   readonly componentRules: readonly PlatformComponentRule[];
   readonly crewStationRules: readonly CrewStationRule[];
+  readonly deploymentRule?: PlatformDeploymentRule;
   readonly transportCapacityUnits: number;
   readonly embarkTicks: Tick;
   readonly disembarkTicks: Tick;
   readonly capturePowerBps: BasisPoints;
+}
+
+interface PlatformDeploymentRule {
+  readonly deployTicks: Tick;
+  readonly packTicks: Tick;
+  readonly requiredStationIds: readonly string[];
+  readonly requiredComponentIds: readonly string[];
 }
 
 interface PlatformComponentRule {
@@ -442,7 +450,7 @@ interface CrewStationRule {
 }
 ```
 
-每个平台必须恰好有一个 `structure` 部件；轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。
+每个平台必须恰好有一个 `structure` 部件；轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。`deploymentRule` 是通用平台动作能力，不表示平台一定是火炮；其中引用的岗位和部件必须属于同一模板。
 
 运行时部件完整度使用 `0..10000` 整数：`10000` 为正常，低于该值为受损，不高于 `disabledAtBps` 为失效，`0` 为摧毁。平台的机动、作战和存续状态只从部件、岗位与乘员状态派生。`capturePowerBps` 可以为零或低值，但乘员和乘客在车内时不额外叠加成员占领力。
 
@@ -455,24 +463,178 @@ interface WeaponTemplate {
   readonly eraTags: readonly string[];
   readonly techTags: readonly string[];
   readonly targetDomains: readonly ("ground" | "air")[];
-  readonly minimumRangeMm: number;
-  readonly optimalRangeMm: number;
-  readonly maximumRangeMm: number;
-  readonly aimTicks: Tick;
+  readonly fireModes: readonly WeaponFireModeDefinition[];
   readonly magazineSize: number;
   readonly reloadTicks: Tick;
   readonly shotIntervalTicks: Tick;
   readonly firePattern: FirePattern;
-  readonly trajectory: "resolved" | "logical-projectile";
   readonly damageEffects: readonly EffectDefinition[];
   readonly suppressionBps: BasisPoints;
   readonly exposureOnFireBps: BasisPoints;
+}
+
+interface WeaponFireModeBase {
+  readonly id: string;
+  readonly targeting: "direct" | "indirect";
+  readonly minimumRangeMm: number;
+  readonly optimalRangeMm: number;
+  readonly maximumRangeMm: number;
+  readonly aimTicks: Tick;
+  readonly requiresDeployedPlatform: boolean;
+}
+
+type WeaponFireModeDefinition =
+  | (WeaponFireModeBase & {
+      readonly targeting: "direct";
+      readonly trajectory: "resolved";
+    })
+  | (WeaponFireModeBase & {
+      readonly targeting: "direct";
+      readonly trajectory: "logical-projectile";
+      readonly projectileSpeedMmPerTick: number;
+      readonly muzzleHeightMm: number;
+      readonly apexHeightMm: number;
+      readonly blastRadiusMm: number;
+      readonly visualTypeId: string;
+    })
+  | (WeaponFireModeBase & {
+      readonly targeting: "indirect";
+      readonly trajectory: "logical-projectile";
+      readonly projectileSpeedMmPerTick: number;
+      readonly muzzleHeightMm: number;
+      readonly apexHeightMm: number;
+      readonly blastRadiusMm: number;
+      readonly visualTypeId: string;
+      readonly uncertainty: IndirectFireUncertaintyRule;
+    });
+
+interface IndirectFireUncertaintyRule {
+  readonly baseScatterMm: number;
+  readonly ageScatterMmPerSecond: number;
+  readonly sameFactionRelayPenaltyMm: number;
+  readonly alliedRelayPenaltyMm: number;
+  readonly zeroConfidencePenaltyMm: number;
+  readonly maximumScatterMm: number;
+  readonly maximumContactAgeTicks: Tick;
 }
 ```
 
 反载具武器通过判别式 `platform-damage` 效果提供非负整数穿透评级、内部部件伤害、乘员伤害和可选外露部件伤害。没有该效果的武器不能因为目标名称或标签被临时赋予穿甲能力；顶部攻击必须由效果标签显式声明。
 
+`targeting = indirect` 必须配合 `logical-projectile` 和完整 `uncertainty`；`resolved` 只允许直接射击。`requiresDeployedPlatform` 为真时，该武器只能安装在具有 `deploymentRule` 的平台武器部件上，成员武器引用会被验证器拒绝。弹匣、换弹和射击冷却由武器实例共享，切换模式不能复制弹药或绕过冷却。一个模板可同时提供直接和间接模式，但 mode ID 在模板内唯一。
+
+逻辑弹丸的飞行 tick 使用 `ceil(水平整数距离毫米 / projectileSpeedMmPerTick)`，最少为 1。起点为发射格中心地表高度加 `muzzleHeightMm`，终点为计划弹着格中心地表高度。总飞行 tick 为 `T`、已推进 tick 为 `e` 时，水平毫米坐标按起终点线性插值并向零取整，垂直坐标为线性基线加 `floor(4 * apexHeightMm * e * (T - e) / (T * T))`。初始化验证数值上限，保证中间乘积不超过 JS 安全整数。
+
+每 tick 使用稳定 supercover 顺序检查上一位置到新位置穿过的地图格；弹道高度不高于该格地形或静态对象顶面时在第一个格命中。首个闭环不检测途中动态实体体积，人员/平台只在实际爆区形成时按权威占用结算。Three.js 只能在相邻权威位置间插值，不能重新拟合轨迹。`blastRadiusMm` 为 0 时仍可产生单点命中。第一阶段不读取 `EnvironmentSetup.wind*`，环境修正保持关闭。
+
+以下仅是契约示例，数值属于内容调参，不是规则常量：
+
+```ts
+const howitzerFireModes = [
+  {
+    id: "direct",
+    targeting: "direct",
+    trajectory: "logical-projectile",
+    minimumRangeMm: 8_000,
+    optimalRangeMm: 40_000,
+    maximumRangeMm: 80_000,
+    aimTicks: 20,
+    requiresDeployedPlatform: true,
+    projectileSpeedMmPerTick: 16_000,
+    muzzleHeightMm: 2_000,
+    apexHeightMm: 8_000,
+    blastRadiusMm: 8_000,
+    visualTypeId: "shell-medium-v1",
+  },
+  {
+    id: "indirect",
+    targeting: "indirect",
+    trajectory: "logical-projectile",
+    minimumRangeMm: 40_000,
+    optimalRangeMm: 120_000,
+    maximumRangeMm: 240_000,
+    aimTicks: 60,
+    requiresDeployedPlatform: true,
+    projectileSpeedMmPerTick: 12_000,
+    muzzleHeightMm: 2_000,
+    apexHeightMm: 60_000,
+    blastRadiusMm: 12_000,
+    visualTypeId: "shell-medium-v1",
+    uncertainty: {
+      baseScatterMm: 4_000,
+      ageScatterMmPerSecond: 1_000,
+      sameFactionRelayPenaltyMm: 2_000,
+      alliedRelayPenaltyMm: 6_000,
+      zeroConfidencePenaltyMm: 12_000,
+      maximumScatterMm: 40_000,
+      maximumContactAgeTicks: 200,
+    },
+  },
+] satisfies readonly WeaponFireModeDefinition[];
+```
+
 首版运行规则把备用弹药解释为无限，但模板仍可保存未来的携弹量。
+
+#### 9.2.1 炮兵运行时状态草案
+
+以下类型只存在于 `src/sim` 权威状态；外部 `BattleSetup` 不传入进行中的任务或弹丸：
+
+```ts
+type PlatformDeploymentState = "packed" | "deploying" | "deployed" | "packing";
+type FireMissionIntelSource = "local-direct" | "same-faction" | "allied";
+
+interface PlatformDeploymentRuntimeState {
+  readonly platformId: PlatformId;
+  state: PlatformDeploymentState;
+  ticksRemaining: Tick;
+  actionStartedAt?: Tick;
+  returnState?: "packed" | "deployed";
+}
+
+interface FireMissionTargetSnapshot {
+  readonly targetGroupId: GroupId;
+  readonly targetFactionId: FactionId;
+  readonly targetProfile: "personnel" | "platform";
+  readonly lastKnown: GridCoord;
+  readonly observedAt: Tick;
+  readonly deliveredAt: Tick;
+  readonly source: FireMissionIntelSource;
+  readonly confidenceBps: BasisPoints;
+}
+
+interface ArtilleryFireMissionState {
+  readonly id: string;
+  readonly platformId: PlatformId;
+  readonly weaponComponentId: string;
+  readonly fireModeId: string;
+  readonly assignedAt: Tick;
+  readonly snapshot: FireMissionTargetSnapshot;
+  readonly uncertaintyRadiusMm: number;
+  readonly selectedOffset: { readonly dx: number; readonly dz: number };
+  readonly plannedImpactCell: GridCoord;
+  status: "aiming" | "ready" | "released" | "cancelled";
+  aimTicksRemaining: Tick;
+}
+
+interface LogicalProjectileState {
+  readonly id: string;
+  readonly sourceFactionId: FactionId;
+  readonly sourceGroupId: GroupId;
+  readonly sourcePlatformId?: PlatformId;
+  readonly weaponTemplateId: TemplateId;
+  readonly fireModeId: string;
+  readonly launchedAt: Tick;
+  readonly scheduledGroundImpactAt: Tick;
+  readonly origin: GridCoord;
+  readonly intendedAimCell: GridCoord;
+  readonly plannedImpactCell: GridCoord;
+  flightTicksElapsed: Tick;
+  readonly damageEffects: readonly EffectDefinition[];
+  readonly suppressionBps: BasisPoints;
+}
+```
+
+接触记录需保留接收 tick 和来源类别，使 `deliveredAt`/`source` 能在任务建立时复制，而不是事后从当前关系或消息队列猜测。部署、任务、任务内稳定序号、在途弹丸、终止结算阶段及其计时全部影响未来 tick，必须初始化、克隆、验证并进入状态哈希。任务和弹丸 ID 在创建时冻结；数组与影响结果的集合按 ID 或本文指定的格排序比较器处理。
 
 ### 9.3 能力模板
 
@@ -521,7 +683,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-首个内容包只提供 `foot`、`ground`、`resolved` 这组已实现能力。`air`、平台、逻辑飞行体和能力效果可以在 bundle 中预留，但在没有对应规则实现前，验证器应拒绝被引用的配置。
+当前 `content-3` 提供步兵、车辆与自行火炮展开能力；`logical-projectile` 和间射配置在 `ARTILLERY-003/004` 对应规则落地前即使出现在未引用模板中，也不能被运行时 setup 引用。功能门禁必须由规则版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -532,6 +694,9 @@ interface EraTemplate {
 3. 编组 spawn 的成员数量与 `GroupTemplate` 槽位总数一致，成员模板和默认武器槽位均可解析；增强波次使用相同规则。
 4. 成员传感器和武器的目标域、移动类型、弹道类型都在当前规则支持集合内。
 5. 时代白名单覆盖所有被引用的编组、成员和武器模板；未使用模板可以存在，但不会进入运行时。
+6. 每个武器至少有一个 mode 且 ID 唯一；射程有序，逻辑弹丸速度为正整数，发射高度、顶点高度、爆炸半径和误差字段是有界非负整数，最大飞行时间不超过规则上限。
+7. 间射 mode 必须提供误差规则，`maximumContactAgeTicks` 与各散布项有界；要求展开的 mode 只能安装到具有合法展开规则的平台部件。
+8. 展开规则引用同一平台内存在的岗位和部件，持续 tick 为正整数；首批自行火炮仍必须满足轮式/履带平台现有机动与撤离路线验证。
 
 规范内容哈希按命名空间和模板 ID 排序，覆盖所有会影响模拟的字段（包括时代 ID、标签、槽位顺序、武器效果和传感器参数）。`displayName`、颜色和其他纯观察元数据不参与战斗哈希；但完整 setup 快照仍必须可克隆并通过 Worker 结构化克隆。
 
@@ -591,7 +756,7 @@ interface EnvironmentSetup {
 ```ts
 interface BattleSimulation {
   readonly tick: Tick;
-  readonly status: "ready" | "running" | "finished";
+  readonly status: "active" | "settling" | "finished";
 
   step(): void;
   stepMany(count: number): void;
@@ -640,9 +805,11 @@ interface BattleSimulationFactory {
 ```ts
 interface RenderFrame {
   readonly tick: Tick;
+  readonly phase: "running" | "settling";
   readonly groups: readonly RenderGroup[];
   readonly members: readonly RenderMember[];
   readonly platforms: readonly RenderPlatform[];
+  readonly projectiles: readonly RenderProjectile[];
   readonly objectives: readonly RenderObjective[];
 }
 
@@ -663,13 +830,68 @@ interface RenderPlatform {
   readonly damaged: boolean;
   readonly visualTypeId: string;
 }
+
+interface RenderProjectile {
+  readonly id: string;
+  readonly sourceFactionId: FactionId;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
+  readonly visualTypeId: string;
+}
 ```
 
 表现层在前后两个逻辑帧之间插值。Worker 可以把这些逻辑数组编码为 TypedArray，但编码层不得丢失稳定实体 ID、观察时间或状态轴。死亡、爆炸、射击等短事件通过事件批次驱动，不通过猜测位置变化生成。
 
 乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观和粗状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客或实时朝向。
 
+逻辑弹丸使用紧凑的 `RenderProjectile` 投影，位置从权威发射/命中 tick 和固定点轨迹派生；渲染端只插值。全知视角投影全部弹丸；势力视角投影本方弹丸以及位于该势力当前可见格的其他弹丸，不公开任务快照、目标 ID、预定弹着格或尚未发生的爆炸结果。
+
 `EntityInspection` 增加 `PlatformInspection` 分支。本方或全知检查可以返回部件完整度、岗位占用/换岗进度、当前乘客编组和能力派生原因；敌方已知接触只返回最后已知的 `RenderPlatform` 粗状态，不能返回实时部件、岗位、乘员健康或乘客身份。
+
+本方或全知 `PlatformInspection` 可增加 `artillery`：展开状态/剩余 tick、当前任务、情报来源与年龄、误差公式分项、选中偏移、瞄准进度和拒绝原因。敌方已知平台 inspection 不返回这些实时字段；发射和弹着只通过该观察者合法可见的帧/事件表达。
+
+```ts
+interface ArtilleryPlatformInspection {
+  readonly deployment: PlatformDeploymentState;
+  readonly deploymentTicksRemaining: Tick;
+  readonly mission?: {
+    readonly id: string;
+    readonly fireModeId: string;
+    readonly targetGroupId: GroupId;
+    readonly source: FireMissionIntelSource;
+    readonly observedAt: Tick;
+    readonly deliveredAt: Tick;
+    readonly confidenceBps: BasisPoints;
+    readonly uncertaintyRadiusMm: number;
+    readonly selectedOffset: { readonly dx: number; readonly dz: number };
+    readonly plannedImpactCell: GridCoord;
+    readonly aimTicksRemaining: Tick;
+  };
+  readonly evaluation?: FireMissionEvaluationInspection;
+}
+
+interface FireMissionEvaluationInspection {
+  readonly evaluatedAt: Tick;
+  readonly reason: string;
+  readonly selectedTargetGroupId?: GroupId;
+  readonly candidates: readonly {
+    readonly targetGroupId: GroupId;
+    readonly source: FireMissionIntelSource;
+    readonly ageTicks: Tick;
+    readonly uncertaintyRadiusMm: number;
+    readonly weaponCompatible: boolean;
+    readonly dangerClose: boolean;
+    readonly score: number;
+    readonly rejectionReason?: string;
+  }[];
+}
+
+interface PlatformInspection {
+  // Existing platform fields remain unchanged.
+  readonly artillery?: ArtilleryPlatformInspection;
+}
+```
 
 ## 15. 战斗事件
 
@@ -692,7 +914,40 @@ type BattleEvent =
 
 阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
 
-自 `stage-3.3` 起已实现四类：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和 `started|completed|cancelled` 阶段；`embarkation-changed` 携带运输关系、平台、乘客编组、动作、阶段和可选取消/强制原因。四者都携带稳定实体关系，观察端只消费事实而不反推状态。
+当前已实现五类平台事实事件：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和动作阶段；`embarkation-changed` 携带运输关系、动作、阶段和可选原因；`platform-deployment-changed` 携带展开状态 `from/to`、`started|completed|cancelled` 阶段和可选取消原因。五者都携带稳定实体关系，观察端只消费事实而不反推状态。
+
+炮兵实现增加三类事实事件，并继续为实际开火产生通用 `weapon-fired`：
+
+```ts
+type ArtilleryBattleEvent =
+  | (BattleEventBase & {
+      readonly type: "platform-deployment-changed";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly from: PlatformDeploymentState;
+      readonly to: PlatformDeploymentState;
+      readonly phase: "started" | "completed" | "cancelled";
+      readonly reason?: "move-requested" | "capability-lost" | "platform-unavailable";
+    })
+  | (BattleEventBase & {
+      readonly type: "artillery-mission-changed";
+      readonly missionId: string;
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly phase: "assigned" | "released" | "cancelled";
+      readonly reason?: "contact-expired" | "contact-replaced" | "danger-close" | "capability-lost";
+    })
+  | (BattleEventBase & {
+      readonly type: "projectile-impacted";
+      readonly projectileId: string;
+      readonly sourceGroupId: GroupId;
+      readonly sourcePlatformId?: PlatformId;
+      readonly impactCell: GridCoord;
+      readonly affectedGroupIds: readonly GroupId[];
+    });
+```
+
+`weapon-fired` 对逻辑弹丸增加稳定 `projectileIds` 和 `fireModeId`，但不把未来命中结果写入发射事件。任务事件不公开目标实时状态；事件序号按“部署/任务状态变化 -> 发射 -> 弹着 -> 伤害状态变化”的实际发生顺序稳定递增。势力观察消息必须裁剪其无权看到的任务与弹着细节，完整事件流仍可供全知回放与测试使用。
 
 ## 16. 战斗结果
 
@@ -701,6 +956,11 @@ interface BattleResult {
   readonly battleId: BattleId;
   readonly rulesVersion: string;
   readonly finalTick: Tick;
+  readonly settlement: {
+    readonly triggeredAt: Tick;
+    readonly completedAt: Tick;
+    readonly projectileCountAtTrigger: number;
+  };
   readonly outcome: "resolved" | "attacker-win" | "defender-win" | "draw";
   readonly terminationReason: string;
   readonly survivingFactionIds: readonly FactionId[];
@@ -724,11 +984,19 @@ interface PlatformResult {
   readonly finalCrewAssignments: readonly CrewAssignment[];
   readonly finalCrewReassignments: readonly CrewReassignment[];
   readonly weaponStates: readonly PlatformWeaponInspection[];
+  readonly artillery?: {
+    readonly finalDeploymentState: PlatformDeploymentState;
+    readonly directRoundsFired: number;
+    readonly indirectRoundsFired: number;
+    readonly missionsAssigned: number;
+  };
   readonly finalPassengerGroupIds: readonly GroupId[];
 }
 ```
 
 成员结果必须区分受伤、失能、死亡、撤离和失散，并保存最终战术位置为徒步、具体平台岗位或具体平台乘客；该位置不能覆盖健康和在场状态。平台结果通过独立的 `mobility`、`combat`、`disposition`、`damaged` 和部件结果区分受损、失去机动、失去作战能力、废弃和摧毁。外部系统根据这些事实决定医疗、俘获、维修或永久损失。
+
+完成结果时不得残留逻辑弹丸；硬截止后的 `settlement` 解释为何 `finalTick` 晚于胜负触发 tick。最终展开状态和计数用于战后统计，不把已完成/取消任务或临时瞄准点持久化到外部世界。没有逻辑弹丸能力的迁移输入令三个 settlement tick 字段相等、计数为 0，避免调用方猜测可选语义。
 
 ## 17. 确定性要求
 
@@ -753,7 +1021,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-3`，规则为 `stage-3.5`，内容为 `content-2`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把字段不变的 `stage-3/stage-3.0`、`stage-3.1`、`stage-3.2`、`stage-3.3` 与 `stage-3.4` 输入显式升级到当前规则；新的 `stage-3` 输入必须显式提供内容包、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-3.1`，规则为 `stage-3.6`，内容为 `content-3`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.5` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-3.1` 输入必须显式提供 `content-3`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -771,5 +1039,14 @@ interface PlatformResult {
 `VEHICLE-007` 继续保持 setup schema 和 `content-2` 字段版本，把规则升级到 `stage-3.4`：目标效用只消费武器效果、任务与接触快照；车辆交战位、车体朝向和运输下车格使用稳定整数评分；目标、车辆与下车评估进入状态哈希和本方 inspection。`stage-3.3` 输入迁移只更新规则版本并完整保留内容、平台和运输字段；观察端只显示模拟投影，不复制效用或模式有效战力规则。
 
 `stage-3.5` 保持 setup schema 和内容字段不变：车辆交战位计划不会在单格转向或移动完成前被 AI 刷新重置；完成该格后的重规划总是从当前实际锚格开始。`stage-3.4` 输入只更新规则版本并完整保留调用方字段。
+
+炮兵采用一次显式结构迁移，后续切片只升级规则语义：
+
+- `ARTILLERY-002` 把 setup schema 升到 `stage-3.1`、规则升到 `stage-3.6`、内容升到 `content-3`。迁移器把每个 `content-2` 武器的顶层射程、瞄准和弹道字段转换为 ID 为 `direct` 的单一直接射击 mode，平台 `deploymentRule` 默认为缺失，settlement 结果采用零弹丸默认值；既有输入的战斗行为除版本化哈希外保持等价。
+- `content-3` 从开始就包含展开、直接/间接 mode 和逻辑弹丸的完整字段结构，避免后续再移动字段。`ARTILLERY-002` 规则只启用展开状态，并明确拒绝 setup 引用尚未落地的逻辑弹丸/间射 mode。
+- `ARTILLERY-003` 在相同 schema/content 上把规则升到 `stage-3.7`，启用逻辑弹丸、直接火炮、范围结算和在途弹丸终止边界。
+- `ARTILLERY-004` 把规则升到 `stage-3.8`，启用间接任务、情报来源/接收 tick、确定性误差和炮兵 AI；`ARTILLERY-005` 只完成公开投影、客户端和验收时不升级 schema/rules，除非实现发现本文尚未定义的规则变化。
+
+迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 
 内容规范哈希参与 setup 哈希，因此固定 seed 回归比较“同输入同哈希”，不承诺跨 schema 的旧哈希字面值不变。版本不匹配、内容版本不支持、模板引用缺失或编制槽位不一致都会在创建运行时状态前明确拒绝。

@@ -25,6 +25,8 @@ import {
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_ARTILLERY_BATTLE_RULES_VERSION,
+  PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION,
   PRE_TRANSPORT_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
@@ -60,35 +62,63 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     candidate.schemaVersion === PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_PLATFORM_BATTLE_RULES_VERSION;
   const isPreCrew =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_CREW_BATTLE_RULES_VERSION;
   const isPreDamage =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_DAMAGE_BATTLE_RULES_VERSION;
   const isPreTransport =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_TRANSPORT_BATTLE_RULES_VERSION;
   const isPreCombinedArms =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_COMBINED_ARMS_BATTLE_RULES_VERSION;
   const isPreStableVehicleMovement =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION;
+  const isPreArtillery =
+    (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
+      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+    candidate.rulesVersion === PRE_ARTILLERY_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
+  if (isCurrent) {
+    if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
+      throw new Error("stage-3.1 battle setup requires a content-3 content bundle.");
+    }
+    if (candidate.transportAssignments === undefined) {
+      throw new Error("stage-3.1 battle setup requires transportAssignments.");
+    }
+    if (
+      candidate.groups.some((group) => group.platforms === undefined) ||
+      (candidate.reinforcements ?? []).some((wave) =>
+        wave.groups.some((group) => group.platforms === undefined),
+      )
+    ) {
+      throw new Error("stage-3.1 group spawns require explicit platforms.");
+    }
+  }
   if (
-    isCurrent ||
     isPreCrew ||
     isPreDamage ||
     isPreTransport ||
     isPreCombinedArms ||
-    isPreStableVehicleMovement
+    isPreStableVehicleMovement ||
+    isPreArtillery
   ) {
-    if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
-      throw new Error("stage-3 battle setup requires a content-2 content bundle.");
+    if (
+      candidate.content?.contentVersion !== "content-2" &&
+      candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
+    ) {
+      throw new Error("stage-3 battle setup requires a content-2 or content-3 content bundle.");
     }
     if (candidate.transportAssignments === undefined) {
       throw new Error("stage-3 battle setup requires transportAssignments.");
@@ -124,7 +154,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreDamage ||
     isPreTransport ||
     isPreCombinedArms ||
-    isPreStableVehicleMovement
+    isPreStableVehicleMovement ||
+    isPreArtillery
   ) {
     return {
       ...inputSetup,
@@ -136,7 +167,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
         createDefaultRelations(inputSetup.factions),
       groups: normalizedGroups,
       transportAssignments:
-        isPreTransport || isPreCombinedArms || isPreStableVehicleMovement
+        isPreTransport || isPreCombinedArms || isPreStableVehicleMovement || isPreArtillery
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),

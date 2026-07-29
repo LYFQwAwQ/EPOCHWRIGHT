@@ -42,6 +42,20 @@ function describeEvent(event: BattleEvent): string | undefined {
           : `${event.groupId} 平台武器停用`;
       }
       return undefined;
+    case "platform-deployment-changed":
+      if (event.phase === "cancelled") {
+        return `${event.groupId} 展开动作中断`;
+      }
+      if (event.to === "deploying") {
+        return `${event.groupId} 开始展开`;
+      }
+      if (event.to === "deployed") {
+        return `${event.groupId} 完成展开`;
+      }
+      if (event.to === "packing") {
+        return `${event.groupId} 开始收炮`;
+      }
+      return `${event.groupId} 完成收炮`;
     case "platform-component-changed":
       if (event.to.state === "destroyed") {
         return `${event.groupId} 的 ${event.componentId} 被摧毁`;

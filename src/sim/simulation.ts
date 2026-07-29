@@ -63,6 +63,7 @@ import {
   getGroupTemplate,
   getMemberTemplate,
   getPlatformTemplate,
+  getPrimaryFireMode,
   getWeaponTemplate,
 } from "./content";
 import {
@@ -460,6 +461,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         transportAssignments: (
           this.state.transportAssignmentsByPlatformId.get(platform.id) ?? []
         ).map((assignment) => this.transportInspection(assignment)),
+        artillery: platform.deployment
+          ? {
+              deployment: platform.deployment.state,
+              deploymentTicksRemaining: platform.deployment.ticksRemaining,
+            }
+          : undefined,
       };
       return inspection;
     }
@@ -617,6 +624,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(platform.mobility);
         hasher.addString(platform.combat);
         hasher.addString(platform.disposition);
+        hasher.addString(platform.deployment?.state ?? "");
+        hasher.addNumber(platform.deployment?.ticksRemaining ?? 0);
+        hasher.addNumber(platform.deployment?.startedAt ?? -1);
+        hasher.addString(platform.deployment?.returnState ?? "");
+        hasher.addNumber(platform.deployment?.directRoundsFired ?? 0);
+        hasher.addNumber(platform.deployment?.indirectRoundsFired ?? 0);
+        hasher.addNumber(platform.deployment?.missionsAssigned ?? 0);
         for (const passengerGroupId of [...platform.passengerGroupIds].sort(compareStrings)) {
           hasher.addString(passengerGroupId);
         }
@@ -760,6 +774,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
+    this.updatePlatformDeployments();
     this.advanceMovement();
     const impacts = this.updateWeapons();
     this.updateMorale(impacts);
@@ -1284,6 +1299,175 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
+  private updatePlatformDeployments(): void {
+    for (const platform of [...this.state.platformsById.values()].sort(compareById)) {
+      const deployment = platform.deployment;
+      if (!deployment) {
+        continue;
+      }
+      const group = this.state.groupsById.get(platform.groupId);
+      const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+      const rule = template.deploymentRule;
+      if (!group || !rule) {
+        continue;
+      }
+      const movementRequested = this.groupRequestsPlatformMovement(group);
+      const unavailableReason =
+        platform.disposition === "crewed"
+          ? this.platformCanChangeDeployment(platform)
+            ? undefined
+            : "capability-lost" as const
+          : "platform-unavailable" as const;
+
+      if (deployment.state === "deploying" || deployment.state === "packing") {
+        if (unavailableReason || (movementRequested && deployment.state === "deploying")) {
+          this.cancelPlatformDeployment(
+            platform,
+            unavailableReason ?? "move-requested",
+          );
+          continue;
+        }
+        deployment.ticksRemaining = Math.max(0, deployment.ticksRemaining - 1);
+        if (deployment.ticksRemaining === 0) {
+          const from = deployment.state;
+          const to = from === "deploying" ? "deployed" : "packed";
+          deployment.state = to;
+          deployment.startedAt = undefined;
+          deployment.returnState = undefined;
+          this.emit({
+            type: "platform-deployment-changed",
+            platformId: platform.id,
+            groupId: platform.groupId,
+            from,
+            to,
+            phase: "completed",
+          });
+          this.markMeaningfulProgress();
+        }
+        continue;
+      }
+
+      if (deployment.state === "deployed" && movementRequested && !unavailableReason) {
+        this.startPlatformDeploymentTransition(platform, "packing", rule.packTicks);
+        continue;
+      }
+      if (
+        deployment.state === "packed" &&
+        !movementRequested &&
+        !unavailableReason &&
+        this.groupNeedsDeployedWeapon(group, platform)
+      ) {
+        this.startPlatformDeploymentTransition(platform, "deploying", rule.deployTicks);
+      }
+    }
+  }
+
+  private startPlatformDeploymentTransition(
+    platform: PlatformState,
+    to: "deploying" | "packing",
+    ticks: number,
+  ): void {
+    const deployment = platform.deployment;
+    if (!deployment) {
+      return;
+    }
+    const from = deployment.state;
+    deployment.state = to;
+    deployment.ticksRemaining = ticks;
+    deployment.startedAt = this.state.tick;
+    deployment.returnState = from === "deployed" ? "deployed" : "packed";
+    this.emit({
+      type: "platform-deployment-changed",
+      platformId: platform.id,
+      groupId: platform.groupId,
+      from,
+      to,
+      phase: "started",
+      reason: to === "packing" ? "move-requested" : undefined,
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private cancelPlatformDeployment(
+    platform: PlatformState,
+    reason: "move-requested" | "capability-lost" | "platform-unavailable",
+  ): void {
+    const deployment = platform.deployment;
+    if (!deployment || (deployment.state !== "deploying" && deployment.state !== "packing")) {
+      return;
+    }
+    const from = deployment.state;
+    const to = deployment.returnState ?? (from === "deploying" ? "packed" : "deployed");
+    deployment.state = to;
+    deployment.ticksRemaining = 0;
+    deployment.startedAt = undefined;
+    deployment.returnState = undefined;
+    this.emit({
+      type: "platform-deployment-changed",
+      platformId: platform.id,
+      groupId: platform.groupId,
+      from,
+      to,
+      phase: "cancelled",
+      reason,
+    });
+    this.markMeaningfulProgress();
+  }
+
+  private platformCanChangeDeployment(platform: PlatformState): boolean {
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const rule = template.deploymentRule;
+    if (!rule) {
+      return false;
+    }
+    const capabilities = this.platformCapabilities(platform);
+    return (
+      rule.requiredStationIds.every(
+        (stationId) =>
+          (capabilities.stations.find((station) => station.stationId === stationId)
+            ?.efficiencyBps ?? 0) > 0,
+      ) &&
+      rule.requiredComponentIds.every(
+        (componentId) =>
+          capabilities.components.find((component) => component.componentId === componentId)
+            ?.available === true,
+      )
+    );
+  }
+
+  private groupRequestsPlatformMovement(group: GroupState): boolean {
+    return Boolean(
+      group.movingTo ||
+        group.turnGoalFacing !== undefined ||
+        (group.path.length > 0 && group.action !== "engaging"),
+    );
+  }
+
+  private groupNeedsDeployedWeapon(group: GroupState, platform: PlatformState): boolean {
+    if (group.action !== "engaging" || !group.currentTargetId) {
+      return false;
+    }
+    const target = this.state.groupsById.get(group.currentTargetId);
+    if (!target || !this.hasFreshDirectContact(group, target)) {
+      return false;
+    }
+    const distanceSquared = squaredGridDistance(group.cell, target.cell);
+    const capabilities = this.platformCapabilities(platform);
+    return platform.weaponStates.some((weaponState) => {
+      const available = capabilities.weapons.find(
+        (capability) => capability.componentId === weaponState.componentId,
+      )?.available;
+      const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+      const mode = getPrimaryFireMode(weapon);
+      return (
+        available &&
+        mode.requiresDeployedPlatform &&
+        distanceSquared >= this.weaponMinimumRangeCells(weapon) ** 2 &&
+        distanceSquared <= this.weaponRangeCells(weapon) ** 2
+      );
+    });
+  }
+
   private activeTargetPlatform(group: GroupState): PlatformState | undefined {
     return [...group.platforms]
       .filter((platform) => platform.disposition === "crewed")
@@ -1304,6 +1488,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       return;
     }
     this.cancelMovement(group);
+    this.cancelPlatformDeployment(platform, "platform-unavailable");
     for (const action of [...platform.crewReassignments].sort((a, b) =>
       compareStrings(a.memberId, b.memberId),
     )) {
@@ -3353,6 +3538,16 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private advanceMovement(): void {
     for (const group of this.state.groups) {
+      if (
+        group.platforms.some(
+          (platform) =>
+            platform.disposition === "crewed" &&
+            platform.deployment !== undefined &&
+            platform.deployment.state !== "packed",
+        )
+      ) {
+        continue;
+      }
       if (!group.movingTo && group.turnGoalFacing !== undefined) {
         const platform = this.activeTargetPlatform(group);
         if (!platform || platform.mobility !== "mobile") {
@@ -3441,6 +3636,12 @@ class StageOneBattleSimulation implements BattleSimulation {
         group.action === "combat-ineffective" ||
         group.platforms.some(
           (platform) => platform.disposition === "crewed" && platform.mobility !== "mobile",
+        ) ||
+        group.platforms.some(
+          (platform) =>
+            platform.disposition === "crewed" &&
+            platform.deployment !== undefined &&
+            platform.deployment.state !== "packed",
         ) ||
         group.path.length === 0
       ) {
@@ -3624,6 +3825,13 @@ class StageOneBattleSimulation implements BattleSimulation {
             continue;
           }
           const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+          const fireMode = getPrimaryFireMode(weapon);
+          if (
+            fireMode.requiresDeployedPlatform &&
+            platform.deployment?.state !== "deployed"
+          ) {
+            continue;
+          }
           const platformDamage = firstPlatformDamageEffect(weapon);
           if (targetPlatform && !platformDamage) {
             continue;
@@ -3645,6 +3853,13 @@ class StageOneBattleSimulation implements BattleSimulation {
           }
           weaponState.magazineRounds -= 1;
           weaponState.shotCooldownTicks = weapon.shotIntervalTicks;
+          if (platform.deployment) {
+            if (fireMode.targeting === "direct") {
+              platform.deployment.directRoundsFired += 1;
+            } else {
+              platform.deployment.indirectRoundsFired += 1;
+            }
+          }
           const baseHitChance = calculateHitChance(
             group,
             operator.member,
@@ -4322,6 +4537,11 @@ class StageOneBattleSimulation implements BattleSimulation {
       battleId: this.setup.battleId,
       rulesVersion: this.setup.rulesVersion,
       finalTick: resultTick,
+      settlement: {
+        triggeredAt: resultTick,
+        completedAt: resultTick,
+        projectileCountAtTrigger: 0,
+      },
       outcome: winnerFactionIds.length > 0 ? "win" : "draw",
       terminationReason,
       winnerFactionIds: [...winnerFactionIds],
@@ -4428,6 +4648,14 @@ class StageOneBattleSimulation implements BattleSimulation {
             ...action,
           })),
           weaponStates: this.platformWeaponInspections(platform),
+          artillery: platform.deployment
+            ? {
+                finalDeploymentState: platform.deployment.state,
+                directRoundsFired: platform.deployment.directRoundsFired,
+                indirectRoundsFired: platform.deployment.indirectRoundsFired,
+                missionsAssigned: platform.deployment.missionsAssigned,
+              }
+            : undefined,
           finalPassengerGroupIds: [...platform.passengerGroupIds].sort(compareStrings),
         })),
       )
@@ -4985,17 +5213,26 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private weaponRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
-    return Math.max(0, Math.floor(weapon.maximumRangeMm / this.setup.map.cellSizeMm));
+    return Math.max(
+      0,
+      Math.floor(getPrimaryFireMode(weapon).maximumRangeMm / this.setup.map.cellSizeMm),
+    );
   }
 
   private weaponMinimumRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
-    return Math.max(0, Math.ceil(weapon.minimumRangeMm / this.setup.map.cellSizeMm));
+    return Math.max(
+      0,
+      Math.ceil(getPrimaryFireMode(weapon).minimumRangeMm / this.setup.map.cellSizeMm),
+    );
   }
 
   private weaponPreferredRangeCells(weapon: ReturnType<typeof getWeaponTemplate>): number {
     return Math.min(
       this.setup.rules.preferredRangeCells,
-      Math.max(0, Math.floor(weapon.optimalRangeMm / this.setup.map.cellSizeMm)),
+      Math.max(
+        0,
+        Math.floor(getPrimaryFireMode(weapon).optimalRangeMm / this.setup.map.cellSizeMm),
+      ),
     );
   }
 

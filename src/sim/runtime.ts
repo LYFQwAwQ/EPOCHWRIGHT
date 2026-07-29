@@ -174,6 +174,15 @@ export function createGroupState(
             }]
           : [];
       }),
+      deployment: template.deploymentRule
+        ? {
+            state: "packed",
+            ticksRemaining: 0,
+            directRoundsFired: 0,
+            indirectRoundsFired: 0,
+            missionsAssigned: 0,
+          }
+        : undefined,
       passengerGroupIds: [],
     };
   });

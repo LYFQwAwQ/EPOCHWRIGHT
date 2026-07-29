@@ -220,7 +220,7 @@ describe("single-platform vehicle slice", () => {
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
     expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
-    expect(migrated.content.contentVersion).toBe("content-2");
+    expect(migrated.content.contentVersion).toBe("content-3");
     expect(migrated.transportAssignments).toEqual([]);
     expect(migrated.groups.every((group) => group.platforms.length === 0)).toBe(true);
     expect(() => validateBattleSetup(migrated)).not.toThrow();
@@ -1436,7 +1436,20 @@ function createLegacyInfantryContent(
     },
     memberTemplates: { [DEFAULT_MEMBER_TEMPLATE_ID]: legacyMember },
     platformTemplates: {},
-    weaponTemplates: content.weaponTemplates,
+    weaponTemplates: Object.fromEntries(
+      Object.entries(content.weaponTemplates).map(([id, weapon]) => {
+        const mode = weapon.fireModes[0]!;
+        const { fireModes: _fireModes, ...legacyWeapon } = weapon;
+        return [id, {
+          ...legacyWeapon,
+          minimumRangeMm: mode.minimumRangeMm,
+          optimalRangeMm: mode.optimalRangeMm,
+          maximumRangeMm: mode.maximumRangeMm,
+          aimTicks: mode.aimTicks,
+          trajectory: mode.trajectory,
+        }];
+      }),
+    ),
     sensorTemplates: content.sensorTemplates,
     abilityTemplates: content.abilityTemplates,
     statusTemplates: content.statusTemplates,

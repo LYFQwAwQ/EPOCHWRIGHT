@@ -38,7 +38,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-2");
+    expect(migrated.content?.contentVersion).toBe("content-3");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(
@@ -120,7 +120,18 @@ describe("battle content templates", () => {
       ...trajectoryBase,
       weaponTemplates: {
         ...trajectoryBase.weaponTemplates,
-        [trajectoryWeapon.id]: { ...trajectoryWeapon, trajectory: "logical-projectile" as const },
+        [trajectoryWeapon.id]: {
+          ...trajectoryWeapon,
+          fireModes: [{
+            ...trajectoryWeapon.fireModes[0]!,
+            trajectory: "logical-projectile" as const,
+            projectileSpeedMmPerTick: 1_000,
+            muzzleHeightMm: 1_000,
+            apexHeightMm: 2_000,
+            blastRadiusMm: 0,
+            visualTypeId: "test-projectile",
+          }],
+        },
       },
     };
     expect(() => validateBattleContent(unsupportedTrajectory)).toThrow(/not supported/i);
