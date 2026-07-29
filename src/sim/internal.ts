@@ -2,6 +2,7 @@ import type {
   BattleEvent,
   BattleResult,
   BattleSetup,
+  BattleTerminationReason,
   ArmorFace,
   CoverSlotId,
   CoverEvaluationReason,
@@ -36,6 +37,7 @@ import type {
   VehicleEngagementInspection,
   ReinforcementBlockedPolicy,
   Tick,
+  EffectDefinition,
 } from "./types";
 
 export interface MemberState {
@@ -104,6 +106,40 @@ export interface PlatformState {
   readonly weaponStates: PlatformWeaponStateValue[];
   readonly deployment?: PlatformDeploymentStateValue;
   readonly passengerGroupIds: GroupId[];
+}
+
+export interface LogicalProjectileState {
+  readonly id: string;
+  readonly sourceFactionId: FactionId;
+  readonly sourceGroupId: GroupId;
+  readonly sourcePlatformId?: PlatformId;
+  readonly weaponTemplateId: string;
+  readonly fireModeId: string;
+  readonly launchedAt: Tick;
+  readonly scheduledGroundImpactAt: Tick;
+  readonly origin: GridCoord;
+  readonly intendedAimCell: GridCoord;
+  readonly plannedImpactCell: GridCoord;
+  readonly totalFlightTicks: Tick;
+  flightTicksElapsed: Tick;
+  readonly muzzleHeightMm: number;
+  readonly apexHeightMm: number;
+  readonly blastRadiusMm: number;
+  readonly visualTypeId: string;
+  readonly damageEffects: readonly EffectDefinition[];
+  readonly suppressionBps: number;
+}
+
+export interface ProjectileImpactIntent {
+  readonly projectile: LogicalProjectileState;
+  readonly impactCell: GridCoord;
+}
+
+export interface SettlementState {
+  readonly triggeredAt: Tick;
+  readonly terminationReason: BattleTerminationReason;
+  readonly winnerFactionIds: readonly FactionId[];
+  readonly projectileCountAtTrigger: number;
 }
 
 export interface TransportAssignmentState {
@@ -254,6 +290,7 @@ export interface RuntimeState {
   readonly coverOccupancy: Map<CoverSlotId, GroupId>;
   readonly objectives: ObjectiveRuntimeState[];
   readonly reinforcementWaves: ReinforcementRuntimeState[];
+  readonly projectiles: LogicalProjectileState[];
   /** Compatibility alias for the first objective in a defense setup. */
   readonly objective?: ObjectiveRuntimeState;
   tick: Tick;
@@ -262,6 +299,7 @@ export interface RuntimeState {
   lastMeaningfulProgressTick: Tick;
   resolutionCandidateKey?: string;
   resolutionCandidateSince?: Tick;
+  settlement?: SettlementState;
   result?: BattleResult;
 }
 
@@ -285,6 +323,9 @@ export interface HitIntent {
   readonly shotOrdinal: number;
   readonly damageBps: number;
   readonly hitSuppressionBps: number;
+  readonly randomStream?: "blast-member-effect";
+  readonly randomEntityKey?: string;
+  readonly randomOrdinal?: number;
 }
 
 export interface PlatformDamageIntent {
@@ -300,4 +341,5 @@ export interface PlatformDamageIntent {
   readonly componentDamageBps: number;
   readonly crewDamageBps: number;
   readonly hitSuppressionBps: number;
+  readonly sourceProjectileId?: string;
 }

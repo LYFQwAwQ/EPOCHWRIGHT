@@ -683,7 +683,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-3` 提供步兵、车辆与自行火炮展开能力；`logical-projectile` 和间射配置在 `ARTILLERY-003/004` 对应规则落地前即使出现在未引用模板中，也不能被运行时 setup 引用。功能门禁必须由规则版本和验证器明确执行。
+当前 `content-3` 提供步兵、车辆、自行火炮展开和直接逻辑弹丸能力；`indirect` 配置在 `ARTILLERY-004` 规则落地前即使出现在未引用模板中，也不能被运行时 setup 引用。功能门禁必须由规则版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -914,7 +914,7 @@ type BattleEvent =
 
 阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
 
-当前已实现五类平台事实事件：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和动作阶段；`embarkation-changed` 携带运输关系、动作、阶段和可选原因；`platform-deployment-changed` 携带展开状态 `from/to`、`started|completed|cancelled` 阶段和可选取消原因。五者都携带稳定实体关系，观察端只消费事实而不反推状态。
+当前已实现五类平台事实事件：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和动作阶段；`embarkation-changed` 携带运输关系、动作、阶段和可选原因；`platform-deployment-changed` 携带展开状态 `from/to`、`started|completed|cancelled` 阶段和可选取消原因。五者都携带稳定实体关系，观察端只消费事实而不反推状态。`stage-3.7` 另已实现 `projectile-impacted`，`artillery-mission-changed` 留待间射任务闭环。
 
 炮兵实现增加三类事实事件，并继续为实际开火产生通用 `weapon-fired`：
 
@@ -1021,7 +1021,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-3.1`，规则为 `stage-3.6`，内容为 `content-3`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.5` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-3.1` 输入必须显式提供 `content-3`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-3.1`，规则为 `stage-3.7`，内容为 `content-3`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.6` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-3.1` 输入必须显式提供 `content-3`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 

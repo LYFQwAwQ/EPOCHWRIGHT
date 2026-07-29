@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
-export const BATTLE_RULES_VERSION = "stage-3.6" as const;
+export const BATTLE_RULES_VERSION = "stage-3.7" as const;
+/** The deployment-capable artillery rules before authoritative logical projectiles. */
+export const PRE_PROJECTILE_BATTLE_RULES_VERSION = "stage-3.6" as const;
 /** The content-3 artillery contract before platform deployment behavior. */
 export const PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION = "stage-3" as const;
 export const PRE_ARTILLERY_BATTLE_RULES_VERSION = "stage-3.5" as const;
@@ -1040,6 +1042,16 @@ export type BattleEvent =
       readonly groupId: GroupId;
       readonly targetGroupId: GroupId;
       readonly shotCount: number;
+      readonly fireModeId?: string;
+      readonly projectileIds?: readonly string[];
+    })
+  | (BattleEventBase & {
+      readonly type: "projectile-impacted";
+      readonly projectileId: string;
+      readonly sourceGroupId: GroupId;
+      readonly sourcePlatformId?: PlatformId;
+      readonly impactCell: GridCoord;
+      readonly affectedGroupIds: readonly GroupId[];
     })
   | (BattleEventBase & {
       readonly type: "member-health-changed";

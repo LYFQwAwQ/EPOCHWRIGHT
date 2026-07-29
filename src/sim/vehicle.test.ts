@@ -13,6 +13,7 @@ import {
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
   DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
+  DEFAULT_WEAPON_TEMPLATE_ID,
   DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
   DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
@@ -1429,6 +1430,7 @@ function createLegacyInfantryContent(
         ...legacyEra,
         allowedGroupTemplateIds: [DEFAULT_GROUP_TEMPLATE_ID],
         allowedMemberTemplateIds: [DEFAULT_MEMBER_TEMPLATE_ID],
+        allowedWeaponTemplateIds: [DEFAULT_WEAPON_TEMPLATE_ID],
       },
     },
     groupTemplates: {
@@ -1437,7 +1439,9 @@ function createLegacyInfantryContent(
     memberTemplates: { [DEFAULT_MEMBER_TEMPLATE_ID]: legacyMember },
     platformTemplates: {},
     weaponTemplates: Object.fromEntries(
-      Object.entries(content.weaponTemplates).map(([id, weapon]) => {
+      Object.entries(content.weaponTemplates)
+        .filter(([id]) => id === DEFAULT_WEAPON_TEMPLATE_ID)
+        .map(([id, weapon]) => {
         const mode = weapon.fireModes[0]!;
         const { fireModes: _fireModes, ...legacyWeapon } = weapon;
         return [id, {
@@ -1448,7 +1452,7 @@ function createLegacyInfantryContent(
           aimTicks: mode.aimTicks,
           trajectory: mode.trajectory,
         }];
-      }),
+        }),
     ),
     sensorTemplates: content.sensorTemplates,
     abilityTemplates: content.abilityTemplates,

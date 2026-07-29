@@ -116,7 +116,7 @@ describe("battle content templates", () => {
 
     const trajectoryBase = cloneBattleContent(createDefaultBattleContent());
     const trajectoryWeapon = trajectoryBase.weaponTemplates[DEFAULT_WEAPON_TEMPLATE_ID]!;
-    const unsupportedTrajectory = {
+    const invalidProjectile = {
       ...trajectoryBase,
       weaponTemplates: {
         ...trajectoryBase.weaponTemplates,
@@ -125,7 +125,7 @@ describe("battle content templates", () => {
           fireModes: [{
             ...trajectoryWeapon.fireModes[0]!,
             trajectory: "logical-projectile" as const,
-            projectileSpeedMmPerTick: 1_000,
+            projectileSpeedMmPerTick: 0,
             muzzleHeightMm: 1_000,
             apexHeightMm: 2_000,
             blastRadiusMm: 0,
@@ -134,7 +134,7 @@ describe("battle content templates", () => {
         },
       },
     };
-    expect(() => validateBattleContent(unsupportedTrajectory)).toThrow(/not supported/i);
+    expect(() => validateBattleContent(invalidProjectile)).toThrow(/projectile speed/i);
 
     const platformEffectBase = cloneBattleContent(createDefaultBattleContent());
     const platformWeapon =

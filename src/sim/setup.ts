@@ -25,6 +25,7 @@ import {
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
+  PRE_PROJECTILE_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION,
@@ -32,6 +33,7 @@ import {
   PRE_PLATFORM_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_CONTENT_BATTLE_SETUP_SCHEMA_VERSION,
   SIMULATION_HZ,
+  STATIC_OBJECT_DEFINITIONS,
 } from "./types";
 import { transportOccupancyUnits } from "./transport";
 import type {
@@ -85,6 +87,9 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
       candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_ARTILLERY_BATTLE_RULES_VERSION;
+  const isPreProjectile =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_PROJECTILE_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
@@ -112,7 +117,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreTransport ||
     isPreCombinedArms ||
     isPreStableVehicleMovement ||
-    isPreArtillery
+    isPreArtillery ||
+    isPreProjectile
   ) {
     if (
       candidate.content?.contentVersion !== "content-2" &&
@@ -155,7 +161,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreTransport ||
     isPreCombinedArms ||
     isPreStableVehicleMovement ||
-    isPreArtillery
+    isPreArtillery ||
+    isPreProjectile
   ) {
     return {
       ...inputSetup,
@@ -167,7 +174,11 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
         createDefaultRelations(inputSetup.factions),
       groups: normalizedGroups,
       transportAssignments:
-        isPreTransport || isPreCombinedArms || isPreStableVehicleMovement || isPreArtillery
+        isPreTransport ||
+          isPreCombinedArms ||
+          isPreStableVehicleMovement ||
+          isPreArtillery ||
+          isPreProjectile
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
@@ -211,6 +222,7 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     throw new Error(`The simulation must run at ${SIMULATION_HZ} Hz.`);
   }
   validateBattleMap(setup.map);
+  validateProjectileMapBounds(setup);
 
   const factionIds = new Set(setup.factions.map((faction) => faction.id));
   if (
@@ -345,6 +357,41 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     throw new Error("Battle duration and stability windows must be positive.");
   }
   validateRequiredRoutes(setup);
+}
+
+function validateProjectileMapBounds(setup: BattleSetup): void {
+  const projectileModes = Object.values(setup.content.weaponTemplates).flatMap((weapon) =>
+    weapon.fireModes.filter((mode) => mode.trajectory === "logical-projectile"),
+  );
+  if (projectileModes.length === 0) {
+    return;
+  }
+  const maximumSpanMm = Math.max(setup.map.width, setup.map.height) * setup.map.cellSizeMm;
+  const maximumHorizontalDistanceSquared = 2 * maximumSpanMm ** 2;
+  let minimumHeightUnits = 0;
+  let maximumHeightUnits = 0;
+  for (const heightUnits of setup.map.layers.heightUnits) {
+    minimumHeightUnits = Math.min(minimumHeightUnits, heightUnits);
+    maximumHeightUnits = Math.max(maximumHeightUnits, heightUnits);
+  }
+  const maximumObjectHeightUnits = Math.max(
+    ...Object.values(STATIC_OBJECT_DEFINITIONS).map((definition) => definition.heightUnits),
+  );
+  const maximumModeHeightMm = Math.max(
+    ...projectileModes.map((mode) => mode.muzzleHeightMm + mode.apexHeightMm),
+  );
+  const maximumVerticalSpanMm =
+    (maximumHeightUnits - minimumHeightUnits + maximumObjectHeightUnits) *
+      setup.map.heightUnitMm +
+    maximumModeHeightMm;
+  if (
+    !Number.isSafeInteger(maximumSpanMm) ||
+    !Number.isSafeInteger(maximumHorizontalDistanceSquared) ||
+    !Number.isSafeInteger(maximumVerticalSpanMm) ||
+    !Number.isSafeInteger(maximumVerticalSpanMm * maximumHorizontalDistanceSquared)
+  ) {
+    throw new Error("Battle map scale exceeds logical projectile arithmetic bounds.");
+  }
 }
 
 function validateTransportAssignments(setup: BattleSetup): ReadonlySet<string> {

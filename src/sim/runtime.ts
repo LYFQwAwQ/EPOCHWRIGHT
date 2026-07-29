@@ -123,6 +123,7 @@ export function createRuntimeState(
     objectives,
     objective: objectives[0],
     reinforcementWaves,
+    projectiles: [],
     tick: 0,
     eventSequence: 0,
     intelSequence: 0,

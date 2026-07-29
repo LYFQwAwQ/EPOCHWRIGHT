@@ -16,6 +16,7 @@ import type {
   WeaponFireModeDefinition,
   WeaponTemplate,
 } from "./types";
+import { MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS } from "./artillery";
 
 export const BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
@@ -246,7 +247,13 @@ export function createDefaultBattleContent(
     techTags: ["basic-artillery"],
     fireModes: platformWeapon.fireModes.map((mode) => ({
       ...mode,
+      trajectory: "logical-projectile" as const,
       requiresDeployedPlatform: true,
+      projectileSpeedMmPerTick: 8_000,
+      muzzleHeightMm: 2_000,
+      apexHeightMm: 12_000,
+      blastRadiusMm: 8_000,
+      visualTypeId: "shell-medium-v1",
     })),
     magazineSize: 6,
     reloadTicks: 60,
@@ -592,7 +599,6 @@ export function validateBattleContent(content: BattleContentBundle): void {
       !weapon.targetDomains.includes("ground") ||
       weapon.fireModes.length !== 1 ||
       weapon.fireModes[0]!.targeting !== "direct" ||
-      weapon.fireModes[0]!.trajectory !== "resolved" ||
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1 ||
       weapon.fireModes[0]!.aimTicks !== 0
@@ -805,9 +811,23 @@ function validateWeaponTemplate(template: WeaponTemplate): void {
         mode.apexHeightMm,
         mode.blastRadiusMm,
       ]) {
-        if (!Number.isInteger(value) || value < 0) {
+        if (!Number.isSafeInteger(value) || value < 0) {
           throw new Error(`Weapon template ${template.id} has invalid projectile fields.`);
         }
+      }
+      if (mode.projectileSpeedMmPerTick <= 0) {
+        throw new Error(`Weapon template ${template.id} has invalid projectile speed.`);
+      }
+      const maximumFlightTicks = Math.max(
+        1,
+        Math.ceil(mode.maximumRangeMm / mode.projectileSpeedMmPerTick),
+      );
+      if (
+        maximumFlightTicks > MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS ||
+        !Number.isSafeInteger(mode.maximumRangeMm * maximumFlightTicks) ||
+        !Number.isSafeInteger(4 * mode.apexHeightMm * maximumFlightTicks ** 2)
+      ) {
+        throw new Error(`Weapon template ${template.id} exceeds projectile trajectory bounds.`);
       }
       if (!mode.visualTypeId) {
         throw new Error(`Weapon template ${template.id} requires a projectile visual type.`);

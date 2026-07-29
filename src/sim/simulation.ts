@@ -1,4 +1,10 @@
 import {
+  blastFalloffBps,
+  firstProjectileCollision,
+  projectileFlightTicks,
+  projectilePositionAtElapsed,
+} from "./artillery";
+import {
   cellIndex,
   hasLineOfSight,
   heightAt,
@@ -34,10 +40,12 @@ import type {
   GroupState,
   HitIntent,
   IntelMessage,
+  LogicalProjectileState,
   MemberState,
   ObjectiveRuntimeState,
   PlatformState,
   PlatformDamageIntent,
+  ProjectileImpactIntent,
   ReinforcementRuntimeState,
   RuntimeState,
   ShotIntent,
@@ -113,6 +121,7 @@ import type {
   CoverEvaluationReason,
   CoverSlot,
   DirectionalCoverEffect,
+  EffectDefinition,
   EntityInspection,
   FactionId,
   GridCoord,
@@ -121,9 +130,11 @@ import type {
   HealthState,
   MemberInspection,
   MemberPlacement,
+  MemberEffectDefinition,
   MovementType,
   ObjectiveInspection,
   PlatformInspection,
+  PlatformDamageEffectDefinition,
   PlatformCapabilityInspection,
   PlatformWeaponInspection,
   PlatformSummaryInspection,
@@ -138,6 +149,8 @@ import type {
   TransportDismountReason,
   TransportKnownThreatInspection,
   VehicleEngagementReason,
+  WeaponFireModeDefinition,
+  WeaponTemplate,
 } from "./types";
 
 const MOVE_POINTS_PER_TICK = 52;
@@ -761,13 +774,60 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(groupId);
       }
     }
+    for (const projectile of [...this.state.projectiles].sort(compareById)) {
+      hasher.addString(projectile.id);
+      hasher.addString(projectile.sourceFactionId);
+      hasher.addString(projectile.sourceGroupId);
+      hasher.addString(projectile.sourcePlatformId ?? "");
+      hasher.addString(projectile.weaponTemplateId);
+      hasher.addString(projectile.fireModeId);
+      hasher.addNumber(projectile.launchedAt);
+      hasher.addNumber(projectile.scheduledGroundImpactAt);
+      hasher.addNumber(projectile.origin.x);
+      hasher.addNumber(projectile.origin.z);
+      hasher.addNumber(projectile.intendedAimCell.x);
+      hasher.addNumber(projectile.intendedAimCell.z);
+      hasher.addNumber(projectile.plannedImpactCell.x);
+      hasher.addNumber(projectile.plannedImpactCell.z);
+      hasher.addNumber(projectile.totalFlightTicks);
+      hasher.addNumber(projectile.flightTicksElapsed);
+      hasher.addNumber(projectile.muzzleHeightMm);
+      hasher.addNumber(projectile.apexHeightMm);
+      hasher.addNumber(projectile.blastRadiusMm);
+      hasher.addString(projectile.visualTypeId);
+      for (const effect of projectile.damageEffects) {
+        hashEffectDefinition(hasher, effect);
+      }
+      hasher.addNumber(projectile.suppressionBps);
+    }
     hasher.addNumber(this.state.lastMeaningfulProgressTick);
     hasher.addString(this.state.resolutionCandidateKey ?? "");
     hasher.addNumber(this.state.resolutionCandidateSince ?? -1);
+    hasher.addNumber(this.state.settlement?.triggeredAt ?? -1);
+    hasher.addString(this.state.settlement?.terminationReason ?? "");
+    hasher.addNumber(this.state.settlement?.projectileCountAtTrigger ?? 0);
+    for (const factionId of this.state.settlement?.winnerFactionIds ?? []) {
+      hasher.addString(factionId);
+    }
     return hasher.digest();
   }
 
   private stepOnce(): void {
+    if (this.state.settlement) {
+      const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), false);
+      this.updateMorale(impacts, true);
+      this.state.tick += 1;
+      if (this.state.projectiles.length === 0) {
+        const settlement = this.state.settlement;
+        this.completeBattle(
+          settlement.terminationReason,
+          settlement.winnerFactionIds,
+          settlement.triggeredAt,
+          settlement.projectileCountAtTrigger,
+        );
+      }
+      return;
+    }
     this.updateReinforcements();
     this.updateCrewStations();
     this.updateTransportAssignments();
@@ -776,7 +836,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.updateDecisions();
     this.updatePlatformDeployments();
     this.advanceMovement();
-    const impacts = this.updateWeapons();
+    const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), true);
     this.updateMorale(impacts);
     this.updateEvacuation();
     this.updateObjective();
@@ -3709,10 +3769,104 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
   }
 
-  private updateWeapons(): Map<GroupId, SuppressionImpact> {
+  private createLogicalProjectile(
+    group: GroupState,
+    shooterEntityId: string,
+    sourcePlatformId: string | undefined,
+    origin: GridCoord,
+    weapon: WeaponTemplate,
+    fireMode: Extract<WeaponFireModeDefinition, { trajectory: "logical-projectile" }>,
+    intendedAimCell: GridCoord,
+    shotOrdinal: number,
+  ): LogicalProjectileState {
+    const totalFlightTicks = projectileFlightTicks(
+      origin,
+      intendedAimCell,
+      this.setup.map.cellSizeMm,
+      fireMode.projectileSpeedMmPerTick,
+    );
+    return {
+      id: `${shooterEntityId}:projectile:${this.state.tick}:${shotOrdinal}`,
+      sourceFactionId: group.factionId,
+      sourceGroupId: group.id,
+      sourcePlatformId,
+      weaponTemplateId: weapon.id,
+      fireModeId: fireMode.id,
+      launchedAt: this.state.tick,
+      scheduledGroundImpactAt: this.state.tick + totalFlightTicks,
+      origin: { ...origin },
+      intendedAimCell: { ...intendedAimCell },
+      plannedImpactCell: { ...intendedAimCell },
+      totalFlightTicks,
+      flightTicksElapsed: 0,
+      muzzleHeightMm: fireMode.muzzleHeightMm,
+      apexHeightMm: fireMode.apexHeightMm,
+      blastRadiusMm: fireMode.blastRadiusMm,
+      visualTypeId: fireMode.visualTypeId,
+      damageEffects: weapon.damageEffects.map((effect) =>
+        effect.kind === "platform-damage"
+          ? { ...effect, attackTags: [...effect.attackTags] }
+          : { ...effect },
+      ),
+      suppressionBps: weapon.suppressionBps,
+    };
+  }
+
+  private advanceLogicalProjectiles(): ProjectileImpactIntent[] {
+    const impacts: ProjectileImpactIntent[] = [];
+    const remaining: LogicalProjectileState[] = [];
+    for (const projectile of [...this.state.projectiles].sort(compareById)) {
+      const previousPosition = projectilePositionAtElapsed(
+        this.setup.map,
+        projectile.origin,
+        projectile.plannedImpactCell,
+        projectile.muzzleHeightMm,
+        projectile.apexHeightMm,
+        projectile.totalFlightTicks,
+        projectile.flightTicksElapsed,
+      );
+      const nextElapsed = Math.min(
+        projectile.totalFlightTicks,
+        projectile.flightTicksElapsed + 1,
+      );
+      const nextPosition = projectilePositionAtElapsed(
+        this.setup.map,
+        projectile.origin,
+        projectile.plannedImpactCell,
+        projectile.muzzleHeightMm,
+        projectile.apexHeightMm,
+        projectile.totalFlightTicks,
+        nextElapsed,
+      );
+      projectile.flightTicksElapsed = nextElapsed;
+      const collision = firstProjectileCollision(
+        this.setup.map,
+        previousPosition,
+        nextPosition,
+      ) ?? (nextElapsed === projectile.totalFlightTicks
+        ? projectile.plannedImpactCell
+        : undefined);
+      if (collision) {
+        impacts.push({ projectile, impactCell: { ...collision } });
+      } else {
+        remaining.push(projectile);
+      }
+    }
+    this.state.projectiles.splice(0, this.state.projectiles.length, ...remaining);
+    return impacts;
+  }
+
+  private updateWeapons(
+    projectileImpacts: readonly ProjectileImpactIntent[] = [],
+    allowFiring = true,
+  ): Map<GroupId, SuppressionImpact> {
     const shotIntents: ShotIntent[] = [];
     const shotCounts = new Map<string, number>();
-    for (const group of this.state.groups) {
+    const projectileIdsByShotKey = new Map<string, string[]>();
+    const fireModeIdByShotKey = new Map<string, string>();
+    let logicalProjectilesCreated = 0;
+    const firingGroups = allowFiring ? this.state.groups : [];
+    for (const group of firingGroups) {
       for (const member of group.members) {
         updateWeaponTimer(member, this.weaponForMember(member));
       }
@@ -3767,12 +3921,14 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
 
+      const shotKey = `${group.id}\u0000${target.id}`;
       let shotOrdinal = 0;
       for (const member of group.members) {
         if (!canMemberFight(member) || member.placement.kind !== "dismounted") {
           continue;
         }
         const weapon = this.weaponForMember(member);
+        const fireMode = getPrimaryFireMode(weapon);
         const platformDamage = firstPlatformDamageEffect(weapon);
         if (targetPlatform && !platformDamage) {
           continue;
@@ -3796,20 +3952,39 @@ class StageOneBattleSimulation implements BattleSimulation {
         member.shotCooldownTicks = weapon.shotIntervalTicks;
         const damageBps = firstEffectAmount(weapon, "damage", 0);
         const hitSuppressionBps = firstEffectAmount(weapon, "suppression", 0);
-        shotIntents.push({
-          shooterGroupId: group.id,
-          shooterEntityId: member.id,
-          targetGroupId: target.id,
-          shotOrdinal,
-          hitChanceBps: applyBasisPointReduction(
-            calculateHitChance(group, member, target, this.weaponPreferredRangeCells(weapon)),
-            cover?.effect.protectionBps ?? 0,
-          ),
-          damageBps,
-          suppressionBps: weapon.suppressionBps,
-          hitSuppressionBps,
-          platformDamage,
-        });
+        if (fireMode.trajectory === "logical-projectile") {
+          const projectile = this.createLogicalProjectile(
+            group,
+            member.id,
+            undefined,
+            group.cell,
+            weapon,
+            fireMode,
+            target.cell,
+            shotOrdinal,
+          );
+          this.state.projectiles.push(projectile);
+          const ids = projectileIdsByShotKey.get(shotKey) ?? [];
+          ids.push(projectile.id);
+          projectileIdsByShotKey.set(shotKey, ids);
+          fireModeIdByShotKey.set(shotKey, fireMode.id);
+          logicalProjectilesCreated += 1;
+        } else {
+          shotIntents.push({
+            shooterGroupId: group.id,
+            shooterEntityId: member.id,
+            targetGroupId: target.id,
+            shotOrdinal,
+            hitChanceBps: applyBasisPointReduction(
+              calculateHitChance(group, member, target, this.weaponPreferredRangeCells(weapon)),
+              cover?.effect.protectionBps ?? 0,
+            ),
+            damageBps,
+            suppressionBps: weapon.suppressionBps,
+            hitSuppressionBps,
+            platformDamage,
+          });
+        }
         shotOrdinal += 1;
       }
       for (const platform of group.platforms) {
@@ -3866,27 +4041,46 @@ class StageOneBattleSimulation implements BattleSimulation {
             target,
             this.weaponPreferredRangeCells(weapon),
           );
-          shotIntents.push({
-            shooterGroupId: group.id,
-            shooterEntityId: `${platform.id}:${weaponState.componentId}`,
-            targetGroupId: target.id,
-            shotOrdinal,
-            hitChanceBps: applyBasisPointReduction(
-              Math.floor((baseHitChance * operator.efficiencyBps) / 10_000),
-              cover?.effect.protectionBps ?? 0,
-            ),
-            damageBps: firstEffectAmount(weapon, "damage", 0),
-            suppressionBps: weapon.suppressionBps,
-            hitSuppressionBps: firstEffectAmount(weapon, "suppression", 0),
-            platformDamage,
-          });
+          const shooterEntityId = `${platform.id}:${weaponState.componentId}`;
+          if (fireMode.trajectory === "logical-projectile") {
+            const projectile = this.createLogicalProjectile(
+              group,
+              shooterEntityId,
+              platform.id,
+              platform.cell,
+              weapon,
+              fireMode,
+              target.cell,
+              shotOrdinal,
+            );
+            this.state.projectiles.push(projectile);
+            const ids = projectileIdsByShotKey.get(shotKey) ?? [];
+            ids.push(projectile.id);
+            projectileIdsByShotKey.set(shotKey, ids);
+            fireModeIdByShotKey.set(shotKey, fireMode.id);
+            logicalProjectilesCreated += 1;
+          } else {
+            shotIntents.push({
+              shooterGroupId: group.id,
+              shooterEntityId,
+              targetGroupId: target.id,
+              shotOrdinal,
+              hitChanceBps: applyBasisPointReduction(
+                Math.floor((baseHitChance * operator.efficiencyBps) / 10_000),
+                cover?.effect.protectionBps ?? 0,
+              ),
+              damageBps: firstEffectAmount(weapon, "damage", 0),
+              suppressionBps: weapon.suppressionBps,
+              hitSuppressionBps: firstEffectAmount(weapon, "suppression", 0),
+              platformDamage,
+            });
+          }
           shotOrdinal += 1;
         }
       }
       if (shotOrdinal > 0) {
         group.lastFiredTick = this.state.tick;
-        const key = `${group.id}\u0000${target.id}`;
-        shotCounts.set(key, (shotCounts.get(key) ?? 0) + shotOrdinal);
+        shotCounts.set(shotKey, (shotCounts.get(shotKey) ?? 0) + shotOrdinal);
       }
     }
 
@@ -3955,6 +4149,15 @@ class StageOneBattleSimulation implements BattleSimulation {
       impact.suppressionBps += shot.suppressionBps;
       impacts.set(shot.targetGroupId, impact);
     }
+    const projectileImpactEvents = projectileImpacts.map((projectileImpact) => ({
+      projectileImpact,
+      affectedGroupIds: this.collectProjectileBlast(
+        projectileImpact,
+        hits,
+        platformHits,
+        impacts,
+      ),
+    }));
     for (const hit of platformHits) {
       const impact = impacts.get(hit.targetGroupId) ?? {
         suppressionBps: 0,
@@ -3971,8 +4174,41 @@ class StageOneBattleSimulation implements BattleSimulation {
           shotOrdinal: hit.shotOrdinal,
           damageBps: hit.crewDamageBps,
           hitSuppressionBps: 0,
+          ...(hit.sourceProjectileId
+            ? {
+                randomStream: "blast-member-effect" as const,
+                randomEntityKey: `${hit.sourceProjectileId}:${hit.targetCrewMemberId}`,
+                randomOrdinal: 0,
+              }
+            : {}),
         });
       }
+    }
+    for (const [key, shotCount] of [...shotCounts].sort(([a], [b]) => compareStrings(a, b))) {
+      const [groupId, targetGroupId] = key.split("\u0000") as [GroupId, GroupId];
+      const fireModeId = fireModeIdByShotKey.get(key);
+      const projectileIds = projectileIdsByShotKey.get(key)?.slice().sort(compareStrings);
+      this.emit({
+        type: "weapon-fired",
+        groupId,
+        targetGroupId,
+        shotCount,
+        ...(fireModeId ? { fireModeId } : {}),
+        ...(projectileIds ? { projectileIds } : {}),
+      });
+    }
+    for (const { projectileImpact, affectedGroupIds } of projectileImpactEvents) {
+      const projectile = projectileImpact.projectile;
+      this.emit({
+        type: "projectile-impacted",
+        projectileId: projectile.id,
+        sourceGroupId: projectile.sourceGroupId,
+        ...(projectile.sourcePlatformId
+          ? { sourcePlatformId: projectile.sourcePlatformId }
+          : {}),
+        impactCell: { ...projectileImpact.impactCell },
+        affectedGroupIds,
+      });
     }
     hits.sort(
       (a, b) =>
@@ -4022,14 +4258,207 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
     }
 
-    for (const [key, shotCount] of [...shotCounts].sort(([a], [b]) => compareStrings(a, b))) {
-      const [groupId, targetGroupId] = key.split("\u0000") as [GroupId, GroupId];
-      this.emit({ type: "weapon-fired", groupId, targetGroupId, shotCount });
-    }
-    if (shotIntents.length > 0) {
+    if (
+      shotIntents.length > 0 ||
+      logicalProjectilesCreated > 0 ||
+      projectileImpacts.length > 0
+    ) {
       this.markMeaningfulProgress();
     }
     return impacts;
+  }
+
+  private collectProjectileBlast(
+    impactIntent: ProjectileImpactIntent,
+    hits: HitIntent[],
+    platformHits: PlatformDamageIntent[],
+    impacts: Map<GroupId, SuppressionImpact>,
+  ): readonly GroupId[] {
+    const { projectile, impactCell } = impactIntent;
+    const memberDamage = projectile.damageEffects.find(
+      (effect): effect is MemberEffectDefinition => effect.kind === "damage",
+    );
+    const hitSuppression = projectile.damageEffects.find(
+      (effect): effect is MemberEffectDefinition => effect.kind === "suppression",
+    );
+    const platformDamage = projectile.damageEffects.find(
+      (effect): effect is PlatformDamageEffectDefinition => effect.kind === "platform-damage",
+    );
+    const affectedGroupIds: GroupId[] = [];
+    const targets = [...this.state.groups].sort(
+      (a, b) =>
+        cellIndex(this.setup.map, a.cell) - cellIndex(this.setup.map, b.cell) ||
+        compareStrings(a.id, b.id),
+    );
+
+    for (const target of targets) {
+      if (!this.isHostile(projectile.sourceFactionId, target.factionId)) {
+        continue;
+      }
+      let maximumFalloffBps = 0;
+      const dismountedTargets = target.members
+        .filter(
+          (member) => canMemberFight(member) && member.placement.kind === "dismounted",
+        )
+        .sort(compareById);
+      if (dismountedTargets.length > 0 && isGroupSpatiallyActive(target)) {
+        const falloffBps = blastFalloffBps(
+          impactCell,
+          target.cell,
+          this.setup.map.cellSizeMm,
+          projectile.blastRadiusMm,
+        );
+        maximumFalloffBps = Math.max(maximumFalloffBps, falloffBps);
+        if (memberDamage && falloffBps > 0) {
+          const damageBps = Math.floor((memberDamage.amountBps * falloffBps) / 10_000);
+          for (const [memberIndex, member] of dismountedTargets.entries()) {
+            hits.push({
+              shooterGroupId: projectile.sourceGroupId,
+              shooterEntityId: projectile.id,
+              targetGroupId: target.id,
+              targetMemberId: member.id,
+              shotOrdinal: memberIndex,
+              damageBps,
+              hitSuppressionBps: 0,
+              randomStream: "blast-member-effect",
+              randomEntityKey: `${projectile.id}:${member.id}`,
+              randomOrdinal: 0,
+            });
+          }
+        }
+      }
+
+      for (const platform of [...target.platforms].sort(compareById)) {
+        if (platform.disposition === "destroyed") {
+          continue;
+        }
+        const falloffBps = blastFalloffBps(
+          impactCell,
+          platform.cell,
+          this.setup.map.cellSizeMm,
+          projectile.blastRadiusMm,
+        );
+        maximumFalloffBps = Math.max(maximumFalloffBps, falloffBps);
+        if (platformDamage && falloffBps > 0) {
+          platformHits.push(
+            this.resolveBlastPlatformDamageIntent(
+              projectile,
+              target,
+              platform,
+              platformDamage,
+              impactCell,
+              falloffBps,
+            ),
+          );
+        }
+      }
+
+      if (maximumFalloffBps === 0) {
+        continue;
+      }
+      affectedGroupIds.push(target.id);
+      const suppression = impacts.get(target.id) ?? {
+        suppressionBps: 0,
+        hitSuppressionBps: 0,
+      };
+      suppression.suppressionBps += Math.floor(
+        (projectile.suppressionBps * maximumFalloffBps) / 10_000,
+      );
+      suppression.hitSuppressionBps += Math.floor(
+        ((hitSuppression?.amountBps ?? 0) * maximumFalloffBps) / 10_000,
+      );
+      impacts.set(target.id, suppression);
+    }
+
+    return affectedGroupIds.sort(compareStrings);
+  }
+
+  private resolveBlastPlatformDamageIntent(
+    projectile: LogicalProjectileState,
+    targetGroup: GroupState,
+    targetPlatform: PlatformState,
+    effect: PlatformDamageEffectDefinition,
+    impactCell: GridCoord,
+    falloffBps: number,
+  ): PlatformDamageIntent {
+    const template = getPlatformTemplate(
+      this.setup.content,
+      targetPlatform.platformTemplateId,
+    );
+    const armorFace = armorFaceForAttack(
+      targetPlatform.facing,
+      targetPlatform.cell,
+      impactCell,
+      effect.attackTags.includes("top-attack"),
+    );
+    const penetrationRating = Math.floor(
+      (effect.penetrationRating * falloffBps) / 10_000,
+    );
+    const penetrated = deterministicBps(
+      this.setup.seed,
+      "blast-platform-effect",
+      0,
+      `${projectile.id}:${targetPlatform.id}`,
+      0,
+    ) < penetrationChanceBps(
+      penetrationRating,
+      template.armorRatingByFace[armorFace],
+    );
+    const eligibleRules = template.componentRules.filter((rule) =>
+      targetPlatform.components.some(
+        (component) => component.id === rule.id && component.integrityBps > 0,
+      ),
+    );
+    const targetComponent = selectWeightedPlatformComponent(
+      eligibleRules,
+      deterministicUint32(
+        this.setup.seed,
+        "blast-platform-effect",
+        0,
+        `${projectile.id}:${targetPlatform.id}`,
+        1,
+      ),
+      !penetrated,
+    );
+    const eligibleCrew = targetPlatform.crewAssignments
+      .map((assignment) => this.state.membersById.get(assignment.memberId))
+      .filter(
+        (member): member is MemberState =>
+          Boolean(member && this.isActiveCrewMember(member, targetPlatform)),
+      )
+      .sort(compareById);
+    const crewRoll = deterministicUint32(
+      this.setup.seed,
+      "blast-platform-effect",
+      0,
+      `${projectile.id}:${targetPlatform.id}`,
+      2,
+    );
+    const targetCrew = penetrated && eligibleCrew.length > 0
+      ? eligibleCrew[crewRoll % eligibleCrew.length]
+      : undefined;
+
+    return {
+      shooterGroupId: projectile.sourceGroupId,
+      shooterEntityId: projectile.id,
+      targetGroupId: targetGroup.id,
+      targetPlatformId: targetPlatform.id,
+      targetComponentId: targetComponent?.id,
+      targetCrewMemberId: targetCrew?.id,
+      shotOrdinal: 0,
+      armorFace,
+      penetrated,
+      componentDamageBps: Math.floor(
+        ((penetrated ? effect.componentDamageBps : (effect.externalDamageBps ?? 0)) *
+          falloffBps) /
+          10_000,
+      ),
+      crewDamageBps: penetrated
+        ? Math.floor((effect.crewDamageBps * falloffBps) / 10_000)
+        : 0,
+      hitSuppressionBps: 0,
+      sourceProjectileId: projectile.id,
+    };
   }
 
   private resolvePlatformDamageIntent(
@@ -4164,10 +4593,10 @@ class StageOneBattleSimulation implements BattleSimulation {
     const previous = member.health;
     const severityRoll = deterministicBps(
       this.setup.seed,
-      "wound-severity",
-      this.state.tick,
-      `${hit.shooterGroupId}:${member.id}`,
-      hit.shotOrdinal,
+      hit.randomStream ?? "wound-severity",
+      hit.randomStream ? 0 : this.state.tick,
+      hit.randomEntityKey ?? `${hit.shooterGroupId}:${member.id}`,
+      hit.randomOrdinal ?? hit.shotOrdinal,
     );
     const memberTemplate = getMemberTemplate(this.setup.content!, member.memberTemplateId);
     const damageScale = applyBasisPointReduction(
@@ -4216,9 +4645,15 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.markMeaningfulProgress();
   }
 
-  private updateMorale(impacts: Map<GroupId, SuppressionImpact>): void {
+  private updateMorale(
+    impacts: Map<GroupId, SuppressionImpact>,
+    impactsOnly = false,
+  ): void {
     for (const group of this.state.groups) {
       const impact = impacts.get(group.id);
+      if (impactsOnly && !impact) {
+        continue;
+      }
       if (impact) {
         const incomingSuppression = applyBasisPointReduction(
           impact.suppressionBps + impact.hitSuppressionBps,
@@ -4229,14 +4664,16 @@ class StageOneBattleSimulation implements BattleSimulation {
           group.suppressionBps + incomingSuppression,
         );
       }
-      group.suppressionBps = Math.max(
-        0,
-        group.suppressionBps - (impact ? 5 : 28),
-      );
+      if (!impactsOnly) {
+        group.suppressionBps = Math.max(
+          0,
+          group.suppressionBps - (impact ? 5 : 28),
+        );
+      }
 
       if (group.suppressionBps >= 6_500) {
         group.moraleBps = Math.max(0, group.moraleBps - 10);
-      } else if (!impact && group.suppressionBps < 2_500) {
+      } else if (!impactsOnly && !impact && group.suppressionBps < 2_500) {
         group.moraleBps = Math.min(10_000, group.moraleBps + (group.moraleState === "routing" ? 11 : 4));
       }
 
@@ -4531,6 +4968,29 @@ class StageOneBattleSimulation implements BattleSimulation {
     if (this.state.result) {
       return;
     }
+    if (this.state.projectiles.length > 0) {
+      if (isHardTerminationReason(terminationReason) && !this.state.settlement) {
+        this.state.settlement = {
+          triggeredAt: this.state.tick,
+          terminationReason,
+          winnerFactionIds: [...winnerFactionIds],
+          projectileCountAtTrigger: this.state.projectiles.length,
+        };
+      }
+      return;
+    }
+    this.completeBattle(terminationReason, winnerFactionIds, this.state.tick, 0);
+  }
+
+  private completeBattle(
+    terminationReason: BattleTerminationReason,
+    winnerFactionIds: readonly FactionId[],
+    triggeredAt: number,
+    projectileCountAtTrigger: number,
+  ): void {
+    if (this.state.result || this.state.projectiles.length > 0) {
+      return;
+    }
     const resultTick = this.state.tick;
     const stateHash = this.getStateHash();
     this.state.result = {
@@ -4538,9 +4998,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       rulesVersion: this.setup.rulesVersion,
       finalTick: resultTick,
       settlement: {
-        triggeredAt: resultTick,
+        triggeredAt,
         completedAt: resultTick,
-        projectileCountAtTrigger: 0,
+        projectileCountAtTrigger,
       },
       outcome: winnerFactionIds.length > 0 ? "win" : "draw",
       terminationReason,
@@ -5634,6 +6094,30 @@ function addContactToHash(hasher: StateHasher, contact: ContactState): void {
   hasher.addNumber(contact.lastDirectTick);
   hasher.addNumber(contact.confidenceBps);
   hasher.addString(contact.sourceGroupId);
+}
+
+function hashEffectDefinition(hasher: StateHasher, effect: EffectDefinition): void {
+  hasher.addString(effect.kind);
+  if (effect.kind === "platform-damage") {
+    hasher.addNumber(effect.penetrationRating);
+    hasher.addNumber(effect.componentDamageBps);
+    hasher.addNumber(effect.crewDamageBps);
+    hasher.addNumber(effect.externalDamageBps ?? 0);
+    for (const tag of [...effect.attackTags].sort(compareStrings)) {
+      hasher.addString(tag);
+    }
+    return;
+  }
+  hasher.addNumber(effect.amountBps);
+}
+
+function isHardTerminationReason(reason: BattleTerminationReason): boolean {
+  return (
+    reason === "objective-captured" ||
+    reason === "defense-time-expired" ||
+    reason === "maximum-duration" ||
+    reason === "stalemate"
+  );
 }
 
 function getGroupRenderPosition(
