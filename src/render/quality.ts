@@ -5,6 +5,8 @@ export interface RenderQualitySettings {
   readonly shadows: boolean;
   readonly shadowMapSize: number;
   readonly maxTracers: number;
+  readonly maxProjectileTracers: number;
+  readonly maxImpactBursts: number;
 }
 
 export const DEFAULT_RENDER_QUALITY: RenderQuality = "high";
@@ -17,18 +19,24 @@ export const RENDER_QUALITY_SETTINGS: Readonly<
     shadows: false,
     shadowMapSize: 512,
     maxTracers: 24,
+    maxProjectileTracers: 12,
+    maxImpactBursts: 8,
   },
   medium: {
     dpr: [1, 1.35],
     shadows: true,
     shadowMapSize: 768,
     maxTracers: 48,
+    maxProjectileTracers: 24,
+    maxImpactBursts: 16,
   },
   high: {
     dpr: [1, 1.7],
     shadows: true,
     shadowMapSize: 1_024,
     maxTracers: 96,
+    maxProjectileTracers: 48,
+    maxImpactBursts: 28,
   },
 };
 

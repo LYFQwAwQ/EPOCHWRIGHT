@@ -55,4 +55,18 @@ describe("demo battle setup boundary", () => {
 
     expect(() => createSimulation(invalid)).toThrow(/relations/i);
   });
+
+  it("rejects artillery and vehicle mixes that exceed generated group capacity", () => {
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-artillery-count",
+      groupsPerFaction: 1,
+      artilleryGroupsPerFaction: 2,
+    })).toThrow(/artilleryGroupsPerFaction/);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-platform-mix",
+      groupsPerFaction: 1,
+      artilleryGroupsPerFaction: 1,
+      vehicleGroupsPerFaction: 1,
+    })).toThrow(/fit within groupsPerFaction/);
+  });
 });

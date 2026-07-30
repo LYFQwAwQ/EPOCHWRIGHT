@@ -148,6 +148,7 @@ import type {
   RenderMember,
   RenderObjective,
   RenderPlatform,
+  RenderProjectile,
   SimulationStatus,
   StaticObjectFacing,
   TargetProfile,
@@ -326,6 +327,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     const groups: RenderGroup[] = [];
     const members: RenderMember[] = [];
     const platforms: RenderPlatform[] = [];
+    const projectiles: RenderProjectile[] = [];
     const objectives: RenderObjective[] = [];
     const cellSizeMeters = this.setup.map.cellSizeMm / 1_000;
     const heightUnitMeters = this.setup.map.heightUnitMm / 1_000;
@@ -407,6 +409,9 @@ class StageOneBattleSimulation implements BattleSimulation {
           disposition: platform.disposition,
           damaged: platform.components.some((component) => component.integrityBps < 10_000),
           visualTypeId: platform.visualTypeId,
+          ...(!contact && platform.deployment
+            ? { deployment: platform.deployment.state }
+            : {}),
         });
       }
 
@@ -449,7 +454,46 @@ class StageOneBattleSimulation implements BattleSimulation {
       });
     }
 
-    return { tick: this.state.tick, groups, members, platforms, objectives };
+    for (const projectile of [...this.state.projectiles].sort(compareById)) {
+      const position = projectilePositionAtElapsed(
+        this.setup.map,
+        projectile.origin,
+        projectile.plannedImpactCell,
+        projectile.muzzleHeightMm,
+        projectile.apexHeightMm,
+        projectile.totalFlightTicks,
+        projectile.flightTicksElapsed,
+      );
+      const projectileCell = {
+        x: Math.floor(position.xMm / this.setup.map.cellSizeMm),
+        z: Math.floor(position.zMm / this.setup.map.cellSizeMm),
+      };
+      if (
+        observerFactionId !== undefined &&
+        projectile.sourceFactionId !== observerFactionId &&
+        !this.isCellVisibleToFaction(observerFactionId, projectileCell)
+      ) {
+        continue;
+      }
+      projectiles.push({
+        id: projectile.id,
+        sourceFactionId: projectile.sourceFactionId,
+        worldX: position.xMm / 1_000,
+        worldY: position.heightMm / 1_000,
+        worldZ: position.zMm / 1_000,
+        visualTypeId: projectile.visualTypeId,
+      });
+    }
+
+    return {
+      tick: this.state.tick,
+      phase: this.state.settlement ? "settling" : "running",
+      groups,
+      members,
+      platforms,
+      projectiles,
+      objectives,
+    };
   }
 
   inspect(entityId: string, observerFactionId?: FactionId): EntityInspection | undefined {
@@ -577,12 +621,124 @@ class StageOneBattleSimulation implements BattleSimulation {
     return confidence > 0 ? { ...latest, confidenceBps: confidence } : undefined;
   }
 
+  private isCellVisibleToFaction(observerFactionId: FactionId, cell: GridCoord): boolean {
+    return this.state.groups.some((observer) => {
+      if (observer.factionId !== observerFactionId || !isGroupSpatiallyActive(observer)) {
+        return false;
+      }
+      const sightRange = this.groupSightRangeCells(observer);
+      return (
+        squaredGridDistance(observer.cell, cell) <= sightRange * sightRange &&
+        hasLineOfSight(this.setup.map, observer.cell, cell)
+      );
+    });
+  }
+
+  private isGroupDirectlyObservedByFaction(
+    observerFactionId: FactionId,
+    targetGroupId: GroupId,
+  ): boolean {
+    return this.state.groups.some(
+      (observer) =>
+        observer.factionId === observerFactionId &&
+        observer.localContacts.get(targetGroupId)?.lastDirectTick === this.state.tick,
+    );
+  }
+
+  private isOwnGroup(observerFactionId: FactionId, groupId: GroupId): boolean {
+    return this.state.groupsById.get(groupId)?.factionId === observerFactionId;
+  }
+
   getResult(): BattleResult | undefined {
     return this.state.result;
   }
 
-  drainEvents(): readonly BattleEvent[] {
-    return this.state.events.splice(0, this.state.events.length);
+  drainEvents(observerFactionId?: FactionId): readonly BattleEvent[] {
+    const events = this.state.events.splice(0, this.state.events.length);
+    if (observerFactionId === undefined) {
+      return events;
+    }
+    return events.flatMap((event) => {
+      const projected = this.projectEventForObserver(event, observerFactionId);
+      return projected ? [projected] : [];
+    });
+  }
+
+  private projectEventForObserver(
+    event: BattleEvent,
+    observerFactionId: FactionId,
+  ): BattleEvent | undefined {
+    switch (event.type) {
+      case "contact-spotted":
+        return this.isOwnGroup(observerFactionId, event.observerGroupId)
+          ? event
+          : undefined;
+      case "intel-delivered":
+        return event.factionId === observerFactionId ? event : undefined;
+      case "artillery-mission-changed":
+      case "platform-deployment-changed":
+      case "member-health-changed":
+      case "crew-station-changed":
+      case "platform-component-changed":
+      case "morale-changed":
+      case "group-evacuated":
+        return this.isOwnGroup(observerFactionId, event.groupId) ? event : undefined;
+      case "platform-state-changed":
+        return this.isOwnGroup(observerFactionId, event.groupId) ||
+          this.isGroupDirectlyObservedByFaction(observerFactionId, event.groupId)
+          ? event
+          : undefined;
+      case "weapon-fired": {
+        const sourceOwn = this.isOwnGroup(observerFactionId, event.groupId);
+        if (event.projectileIds?.length) {
+          return sourceOwn ? event : undefined;
+        }
+        return sourceOwn ||
+          (this.isGroupDirectlyObservedByFaction(observerFactionId, event.groupId) &&
+            (this.isOwnGroup(observerFactionId, event.targetGroupId) ||
+              this.isGroupDirectlyObservedByFaction(
+                observerFactionId,
+                event.targetGroupId,
+              )))
+          ? event
+          : undefined;
+      }
+      case "projectile-impacted": {
+        const sourceFactionId = this.state.groupsById.get(event.sourceGroupId)?.factionId;
+        if (
+          sourceFactionId !== observerFactionId &&
+          !this.isCellVisibleToFaction(observerFactionId, event.impactCell)
+        ) {
+          return undefined;
+        }
+        return {
+          ...event,
+          affectedGroupIds: event.affectedGroupIds.filter((groupId) => {
+            const group = this.state.groupsById.get(groupId);
+            return group?.factionId === observerFactionId;
+          }),
+        };
+      }
+      case "embarkation-changed": {
+        const platformGroupId = this.state.platformsById.get(event.platformId)?.groupId;
+        return this.isOwnGroup(observerFactionId, event.passengerGroupId) ||
+          (platformGroupId !== undefined && this.isOwnGroup(observerFactionId, platformGroupId))
+          ? event
+          : undefined;
+      }
+      case "reinforcement-triggered":
+        return event.factionId === observerFactionId ? event : undefined;
+      case "reinforcement-waiting":
+      case "reinforcement-deployed":
+      case "reinforcement-cancelled":
+        return this.state.reinforcementWaves.find((wave) => wave.id === event.waveId)
+          ?.factionId === observerFactionId
+          ? event
+          : undefined;
+      case "objective-state-changed":
+      case "battle-ended":
+        return event;
+    }
   }
 
   getStateHash(): string {
@@ -1457,7 +1613,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         platform.fireMission = undefined;
       }
 
-      if (this.hasCurrentDirectHostileContact(group)) {
+      if (this.hasCurrentArtillerySelfDefenseContact(group)) {
         if (platform.fireMission) {
           this.cancelArtilleryMission(platform, "contact-replaced");
         }
@@ -1819,11 +1975,25 @@ class StageOneBattleSimulation implements BattleSimulation {
     return dxMm * dxMm + dzMm * dzMm;
   }
 
-  private hasCurrentDirectHostileContact(group: GroupState): boolean {
+  private hasCurrentArtillerySelfDefenseContact(group: GroupState): boolean {
     return sortedContacts(group.localContacts).some(
-      (contact) =>
-        contact.lastDirectTick === this.state.tick &&
-        this.isHostile(group.factionId, contact.targetFactionId),
+      (contact) => {
+        if (
+          contact.lastDirectTick !== this.state.tick ||
+          !this.isHostile(group.factionId, contact.targetFactionId)
+        ) {
+          return false;
+        }
+        const rangeBand = this.groupTargetRangeBand(group, contact.targetProfile);
+        if (!rangeBand) {
+          return false;
+        }
+        const distanceSquared = squaredGridDistance(group.cell, contact.lastKnown);
+        return (
+          distanceSquared >= rangeBand.minimum ** 2 &&
+          distanceSquared <= rangeBand.maximum ** 2
+        );
+      },
     );
   }
 
@@ -3108,11 +3278,21 @@ class StageOneBattleSimulation implements BattleSimulation {
           }
         }
       }
-      if (
-        this.activeTargetPlatform(group)?.combat === "effective" &&
-        this.decideVehicleEngagement(group, directTarget)
-      ) {
-        return;
+      const activePlatform = this.activeTargetPlatform(group);
+      if (activePlatform?.combat === "effective") {
+        if (this.shouldHoldIndirectFirePosition(group, directTarget, activePlatform)) {
+          this.cancelMovement(group);
+          group.action = "engaging";
+          group.decisionReason = "ARTILLERY_HOLD_INDIRECT_RANGE";
+          group.currentTargetId = directTarget.id;
+          group.goal = undefined;
+          group.path = [];
+          group.vehicleEngagement = undefined;
+          return;
+        }
+        if (this.decideVehicleEngagement(group, directTarget)) {
+          return;
+        }
       }
       if (
         group.suppressionBps >= HIGH_SUPPRESSION_COVER_THRESHOLD_BPS &&
@@ -3579,6 +3759,34 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.path = [];
     this.recordVehicleEngagement(group, target.id, "hold-firing-position", option);
     return true;
+  }
+
+  private shouldHoldIndirectFirePosition(
+    group: GroupState,
+    target: GroupState,
+    platform: PlatformState,
+  ): boolean {
+    if (this.hasCurrentArtillerySelfDefenseContact(group)) {
+      return false;
+    }
+    const targetProfile = this.targetProfileForGroup(target);
+    const directRange = this.groupTargetRangeBand(group, targetProfile);
+    const distanceSquared = squaredGridDistance(group.cell, target.cell);
+    if (
+      directRange &&
+      distanceSquared >= directRange.minimum ** 2 &&
+      distanceSquared <= directRange.maximum ** 2
+    ) {
+      return false;
+    }
+    const distanceSquaredMm = this.gridDistanceSquaredMm(platform.cell, target.cell);
+    return this.indirectWeaponConfigurations(platform).some(
+      ({ weapon, fireMode, available }) =>
+        available &&
+        weaponTargetEffectivenessBps(weapon, targetProfile) > 0 &&
+        distanceSquaredMm >= fireMode.minimumRangeMm ** 2 &&
+        distanceSquaredMm <= fireMode.maximumRangeMm ** 2,
+    );
   }
 
   private hasInFlightVehicleEngagementPlan(group: GroupState): boolean {

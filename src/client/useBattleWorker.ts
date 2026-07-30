@@ -224,7 +224,12 @@ export function useBattleWorker(): BattleWorkerController {
 
   const setObservation = useCallback(
     (observerFactionId?: string) => {
-      setState((current) => ({ ...current, observerFactionId, inspection: undefined }));
+      setState((current) => ({
+        ...current,
+        observerFactionId,
+        events: [],
+        inspection: undefined,
+      }));
       post({
         type: "set-observation",
         sessionId: sessionRef.current,

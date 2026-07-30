@@ -18,6 +18,7 @@ import type { DemoBattleSetupOptions } from "./setup";
 export type DemoScenarioId =
   | "alliance-conflict"
   | "duel-conflict"
+  | "artillery-observation"
   | "vehicle-skirmish"
   | "vehicle-defense"
   | "single-defense"
@@ -49,6 +50,7 @@ const ALLIANCE_RELATIONS = [
 export const DEMO_SCENARIOS: readonly DemoScenarioDefinition[] = [
   { id: "alliance-conflict", label: "三方同盟冲突", mode: "conflict" },
   { id: "duel-conflict", label: "双边正面冲突", mode: "conflict" },
+  { id: "artillery-observation", label: "自行火炮观察", mode: "conflict" },
   { id: "vehicle-skirmish", label: "车辆遭遇战", mode: "conflict" },
   { id: "vehicle-defense", label: "合成兵种防守", mode: "defense" },
   { id: "single-defense", label: "单目标防守", mode: "defense" },
@@ -105,6 +107,25 @@ export function createDemoScenarioOptions(
         height: 38,
         groupsPerFaction: 5,
         factions: TWO_FACTIONS,
+        mode: "conflict",
+      };
+    case "artillery-observation":
+      return {
+        ...shared,
+        width: 44,
+        height: 30,
+        groupsPerFaction: 4,
+        artilleryGroupsPerFaction: 1,
+        factions: TWO_FACTIONS,
+        mountainDensity: 0,
+        roughness: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+        treeCoverage: 0,
+        rockCoverage: 0,
+        wallCoverage: 0,
+        maximumDurationSeconds: 100,
+        stalemateSeconds: 70,
         mode: "conflict",
       };
     case "vehicle-skirmish":

@@ -177,10 +177,10 @@ export function supercoverCellsBetween(
   addCell({ x, z });
 
   while (x !== endX || z !== endZ) {
-    const xComparison = stepX === 0
+    const xComparison = x === endX || stepX === 0
       ? Number.POSITIVE_INFINITY
       : nextXDistance * absDz;
-    const zComparison = stepZ === 0
+    const zComparison = z === endZ || stepZ === 0
       ? Number.POSITIVE_INFINITY
       : nextZDistance * absDx;
     if (xComparison < zComparison) {
@@ -236,9 +236,10 @@ export function firstProjectileCollision(
         );
     const projectileHeight = segmentLengthSquared === 0
       ? end.heightMm
-      : start.heightMm + Math.trunc(
-          ((end.heightMm - start.heightMm) * projectedNumerator) /
-            segmentLengthSquared,
+      : start.heightMm + multiplyDivideTrunc(
+          end.heightMm - start.heightMm,
+          projectedNumerator,
+          segmentLengthSquared,
         );
     if (projectileHeight <= collisionTopHeightMm(map, cell)) {
       return cell;
@@ -263,6 +264,16 @@ export function blastFalloffBps(
     return 0;
   }
   return Math.max(1, Math.floor(((blastRadiusMm - distanceMm) * 10_000) / blastRadiusMm));
+}
+
+function multiplyDivideTrunc(
+  multiplicand: number,
+  multiplier: number,
+  divisor: number,
+): number {
+  return Number(
+    (BigInt(multiplicand) * BigInt(multiplier)) / BigInt(divisor),
+  );
 }
 
 function collisionTopHeightMm(map: BattleMap, cell: GridCoord): number {

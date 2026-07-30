@@ -39,6 +39,7 @@ import {
   firstProjectileCollision,
   projectileFlightTicks,
   projectilePositionAtElapsed,
+  supercoverCellsBetween,
 } from "./artillery";
 
 describe("artillery trajectory rules", () => {
@@ -75,6 +76,20 @@ describe("artillery trajectory rules", () => {
       { xMm: 18_000, zMm: 42_000, heightMm: 2_000 },
       { xMm: 34_000, zMm: 42_000, heightMm: 2_000 },
     )).toEqual({ x: 6, z: 10 });
+  });
+
+  it("stops an axis that already reached its end cell at an exact grid boundary", () => {
+    const map = createArtillerySetup().map;
+
+    expect(supercoverCellsBetween(
+      map,
+      { xMm: 74_000, zMm: 62_000, heightMm: 6_000 },
+      { xMm: 80_000, zMm: 60_000, heightMm: 14_500 },
+    )).toEqual([
+      { x: 18, z: 15 },
+      { x: 19, z: 15 },
+      { x: 20, z: 15 },
+    ]);
   });
 
   it("derives source-aware uncertainty and stable in-bounds scatter candidates", () => {
@@ -163,6 +178,22 @@ describe("artillery content contract", () => {
       ...setup,
       map: { ...setup.map, cellSizeMm: 1_000_000_000 },
     })).toThrow(/projectile arithmetic bounds/i);
+  });
+
+  it("accepts the maximum supported map scale with the default artillery content", () => {
+    expect(() => createDemoBattleSetup({
+      seed: "artillery-maximum-map-bounds",
+      width: 512,
+      height: 512,
+      groupsPerFaction: 1,
+      mountainDensity: 0,
+      roughness: 0,
+      waterCoverage: 0,
+      wetlandCoverage: 0,
+      treeCoverage: 0,
+      rockCoverage: 0,
+      wallCoverage: 0,
+    })).not.toThrow();
   });
 
   it("provides a validated self-propelled artillery group behind explicit deployment capability", () => {
@@ -629,6 +660,133 @@ describe("artillery-intel-003", () => {
         }),
       ]));
     }
+  });
+});
+
+describe("artillery-observation-007", () => {
+  it("projects stable authoritative shell positions without changing the battle hash", () => {
+    const simulation = createSimulation(createIndirectArtillerySetup());
+    seedFactionContact(simulation, {
+      targetGroupId: "azure-target",
+      targetFactionId: "azure",
+      lastKnown: { x: 18, z: 10 },
+      observedAt: 0,
+      deliveredAt: 0,
+      intelSource: "same-faction",
+    });
+    const projectedX: number[] = [];
+    let projectileId: string | undefined;
+    let sawEnemyVisibleShell = false;
+
+    for (let tick = 0; tick < 140; tick += 1) {
+      simulation.step();
+      const hashBeforeProjection = simulation.getStateHash();
+      const omniscient = simulation.getRenderFrame();
+      const ember = simulation.getRenderFrame("ember");
+      const azure = simulation.getRenderFrame("azure");
+      expect(simulation.getStateHash()).toBe(hashBeforeProjection);
+
+      const projectile = omniscient.projectiles[0];
+      if (projectile) {
+        projectileId ??= projectile.id;
+        projectedX.push(projectile.worldX);
+        expect(projectile).toMatchObject({
+          id: projectileId,
+          sourceFactionId: "ember",
+          visualTypeId: "shell-medium-v1",
+        });
+        expect(projectile.worldY).toBeGreaterThan(0);
+        expect(ember.projectiles.map((candidate) => candidate.id)).toContain(projectile.id);
+        if (projectedX.length === 1) {
+          expect(azure.projectiles).toEqual([]);
+        }
+        sawEnemyVisibleShell ||= azure.projectiles.some(
+          (candidate) => candidate.id === projectile.id,
+        );
+      }
+      simulation.drainEvents();
+      if (projectileId && omniscient.projectiles.length === 0) {
+        break;
+      }
+    }
+
+    expect(projectileId).toBeDefined();
+    expect(new Set(projectedX).size).toBeGreaterThan(2);
+    expect(sawEnemyVisibleShell).toBe(true);
+  });
+
+  it("keeps missions and logical firing details out of an enemy event projection", () => {
+    const setup = createIndirectArtillerySetup();
+    const emberView = createSimulation(setup);
+    const azureView = createSimulation(setup);
+    for (const simulation of [emberView, azureView]) {
+      seedFactionContact(simulation, {
+        targetGroupId: "azure-target",
+        targetFactionId: "azure",
+        lastKnown: { x: 18, z: 10 },
+        observedAt: 0,
+        deliveredAt: 0,
+        intelSource: "same-faction",
+      });
+    }
+    const emberEvents: ReturnType<typeof emberView.drainEvents>[number][] = [];
+    const azureEvents: ReturnType<typeof azureView.drainEvents>[number][] = [];
+    let fired = false;
+
+    for (let tick = 0; tick < 140; tick += 1) {
+      emberView.step();
+      azureView.step();
+      const sourceEvents = emberView.drainEvents("ember");
+      const enemyEvents = azureView.drainEvents("azure");
+      emberEvents.push(...sourceEvents);
+      azureEvents.push(...enemyEvents);
+      expect(azureView.getStateHash()).toBe(emberView.getStateHash());
+      fired ||= sourceEvents.some(
+        (event) => event.type === "weapon-fired" && Boolean(event.projectileIds?.length),
+      );
+      if (
+        fired &&
+        emberView.getRenderFrame().projectiles.length === 0 &&
+        sourceEvents.some((event) => event.type === "projectile-impacted")
+      ) {
+        break;
+      }
+    }
+
+    expect(emberEvents.some((event) => event.type === "artillery-mission-changed")).toBe(true);
+    expect(emberEvents.some(
+      (event) => event.type === "weapon-fired" && Boolean(event.projectileIds?.length),
+    )).toBe(true);
+    expect(azureEvents.some((event) => event.type === "artillery-mission-changed")).toBe(false);
+    expect(azureEvents.some(
+      (event) => event.type === "weapon-fired" && Boolean(event.projectileIds?.length),
+    )).toBe(false);
+  });
+
+  it("does not expose enemy member health facts through a directly observed impact", () => {
+    const setup = createArtillerySetup();
+    const emberView = createSimulation(setup);
+    const azureView = createSimulation(setup);
+    const emberEvents: ReturnType<typeof emberView.drainEvents>[number][] = [];
+    const azureEvents: ReturnType<typeof azureView.drainEvents>[number][] = [];
+
+    for (let tick = 0; tick < 140; tick += 1) {
+      emberView.step();
+      azureView.step();
+      emberEvents.push(...emberView.drainEvents("ember"));
+      azureEvents.push(...azureView.drainEvents("azure"));
+      expect(azureView.getStateHash()).toBe(emberView.getStateHash());
+      if (azureEvents.some((event) => event.type === "member-health-changed")) {
+        break;
+      }
+    }
+
+    expect(azureEvents.some(
+      (event) => event.type === "member-health-changed" && event.groupId === "azure-target",
+    )).toBe(true);
+    expect(emberEvents.some(
+      (event) => event.type === "member-health-changed" && event.groupId === "azure-target",
+    )).toBe(false);
   });
 });
 

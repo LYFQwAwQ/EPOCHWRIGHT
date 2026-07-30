@@ -28,6 +28,7 @@ import {
   type BattleModeKind,
   type BattleSetup,
   type GroupInspection,
+  type PlatformInspection,
 } from "./sim/types";
 import { EventFeed } from "./ui/EventFeed";
 import { FactionSummary } from "./ui/FactionSummary";
@@ -106,6 +107,13 @@ function terminationLabel(reason: string): string {
   return labels[reason] ?? reason;
 }
 
+function findSetupGroup(setup: BattleSetup, groupId: string) {
+  return setup.groups.find((group) => group.id === groupId) ??
+    setup.reinforcements
+      .flatMap((wave) => wave.groups)
+      .find((group) => group.id === groupId);
+}
+
 function filterObservationEvents(
   events: readonly BattleEvent[],
   visibleGroupIds: ReadonlySet<string>,
@@ -131,6 +139,18 @@ function filterObservationEvents(
       case "platform-component-changed":
       case "platform-deployment-changed":
         return visibleGroupIds.has(event.groupId);
+      case "artillery-mission-changed": {
+        const sourceGroup = findSetupGroup(setup, event.groupId);
+        return observerFactionId === undefined || sourceGroup?.factionId === observerFactionId;
+      }
+      case "projectile-impacted":
+        return true;
+      case "embarkation-changed": {
+        const platformGroup = [...setup.groups, ...setup.reinforcements.flatMap((wave) => wave.groups)]
+          .find((group) => group.platforms.some((platform) => platform.id === event.platformId));
+        return visibleGroupIds.has(event.passengerGroupId) ||
+          (platformGroup !== undefined && visibleGroupIds.has(platformGroup.id));
+      }
       case "weapon-fired":
         return visibleGroupIds.has(event.groupId) && visibleGroupIds.has(event.targetGroupId);
       case "reinforcement-triggered":
@@ -162,6 +182,7 @@ export function App() {
     () => getDemoScenario(initialScenario()).mode,
   );
   const [selectedGroupId, setSelectedGroupId] = useState<string>();
+  const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [cleanView, setCleanView] = useState(false);
   const [cameraMode, setCameraMode] = useState<CameraMode>("free");
   const [renderQuality, setRenderQuality] = useState<RenderQuality>(initialRenderQuality);
@@ -245,12 +266,22 @@ export function App() {
   const selectGroup = useCallback(
     (groupId?: string) => {
       setSelectedGroupId(groupId);
+      setSelectedEntityId(groupId);
       inspect(groupId);
       if (!groupId && cameraMode === "follow") {
         setCameraMode("free");
       }
     },
     [cameraMode, inspect],
+  );
+
+  const selectPlatform = useCallback(
+    (platformId: string, groupId: string) => {
+      setSelectedGroupId(groupId);
+      setSelectedEntityId(platformId);
+      inspect(platformId);
+    },
+    [inspect],
   );
 
   const launchScenario = useCallback(
@@ -260,6 +291,7 @@ export function App() {
       setBattleMode(nextMode);
       setSeed(nextSeed);
       setSelectedGroupId(undefined);
+      setSelectedEntityId(undefined);
       setObserverFactionId(undefined);
       setObservation(undefined);
       setCameraMode("free");
@@ -308,6 +340,10 @@ export function App() {
   );
   const groupInspection =
     state.inspection?.kind === "group" ? (state.inspection as GroupInspection) : undefined;
+  const platformInspection =
+    state.inspection?.kind === "platform"
+      ? (state.inspection as PlatformInspection)
+      : undefined;
   const displayFrame = useMemo(() => {
     if (!state.frame || observationLayers.contacts || observerFactionId === undefined) {
       return state.frame;
@@ -320,10 +356,10 @@ export function App() {
       ),
     };
   }, [observationLayers.contacts, observerFactionId, state.frame]);
-  const displayedInspection =
+  const displayedInspection: GroupInspection | PlatformInspection | undefined =
     groupInspection?.visibility === "known" && !observationLayers.contacts
       ? undefined
-      : groupInspection;
+      : platformInspection ?? groupInspection;
   const visibleGroupIds = useMemo(
     () => new Set(displayFrame?.groups.map((group) => group.id) ?? []),
     [displayFrame],
@@ -451,7 +487,21 @@ export function App() {
       getFactionIds: () => state.setup?.factions.map((faction) => faction.id) ?? [],
       getGroupIds: () => displayFrame?.groups.map((group) => group.id) ?? [],
       getPlatformIds: () => displayFrame?.platforms.map((platform) => platform.id) ?? [],
-      getEventTypes: () => state.events.map((event) => event.type),
+      getProjectiles: () => displayFrame?.projectiles ?? [],
+      getEventTypes: () => visibleEvents.map((event) => event.type),
+      getEventSummaries: () => visibleEvents.map((event) => ({
+        type: event.type,
+        ...(event.type === "artillery-mission-changed" ||
+        event.type === "weapon-fired" ||
+        event.type === "platform-deployment-changed"
+          ? { groupId: event.groupId }
+          : {}),
+        ...(event.type === "projectile-impacted"
+          ? { sourceGroupId: event.sourceGroupId }
+          : {}),
+        ...(event.type === "weapon-fired" ? { fireModeId: event.fireModeId } : {}),
+        ...(event.type === "artillery-mission-changed" ? { phase: event.phase } : {}),
+      })),
       getObservation: () => observerFactionId ?? "omniscient",
       getLayerVisibility: () => ({ ...observationLayers }),
       getPerformanceProfile: () => performanceProfileRef.current,
@@ -466,16 +516,18 @@ export function App() {
       },
       setObservation: (factionId?: string) => {
         setSelectedGroupId(undefined);
+        setSelectedEntityId(undefined);
         setCameraMode("free");
         setObserverFactionId(factionId);
         setObservation(factionId);
       },
       selectGroup,
+      selectPlatform,
       pause,
       run,
       step: stepDebug,
     };
-  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, setObservation, state.events, state.frame, state.setup, state.stateHash, state.status, stepDebug]);
+  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, selectPlatform, setObservation, state.frame, state.setup, state.stateHash, state.status, stepDebug, visibleEvents]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -505,9 +557,11 @@ export function App() {
             factionColors={factionColors}
             showObjectives={observationLayers.objectives}
             selectedGroupId={selectedGroupId}
+            selectedEntityId={selectedEntityId}
             cameraMode={cameraMode}
             resetSignal={cameraResetSignal}
             onSelectGroup={selectGroup}
+            onSelectPlatform={selectPlatform}
             quality={renderQuality}
           />
         </Suspense>
@@ -565,6 +619,7 @@ export function App() {
             layers={observationLayers}
             onObserverChange={(factionId) => {
               setSelectedGroupId(undefined);
+              setSelectedEntityId(undefined);
               setCameraMode("free");
               setObserverFactionId(factionId);
               setObservation(factionId);
@@ -572,6 +627,7 @@ export function App() {
             onLayerChange={(layer, visible) => {
               if (layer === "contacts" && !visible && groupInspection?.visibility === "known") {
                 setSelectedGroupId(undefined);
+                setSelectedEntityId(undefined);
                 setCameraMode("free");
                 inspect(undefined);
               }

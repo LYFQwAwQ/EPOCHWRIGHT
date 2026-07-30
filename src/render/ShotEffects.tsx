@@ -50,6 +50,9 @@ export function ShotEffects({ events, frame, maxTracers }: ShotEffectsProps) {
       if (event.type !== "weapon-fired") {
         continue;
       }
+      if (event.projectileIds?.length) {
+        continue;
+      }
       const eventKey = `${event.tick}:${event.sequence}`;
       if (seenEventsRef.current.has(eventKey)) {
         continue;

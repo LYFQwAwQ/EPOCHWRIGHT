@@ -38,7 +38,22 @@ interface BattleTestApi {
   getFactionIds(): readonly string[];
   getGroupIds(): readonly string[];
   getPlatformIds(): readonly string[];
+  getProjectiles(): readonly {
+    id: string;
+    sourceFactionId: string;
+    worldX: number;
+    worldY: number;
+    worldZ: number;
+    visualTypeId: string;
+  }[];
   getEventTypes(): readonly string[];
+  getEventSummaries(): readonly {
+    type: string;
+    groupId?: string;
+    sourceGroupId?: string;
+    fireModeId?: string;
+    phase?: string;
+  }[];
   getObservation(): string;
   getLayerVisibility(): {
     objectives: boolean;
@@ -61,6 +76,7 @@ interface BattleTestApi {
   resetPerformanceMetrics(): void;
   setObservation(factionId?: string): void;
   selectGroup(groupId?: string): void;
+  selectPlatform(platformId: string, groupId: string): void;
   pause(): void;
   run(): void;
   step(count?: number): void;

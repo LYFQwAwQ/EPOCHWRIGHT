@@ -756,14 +756,18 @@ interface EnvironmentSetup {
 ```ts
 interface BattleSimulation {
   readonly tick: Tick;
-  readonly status: "active" | "settling" | "finished";
+  readonly status: "active" | "finished";
 
-  step(): void;
-  stepMany(count: number): void;
-  drainEvents(): readonly BattleEvent[];
-  createRenderFrame(): RenderFrame;
-  inspectEntity(entityId: string): EntityInspection | undefined;
+  getSetup(): BattleSetup;
+  step(count?: number): void;
+  drainEvents(observerFactionId?: FactionId): readonly BattleEvent[];
+  getRenderFrame(observerFactionId?: FactionId): RenderFrame;
+  inspect(
+    entityId: GroupId | MemberId | PlatformId | ObjectiveId,
+    observerFactionId?: FactionId,
+  ): EntityInspection | undefined;
   getResult(): BattleResult | undefined;
+  getStateHash(): string;
 }
 
 interface BattleSimulationFactory {
@@ -829,6 +833,7 @@ interface RenderPlatform {
   readonly disposition: "crewed" | "abandoned" | "destroyed";
   readonly damaged: boolean;
   readonly visualTypeId: string;
+  readonly deployment?: PlatformDeploymentState;
 }
 
 interface RenderProjectile {

@@ -1,6 +1,8 @@
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
+  DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
@@ -43,6 +45,7 @@ export interface DemoBattleSetupOptions {
   readonly height?: number;
   readonly groupsPerFaction?: number;
   readonly vehicleGroupsPerFaction?: number;
+  readonly artilleryGroupsPerFaction?: number;
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -76,6 +79,7 @@ export function createDemoBattleSetup(
   const height = options.height ?? 36;
   const groupsPerFaction = options.groupsPerFaction ?? 3;
   const vehicleGroupsPerFaction = options.vehicleGroupsPerFaction ?? 0;
+  const artilleryGroupsPerFaction = options.artilleryGroupsPerFaction ?? 0;
   const transportPairsPerFaction = options.transportPairsPerFaction ?? 0;
 
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
@@ -93,17 +97,27 @@ export function createDemoBattleSetup(
     );
   }
   if (
+    !Number.isInteger(artilleryGroupsPerFaction) ||
+    artilleryGroupsPerFaction < 0 ||
+    artilleryGroupsPerFaction > groupsPerFaction
+  ) {
+    throw new Error("artilleryGroupsPerFaction must be an integer within groupsPerFaction.");
+  }
+  if (
     !Number.isInteger(vehicleGroupsPerFaction) ||
     vehicleGroupsPerFaction < 0 ||
-    vehicleGroupsPerFaction > groupsPerFaction
+    vehicleGroupsPerFaction > groupsPerFaction - artilleryGroupsPerFaction
   ) {
-    throw new Error("vehicleGroupsPerFaction must be an integer within groupsPerFaction.");
+    throw new Error(
+      "vehicleGroupsPerFaction and artilleryGroupsPerFaction must fit within groupsPerFaction.",
+    );
   }
   if (
     !Number.isInteger(transportPairsPerFaction) ||
     transportPairsPerFaction < 0 ||
     transportPairsPerFaction > vehicleGroupsPerFaction ||
-    transportPairsPerFaction > groupsPerFaction - vehicleGroupsPerFaction
+    transportPairsPerFaction >
+      groupsPerFaction - vehicleGroupsPerFaction - artilleryGroupsPerFaction
   ) {
     throw new Error(
       "transportPairsPerFaction requires one vehicle and one passenger group per pair.",
@@ -127,6 +141,7 @@ export function createDemoBattleSetup(
     factions,
     groupsPerFaction,
     vehicleGroupsPerFaction,
+    artilleryGroupsPerFaction,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -195,7 +210,10 @@ function createTransportPairs(
   const assignments: TransportAssignment[] = [];
   for (const faction of factions) {
     const vehicles = groups.filter(
-      (group) => group.factionId === faction.id && group.platforms.length > 0,
+      (group) =>
+        group.factionId === faction.id &&
+        group.platforms.length > 0 &&
+        group.groupTemplateId !== DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
     );
     const passengers = groups.filter(
       (group) => group.factionId === faction.id && group.platforms.length === 0,
@@ -301,6 +319,7 @@ function createGroupSpawns(
   factions: readonly FactionSetup[],
   groupsPerFaction: number,
   vehicleGroupsPerFaction: number,
+  artilleryGroupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -325,9 +344,41 @@ function createGroupSpawns(
       };
       const spawn = findAvailableSpawn(map, desiredSpawn, occupied);
       occupied.add(spawn.z * map.width + spawn.x);
-      if (groupIndex < vehicleGroupsPerFaction) {
+      if (groupIndex < artilleryGroupsPerFaction) {
+        const groupId = `${faction.id}-artillery-${groupIndex + 1}`;
+        const driverId = `${groupId}-driver`;
+        const gunnerId = `${groupId}-gunner`;
+        const reliefId = `${groupId}-relief`;
+        groups.push({
+          id: groupId,
+          factionId: faction.id,
+          groupTemplateId: DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
+          spawn,
+          evacuation: { ...spawn },
+          members: [
+            { id: driverId, memberTemplateId: DEFAULT_CREW_MEMBER_TEMPLATE_ID },
+            { id: gunnerId, memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID },
+            { id: reliefId, memberTemplateId: DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID },
+          ],
+          platforms: [
+            {
+              id: `${groupId}-platform`,
+              platformTemplateId: DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+              initialFacing: side === 0 ? 2 : side === 1 ? 6 : 0,
+              crewAssignments: [
+                { stationId: "driver", memberId: driverId },
+                { stationId: "gunner", memberId: gunnerId },
+                { stationId: "relief", memberId: reliefId },
+              ],
+            },
+          ],
+        });
+        continue;
+      }
+      if (groupIndex < artilleryGroupsPerFaction + vehicleGroupsPerFaction) {
         const tracked = side % 2 === 1;
-        const groupId = `${faction.id}-${tracked ? "tracked" : "wheeled"}-${groupIndex + 1}`;
+        const vehicleIndex = groupIndex - artilleryGroupsPerFaction;
+        const groupId = `${faction.id}-${tracked ? "tracked" : "wheeled"}-${vehicleIndex + 1}`;
         const driverId = `${groupId}-driver`;
         const gunnerId = `${groupId}-gunner`;
         const reliefId = `${groupId}-relief`;

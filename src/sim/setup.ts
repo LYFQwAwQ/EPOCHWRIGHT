@@ -394,8 +394,7 @@ function validateProjectileMapBounds(setup: BattleSetup): void {
   if (
     !Number.isSafeInteger(maximumSpanMm) ||
     !Number.isSafeInteger(maximumHorizontalDistanceSquared) ||
-    !Number.isSafeInteger(maximumVerticalSpanMm) ||
-    !Number.isSafeInteger(maximumVerticalSpanMm * maximumHorizontalDistanceSquared)
+    !Number.isSafeInteger(maximumVerticalSpanMm)
   ) {
     throw new Error("Battle map scale exceeds logical projectile arithmetic bounds.");
   }

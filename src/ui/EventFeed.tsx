@@ -1,4 +1,4 @@
-import { Flag, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
+import { Crosshair, Flag, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
 import type { BattleEvent } from "../sim/types";
 
 interface EventFeedProps {
@@ -44,7 +44,12 @@ function describeEvent(event: BattleEvent): string | undefined {
       return undefined;
     case "platform-deployment-changed":
       if (event.phase === "cancelled") {
-        return `${event.groupId} 展开动作中断`;
+        const cancellationLabels: Readonly<Record<string, string>> = {
+          "move-requested": "收到移动请求",
+          "capability-lost": "展开能力失效",
+          "platform-unavailable": "平台不可用",
+        };
+        return `${event.groupId} 展开动作中断${event.reason ? ` · ${cancellationLabels[event.reason] ?? event.reason}` : ""}`;
       }
       if (event.to === "deploying") {
         return `${event.groupId} 开始展开`;
@@ -56,6 +61,16 @@ function describeEvent(event: BattleEvent): string | undefined {
         return `${event.groupId} 开始收炮`;
       }
       return `${event.groupId} 完成收炮`;
+    case "artillery-mission-changed":
+      if (event.phase === "assigned") {
+        return `自行火炮 ${event.groupId} 接收间接火力任务`;
+      }
+      if (event.phase === "released") {
+        return `自行火炮 ${event.groupId} 发射炮弹`;
+      }
+      return `自行火炮 ${event.groupId} 取消间接火力任务`;
+    case "projectile-impacted":
+      return `自行火炮 ${event.sourceGroupId} 的炮弹在 ${event.impactCell.x},${event.impactCell.z} 弹着`;
     case "platform-component-changed":
       if (event.to.state === "destroyed") {
         return `${event.groupId} 的 ${event.componentId} 被摧毁`;
@@ -110,6 +125,9 @@ function describeEvent(event: BattleEvent): string | undefined {
 
 function EventIcon({ event }: { readonly event: BattleEvent }) {
   if (event.type === "contact-spotted") return <Radio size={14} />;
+  if (event.type === "artillery-mission-changed" || event.type === "projectile-impacted") {
+    return <Crosshair size={14} />;
+  }
   if (event.type === "member-health-changed" && event.to === "dead") return <Skull size={14} />;
   if (event.type === "morale-changed") return <ShieldAlert size={14} />;
   if (event.type === "objective-state-changed") return <Flag size={14} />;

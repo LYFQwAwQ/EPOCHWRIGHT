@@ -1,8 +1,8 @@
 import { Activity, Radio, Route, ShieldAlert, ShieldCheck, Target, Truck } from "lucide-react";
-import type { GroupInspection, RenderFrame } from "../sim/types";
+import type { GroupInspection, PlatformInspection, RenderFrame } from "../sim/types";
 
 interface InspectorProps {
-  readonly inspection?: GroupInspection;
+  readonly inspection?: GroupInspection | PlatformInspection;
   readonly frame: RenderFrame;
   readonly factionNames: Readonly<Record<string, string>>;
   readonly factionColors: Readonly<Record<string, string>>;
@@ -38,6 +38,7 @@ const reasonLabels: Readonly<Record<string, string>> = {
   "capture-objective": "驻留目标区并完成占领",
   "vehicle-engagement-position": "前往车辆射击位置",
   "orient-armor": "调整车体正面朝向",
+  ARTILLERY_HOLD_INDIRECT_RANGE: "保持间射距离并等待火力任务",
   "transport-rendezvous": "与配对运输平台会合",
   "transport-embarking": "整组搭载中",
   "transport-embarked": "已搭载，随平台机动",
@@ -95,6 +96,32 @@ const transportDismountReasonLabels: Readonly<Record<string, string>> = {
   "direct-contact": "运输组发现直接威胁",
   "objective-proximity": "接近任务目标",
   forced: "平台失效强制下车",
+};
+
+const deploymentLabels: Readonly<Record<string, string>> = {
+  packed: "行军状态",
+  deploying: "展开中",
+  deployed: "已展开",
+  packing: "收炮中",
+};
+
+const missionSourceLabels: Readonly<Record<string, string>> = {
+  "local-direct": "本组直接接触",
+  "same-faction": "同势力情报",
+  allied: "同盟情报",
+};
+
+const missionReasonLabels: Readonly<Record<string, string>> = {
+  ARTILLERY_AIM_INDIRECT_MISSION: "正在瞄准间接火力任务",
+  ARTILLERY_DEPLOY_FOR_MISSION: "正在为间接火力任务展开",
+  ARTILLERY_DIRECT_SELF_DEFENSE: "当前直接接触触发自卫",
+  ARTILLERY_MISSION_ASSIGNED: "已选择合法间接火力目标",
+  ARTILLERY_MISSION_ACTIVE: "正在执行当前间接火力任务",
+  ARTILLERY_HOLD_DANGER_CLOSE: "危险近界，禁止开火",
+  ARTILLERY_HOLD_NO_LEGAL_CONTACT: "暂无合法间接火力情报",
+  ARTILLERY_HOLD_NO_CONTACT: "暂无可用间接火力情报",
+  ARTILLERY_HOLD_NO_WEAPON: "间射武器当前不可用",
+  ARTILLERY_HOLD_NO_COMPATIBLE_TARGET: "没有武器适配的合法目标",
 };
 
 function currentCoverLabel(inspection: GroupInspection): string {
@@ -167,6 +194,131 @@ function Overview({ frame }: { readonly frame: RenderFrame }) {
   );
 }
 
+function PlatformInspector({
+  inspection,
+  factionNames,
+  factionColors,
+}: {
+  readonly inspection: PlatformInspection;
+  readonly factionNames: Readonly<Record<string, string>>;
+  readonly factionColors: Readonly<Record<string, string>>;
+}) {
+  const artillery = inspection.artillery;
+  const damagedComponents = inspection.components.filter(
+    (component) => component.integrityBps < 10_000,
+  );
+  const effectiveStations = inspection.stations.filter(
+    (station) => station.status === "effective",
+  ).length;
+
+  return (
+    <aside className="inspector-panel">
+      <div className="panel-heading panel-heading--unit">
+        <span>{factionNames[inspection.factionId] ?? inspection.factionId}</span>
+        <strong>{inspection.id}</strong>
+        <i style={{ backgroundColor: factionColors[inspection.factionId] }} />
+      </div>
+
+      <section className="inspector-section" data-testid="platform-inspection">
+        <div className="section-title">
+          <Truck size={15} />
+          <span>平台能力</span>
+          <b>{inspection.movementType === "tracked" ? "履带" : "轮式"}</b>
+        </div>
+        <strong className="action-label">
+          {inspection.disposition === "destroyed"
+            ? "已摧毁"
+            : inspection.disposition === "abandoned"
+              ? "已废弃"
+              : inspection.mobility === "mobile"
+                ? "可机动"
+                : "失去机动"}
+          {inspection.combat === "effective" ? " · 武器有效" : " · 武器停用"}
+        </strong>
+        <p>
+          网格 {inspection.cell.x}, {inspection.cell.z} · {effectiveStations}/{inspection.stations.length} 有效岗位
+          {damagedComponents.length > 0 ? ` · ${damagedComponents.length} 个受损部件` : ""}
+        </p>
+      </section>
+
+      {artillery && (
+        <section className="inspector-section" data-testid="artillery-status">
+          <div className="section-title">
+            <Target size={15} />
+            <span>火炮状态</span>
+            <b>{deploymentLabels[artillery.deployment] ?? artillery.deployment}</b>
+          </div>
+          <strong className="action-label">
+            {artillery.deploymentTicksRemaining > 0
+              ? `剩余 ${artillery.deploymentTicksRemaining} tick`
+              : "部署动作稳定"}
+          </strong>
+          {artillery.mission ? (
+            <div data-testid="artillery-mission">
+              <p>
+                目标 {artillery.mission.targetGroupId} · {missionSourceLabels[artillery.mission.source] ?? artillery.mission.source}
+              </p>
+              <p>
+                情报 {artillery.mission.observedAt}/{artillery.mission.deliveredAt} tick · 可信度 {Math.round(artillery.mission.confidenceBps / 100)}%
+              </p>
+              <p>
+                误差 {Math.round(artillery.mission.uncertaintyRadiusMm / 1_000)}m · 偏移 {artillery.mission.selectedOffset.dx},{artillery.mission.selectedOffset.dz} · 弹着格 {artillery.mission.plannedImpactCell.x},{artillery.mission.plannedImpactCell.z}
+              </p>
+              <p>瞄准剩余 {artillery.mission.aimTicksRemaining} tick</p>
+            </div>
+          ) : (
+            <p>当前无火力任务</p>
+          )}
+        </section>
+      )}
+
+      {artillery?.evaluation && (
+        <section className="inspector-section" data-testid="artillery-evaluation">
+          <div className="section-title">
+            <Radio size={15} />
+            <span>任务评估</span>
+            <b>{artillery.evaluation.candidates.length}</b>
+          </div>
+          <strong className="action-label">
+            {missionReasonLabels[artillery.evaluation.reason] ?? artillery.evaluation.reason}
+          </strong>
+          {artillery.evaluation.candidates.slice(0, 3).map((candidate) => (
+            <div className="contact-row" key={`${candidate.targetGroupId}:${candidate.source}`}>
+              <Target size={14} />
+              <span>
+                {candidate.targetGroupId} · {missionSourceLabels[candidate.source] ?? candidate.source} · {candidate.ageTicks} tick
+              </span>
+              <strong>{candidate.rejectionReason ?? candidate.score}</strong>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className="inspector-section">
+        <div className="section-title">
+          <Activity size={15} />
+          <span>武器与部件</span>
+          <b>{inspection.weapons.length}</b>
+        </div>
+        {inspection.weapons.map((weapon) => (
+          <div className="contact-row" key={weapon.componentId}>
+            <Target size={14} />
+            <span>{weapon.weaponTemplateId}</span>
+            <strong>{weapon.available ? `${weapon.magazineRounds} 发` : weapon.reason}</strong>
+          </div>
+        ))}
+        {damagedComponents.map((component) => (
+          <div className="contact-row" key={component.id}>
+            <ShieldAlert size={14} />
+            <span>{component.id}</span>
+            <strong>{Math.round(component.integrityBps / 100)}%</strong>
+          </div>
+        ))}
+      </section>
+    </aside>
+  );
+}
+
 export function Inspector({
   inspection,
   frame,
@@ -175,6 +327,15 @@ export function Inspector({
   showContacts = true,
   showPaths = true,
 }: InspectorProps) {
+  if (inspection?.kind === "platform") {
+    return (
+      <PlatformInspector
+        inspection={inspection}
+        factionNames={factionNames}
+        factionColors={factionColors}
+      />
+    );
+  }
   const coverSummary = inspection ? coverEvaluationSummary(inspection) : undefined;
   return (
     <aside className={`inspector-panel ${inspection ? "" : "inspector-panel--overview"}`}>

@@ -159,6 +159,47 @@ async function countTracerPixels(page: Page): Promise<number> {
   return count;
 }
 
+async function countArtilleryEffectPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    if (red > 235 && green > 65 && green < 205 && blue < 135) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function countProjectileTracerPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    if (red > 245 && green > 235 && blue > 205) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function stepPausedBattle(page: Page, count: number): Promise<void> {
+  const previousTick = await page.evaluate(() => window.__battleTest?.getTick() ?? 0);
+  await page.evaluate((ticks) => window.__battleTest?.step(ticks), count);
+  await page.waitForFunction(
+    ({ tick, ticks }) =>
+      (window.__battleTest?.getTick() ?? 0) >= tick + ticks ||
+      window.__battleTest?.getStatus() === "finished",
+    { tick: previousTick, ticks: count },
+  );
+}
+
 async function countObjectiveBoundaryPixels(page: Page): Promise<number> {
   const screenshot = await page.locator("canvas").screenshot();
   const image = PNG.sync.read(screenshot);
@@ -343,6 +384,150 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
     path: testInfo.outputPath("vehicle-skirmish.png"),
     fullPage: true,
   });
+});
+
+test("artillery scenario projects missions, moving shells, impacts, and observer-safe events", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=artillery-observation&seed=ridge-0712",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      (window.__battleTest?.getPlatformIds().length ?? 0) === 2,
+  );
+
+  const initialHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(initialHash);
+  expect(
+    await page.evaluate(() =>
+      window.__battleTest?.getGroupIds().every((id) => id.startsWith("ember-")),
+    ),
+  ).toBe(true);
+
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "ember-artillery-1-platform",
+      "ember-artillery-1",
+    ),
+  );
+  await expect(page.getByTestId("platform-inspection")).toBeVisible();
+  await expect(page.getByTestId("artillery-status")).toContainText("行军状态");
+
+  let missionVisible = false;
+  for (let index = 0; index < 180 && !missionVisible; index += 1) {
+    await stepPausedBattle(page, 5);
+    missionVisible = await page.getByTestId("artillery-mission").isVisible().catch(() => false);
+  }
+  expect(missionVisible).toBe(true);
+  await expect(page.getByTestId("artillery-mission")).toContainText("弹着格");
+  await expect(page.getByTestId("artillery-evaluation")).toBeVisible();
+  const preLaunchTracerPixels = await countProjectileTracerPixels(page);
+
+  let firstProjectile: ReturnType<BattleTestApi["getProjectiles"]>[number] | undefined;
+  for (let index = 0; index < 100 && !firstProjectile; index += 1) {
+    await stepPausedBattle(page, 1);
+    firstProjectile = await page.evaluate(() =>
+      window.__battleTest
+        ?.getProjectiles()
+        .find((projectile) => projectile.sourceFactionId === "ember"),
+    );
+  }
+  expect(firstProjectile).toBeDefined();
+  expect(Object.keys(firstProjectile!).sort()).toEqual([
+    "id",
+    "sourceFactionId",
+    "visualTypeId",
+    "worldX",
+    "worldY",
+    "worldZ",
+  ]);
+
+  const canvas = page.locator("canvas");
+  const frameBefore = await canvas.screenshot();
+  await stepPausedBattle(page, 2);
+  const nextProjectile = await page.evaluate((projectileId) =>
+    window.__battleTest?.getProjectiles().find((projectile) => projectile.id === projectileId),
+    firstProjectile!.id,
+  );
+  expect(nextProjectile).toBeDefined();
+  expect(nextProjectile?.worldX).not.toBe(firstProjectile?.worldX);
+  await expect(page.locator(".event-feed")).toContainText("自行火炮");
+  const stableTick = await page.evaluate(() => window.__battleTest?.getTick() ?? 0);
+  await page.waitForTimeout(900);
+  const activeTracerPixels = await countProjectileTracerPixels(page);
+  await canvas.screenshot({ path: testInfo.outputPath("artillery-tracer.png") });
+  expect(activeTracerPixels).toBeGreaterThan(preLaunchTracerPixels + 2);
+  await page.waitForTimeout(60);
+  const interpolatedFrame = await canvas.screenshot();
+  expect(interpolatedFrame.equals(frameBefore)).toBe(false);
+  expect(await page.evaluate(() => window.__battleTest?.getTick() ?? -1)).toBe(stableTick);
+
+  const preImpactPixels = await countArtilleryEffectPixels(page);
+  let impacted = false;
+  for (let index = 0; index < 80 && !impacted; index += 1) {
+    await stepPausedBattle(page, 1);
+    impacted = await page.evaluate(() =>
+      window.__battleTest?.getEventSummaries().some(
+        (event) =>
+          event.type === "projectile-impacted" &&
+          event.sourceGroupId === "ember-artillery-1",
+      ) ?? false,
+    );
+  }
+  expect(impacted).toBe(true);
+  await page.waitForTimeout(60);
+  expect(await countArtilleryEffectPixels(page)).toBeGreaterThan(preImpactPixels + 10);
+  await page.waitForTimeout(1_100);
+  expect(await countProjectileTracerPixels(page)).toBeLessThanOrEqual(
+    preLaunchTracerPixels + 8,
+  );
+
+  const projectedEvents = await page.evaluate(() =>
+    window.__battleTest?.getEventSummaries() ?? [],
+  );
+  expect(
+    projectedEvents.some(
+      (event) =>
+        event.type === "artillery-mission-changed" &&
+        event.groupId === "azure-artillery-1",
+    ),
+  ).toBe(false);
+  expect(
+    projectedEvents.some(
+      (event) =>
+        event.type === "weapon-fired" &&
+        event.fireModeId === "indirect" &&
+        event.groupId === "azure-artillery-1",
+    ),
+  ).toBe(false);
+
+  const hashBeforeQuality = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.getByLabel("画质").selectOption("low");
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getRenderQuality())).toBe("low");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(
+    hashBeforeQuality,
+  );
+
+  await page.screenshot({
+    path: testInfo.outputPath("artillery-observation-desktop.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const inspectorBox = await page.locator(".inspector-panel").boundingBox();
+  expect(inspectorBox).toBeTruthy();
+  expect(inspectorBox!.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("artillery-observation-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
 });
 
 test("faction observation projects only authorized groups and independent layers", async ({ page }) => {

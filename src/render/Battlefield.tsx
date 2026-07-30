@@ -6,6 +6,7 @@ import { Vector3 } from "three";
 import type { BattleEvent, BattleMap, RenderFrame } from "../sim/types";
 import { visualWorldY } from "./elevation";
 import { getRenderQualitySettings, type RenderQuality } from "./quality";
+import { ProjectileEffects } from "./ProjectileEffects";
 import { ShotEffects } from "./ShotEffects";
 import { Objectives } from "./Objectives";
 import { Terrain } from "./Terrain";
@@ -122,9 +123,11 @@ interface BattlefieldProps {
   readonly factionColors: Readonly<Record<string, string>>;
   readonly showObjectives: boolean;
   readonly selectedGroupId?: string;
+  readonly selectedEntityId?: string;
   readonly cameraMode: CameraMode;
   readonly resetSignal: number;
   readonly onSelectGroup: (groupId?: string) => void;
+  readonly onSelectPlatform: (platformId: string, groupId: string) => void;
   readonly quality: RenderQuality;
 }
 
@@ -135,9 +138,11 @@ export function Battlefield({
   factionColors,
   showObjectives,
   selectedGroupId,
+  selectedEntityId,
   cameraMode,
   resetSignal,
   onSelectGroup,
+  onSelectPlatform,
   quality,
 }: BattlefieldProps) {
   const qualitySettings = getRenderQualitySettings(quality);
@@ -180,7 +185,9 @@ export function Battlefield({
           frame={frame}
           factionColors={factionColors}
           selectedGroupId={selectedGroupId}
+          selectedEntityId={selectedEntityId}
           onSelectGroup={onSelectGroup}
+          onSelectPlatform={onSelectPlatform}
         />
         <SquadMarkers
           frame={frame}
@@ -192,6 +199,13 @@ export function Battlefield({
           events={events}
           frame={frame}
           maxTracers={qualitySettings.maxTracers}
+        />
+        <ProjectileEffects
+          map={map}
+          frame={frame}
+          events={events}
+          maxTracers={qualitySettings.maxProjectileTracers}
+          maxBursts={qualitySettings.maxImpactBursts}
         />
       </Suspense>
       <CameraRig

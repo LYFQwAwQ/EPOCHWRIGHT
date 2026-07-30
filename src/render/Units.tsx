@@ -3,12 +3,22 @@ import { useMemo, useRef } from "react";
 import { Group, InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
 import type { RenderFrame, RenderGroup, RenderMember, RenderPlatform } from "../sim/types";
 import { visualWorldY } from "./elevation";
+import {
+  ARTILLERY_BARREL_CENTER_Z,
+  ARTILLERY_BARREL_LENGTH,
+  ARTILLERY_DEPLOYED_ELEVATION_RADIANS,
+  ARTILLERY_PACKED_ELEVATION_RADIANS,
+  ARTILLERY_SPADE_CENTER_Z,
+  platformStateColor,
+} from "./platformVisuals";
 
 interface UnitsProps {
   readonly frame: RenderFrame;
   readonly factionColors: Readonly<Record<string, string>>;
   readonly selectedGroupId?: string;
+  readonly selectedEntityId?: string;
   readonly onSelectGroup: (groupId: string) => void;
+  readonly onSelectPlatform: (platformId: string, groupId: string) => void;
 }
 
 const uprightQuaternion = new Quaternion();
@@ -93,21 +103,23 @@ function PlatformMesh({
   platform,
   color,
   selected,
-  onSelectGroup,
+  onSelectPlatform,
 }: {
   readonly platform: RenderPlatform;
   readonly color: string;
   readonly selected: boolean;
-  readonly onSelectGroup: (groupId: string) => void;
+  readonly onSelectPlatform: (platformId: string, groupId: string) => void;
 }) {
   const groupRef = useRef<Group>(null);
   const currentPosition = useRef<Vector3 | undefined>(undefined);
-  const tracked = platform.visualTypeId.includes("tracked");
-  const platformColor = platform.disposition === "destroyed"
-    ? "#3d403d"
-    : platform.damaged
-      ? "#8b7458"
-      : color;
+  const artillery = platform.visualTypeId.includes("artillery");
+  const tracked = artillery || platform.visualTypeId.includes("tracked");
+  const deployed = platform.deployment === "deployed" || platform.deployment === "deploying";
+  const platformColor = platformStateColor(
+    color,
+    platform.disposition,
+    platform.damaged,
+  );
 
   useFrame((_, delta) => {
     const group = groupRef.current;
@@ -131,17 +143,53 @@ function PlatformMesh({
       scale={selected ? 1.08 : 1}
       onPointerDown={(event) => {
         event.stopPropagation();
-        onSelectGroup(platform.groupId);
+        onSelectPlatform(platform.id, platform.groupId);
       }}
     >
       <mesh castShadow>
         <boxGeometry args={[1.9, 0.78, 3.25]} />
         <meshBasicMaterial color={selected ? "#f3c969" : platformColor} toneMapped={false} />
       </mesh>
-      <mesh position={[0, 0.58, -0.15]} castShadow>
-        <boxGeometry args={[1.45, 0.5, 1.65]} />
+      <mesh position={[0, 0.58, artillery ? 0.18 : -0.15]} castShadow>
+        <boxGeometry args={[artillery ? 1.62 : 1.45, 0.5, artillery ? 1.9 : 1.65]} />
         <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
       </mesh>
+      {artillery && (
+        <>
+          <group
+            position={[0, deployed ? 1.08 : 0.92, ARTILLERY_BARREL_CENTER_Z]}
+            rotation={[
+              Math.PI / 2 -
+                (deployed
+                  ? ARTILLERY_DEPLOYED_ELEVATION_RADIANS
+                  : ARTILLERY_PACKED_ELEVATION_RADIANS),
+              0,
+              0,
+            ]}
+          >
+            <mesh castShadow>
+              <cylinderGeometry args={[0.13, 0.19, ARTILLERY_BARREL_LENGTH, 10]} />
+              <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
+            </mesh>
+            <mesh position={[0, ARTILLERY_BARREL_LENGTH / 2 + 0.08, 0]} castShadow>
+              <cylinderGeometry args={[0.24, 0.24, 0.3, 10]} />
+              <meshBasicMaterial color="#303536" toneMapped={false} />
+            </mesh>
+          </group>
+          {deployed && (
+            <>
+              <mesh position={[-0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
+                <boxGeometry args={[0.22, 0.58, 1.05]} />
+                <meshBasicMaterial color="#303536" toneMapped={false} />
+              </mesh>
+              <mesh position={[0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
+                <boxGeometry args={[0.22, 0.58, 1.05]} />
+                <meshBasicMaterial color="#303536" toneMapped={false} />
+              </mesh>
+            </>
+          )}
+        </>
+      )}
       {tracked ? (
         <>
           <mesh position={[-1.04, -0.23, 0]}>
@@ -171,7 +219,14 @@ function PlatformMesh({
   );
 }
 
-export function Units({ frame, factionColors, selectedGroupId, onSelectGroup }: UnitsProps) {
+export function Units({
+  frame,
+  factionColors,
+  selectedGroupId,
+  selectedEntityId,
+  onSelectGroup,
+  onSelectPlatform,
+}: UnitsProps) {
   const deployedMembers = useMemo(
     () => frame.members.filter((member) => member.presence === "deployed"),
     [frame.members],
@@ -193,8 +248,10 @@ export function Units({ frame, factionColors, selectedGroupId, onSelectGroup }: 
           key={platform.id}
           platform={platform}
           color={factionColors[platform.factionId] ?? "#d6d7d2"}
-          selected={platform.groupId === selectedGroupId}
-          onSelectGroup={onSelectGroup}
+          selected={
+            platform.id === selectedEntityId || platform.groupId === selectedEntityId
+          }
+          onSelectPlatform={onSelectPlatform}
         />
       ))}
     </group>

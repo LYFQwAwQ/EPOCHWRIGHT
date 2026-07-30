@@ -233,6 +233,7 @@ AI 从标准地图和己方知识构建若干派生图层：
 炮兵 AI 保存 `FireMissionEvaluationInspection`，至少包含评估 tick、候选接触、来源、情报年龄、误差半径、武器适配、任务分、危险近界结果、当前任务迟滞和拒绝原因。建议原因码为：
 
 - `ARTILLERY_HOLD_NO_LEGAL_CONTACT`
+- `ARTILLERY_HOLD_INDIRECT_RANGE`
 - `ARTILLERY_DEPLOY_FOR_MISSION`
 - `ARTILLERY_AIM_INDIRECT_MISSION`
 - `ARTILLERY_HOLD_DANGER_CLOSE`

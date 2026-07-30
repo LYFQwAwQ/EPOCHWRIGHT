@@ -47,6 +47,123 @@ describe("manual demo scenarios", () => {
     );
   });
 
+  it("exposes one validated self-propelled artillery group per faction", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("artillery-observation", "scenario-artillery"),
+    );
+    const artilleryGroups = setup.groups.filter((group) =>
+      setup.content.groupTemplates[group.groupTemplateId]?.tags.includes("artillery"),
+    );
+
+    expect(artilleryGroups.map((group) => group.id)).toEqual([
+      "ember-artillery-1",
+      "azure-artillery-1",
+    ]);
+    expect(artilleryGroups.every((group) => group.platforms.length === 1)).toBe(true);
+    expect(setup.transportAssignments).toEqual([]);
+  });
+
+  it("drives the artillery observation scenario through a natural indirect mission", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("artillery-observation", "scenario-artillery-mission"),
+    );
+    const simulation = createSimulation(setup);
+    let assigned = false;
+    let firedIndirect = false;
+    let sawProjectile = false;
+
+    while (!simulation.getResult() && simulation.tick < 1_200 && !firedIndirect) {
+      simulation.step();
+      sawProjectile ||= simulation.getRenderFrame().projectiles.length > 0;
+      const events = simulation.drainEvents();
+      assigned ||= events.some(
+        (event) => event.type === "artillery-mission-changed" && event.phase === "assigned",
+      );
+      firedIndirect ||= events.some(
+        (event) => event.type === "weapon-fired" && event.fireModeId === "indirect",
+      );
+    }
+
+    expect(assigned).toBe(true);
+    expect(firedIndirect).toBe(true);
+    expect(sawProjectile).toBe(true);
+  }, 20_000);
+
+  it("advances the default artillery seed past its grid-boundary projectile step", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("artillery-observation", "ridge-0712"),
+    );
+    const simulation = createSimulation(setup);
+
+    simulation.step(600);
+
+    expect(simulation.tick).toBe(600);
+    expect(simulation.getResult()).toBeUndefined();
+  }, 20_000);
+
+  it("keeps the default-seed artillery at standoff range after its first barrage", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("artillery-observation", "ridge-0712"),
+    );
+    const simulation = createSimulation(setup);
+    const indirectProjectileIds = new Set<string>();
+    let sawIndirectImpact = false;
+    let closestApproach: {
+      readonly tick: number;
+      readonly distanceCells: number;
+      readonly ember: { readonly cell: { readonly x: number; readonly z: number }; readonly reason: string };
+      readonly azure: { readonly cell: { readonly x: number; readonly z: number }; readonly reason: string };
+    } | undefined;
+
+    while (!simulation.getResult() && simulation.tick < 1_200) {
+      simulation.step();
+      for (const event of simulation.drainEvents()) {
+        if (event.type === "weapon-fired" && event.fireModeId === "indirect") {
+          for (const projectileId of event.projectileIds ?? []) {
+            indirectProjectileIds.add(projectileId);
+          }
+        } else if (
+          event.type === "projectile-impacted" &&
+          indirectProjectileIds.has(event.projectileId)
+        ) {
+          sawIndirectImpact = true;
+        }
+      }
+      if (!sawIndirectImpact) {
+        continue;
+      }
+      const ember = simulation.inspect("ember-artillery-1");
+      const azure = simulation.inspect("azure-artillery-1");
+      if (
+        ember?.kind !== "group" ||
+        azure?.kind !== "group" ||
+        ember.platforms[0]?.disposition !== "crewed" ||
+        azure.platforms[0]?.disposition !== "crewed"
+      ) {
+        continue;
+      }
+      const distanceCells = Math.max(
+        Math.abs(ember.cell.x - azure.cell.x),
+        Math.abs(ember.cell.z - azure.cell.z),
+      );
+      if (!closestApproach || distanceCells < closestApproach.distanceCells) {
+        closestApproach = {
+          tick: simulation.tick,
+          distanceCells,
+          ember: { cell: ember.cell, reason: ember.decisionReason },
+          azure: { cell: azure.cell, reason: azure.decisionReason },
+        };
+      }
+    }
+
+    expect(sawIndirectImpact).toBe(true);
+    expect(closestApproach).toBeDefined();
+    expect(
+      closestApproach!.distanceCells,
+      JSON.stringify(closestApproach),
+    ).toBeGreaterThanOrEqual(10);
+  }, 20_000);
+
   it("exposes vehicles and paired passengers in the combined-arms defense scenario", () => {
     const setup = createDemoBattleSetup(
       createDemoScenarioOptions("vehicle-defense", "scenario-vehicle-defense"),

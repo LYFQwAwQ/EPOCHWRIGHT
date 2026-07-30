@@ -157,7 +157,7 @@ future game systems -> complete BattleSetup --+
 - 士气、溃散和撤离；
 - 防守阵位、占领与两种模式终止；
 - 增援批次的到达 tick、入口容量、等待/替代/取消策略，以及部署状态结果；
-- `getRenderFrame(observerFactionId)` 与 `inspect(..., observerFactionId)` 的全知/势力信息投影；
+- `getRenderFrame(observerFactionId)`、`inspect(..., observerFactionId)` 与 `drainEvents(observerFactionId)` 的全知/势力信息投影；
 - 渲染帧、检查结果、最终结果和状态哈希。
 
 完整静态 setup 摘要在模拟初始化时计算一次并进入状态哈希，覆盖地图、部署、模式和规则参数，同时避免 Worker 每次发布帧时重新遍历全部输入。`getSetup()` 返回深拷贝快照，外部不能通过 TypedArray 修改运行时地图。
@@ -199,13 +199,13 @@ future game systems -> complete BattleSetup --+
 
 ### `src/worker/battle.worker.ts`
 
-负责验证并消费收到的完整 setup、真实时间累积、catch-up 上限、调用 `step()`、聚合事件和发布帧。它不生成演示数据，也不拥有战斗规则。当前每 2 tick 发布帧，最多一次追赶 4 tick。
+负责验证并消费收到的完整 setup、真实时间累积、catch-up 上限、调用 `step()`、按当前观察方聚合事件和发布帧。切换观察方时清除上一视角尚未发布的事件。它不生成演示数据，也不拥有战斗规则。当前每 2 tick 发布帧，最多一次追赶 4 tick。
 
 ## 5. 主线程适配
 
 ### `src/client/useBattleWorker.ts`
 
-React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。`start()` 接收完整 `BattleSetup`，可供演示生成器或未来更上层战斗会话服务调用；启动新战斗会终止旧 Worker，旧会话消息会被丢弃。显式性能模式还在客户端边界估算 Worker 消息载荷并采样同步消息处理耗时。
+React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最近事件窗口。`start()` 接收完整 `BattleSetup`，可供演示生成器或未来更上层战斗会话服务调用；启动新战斗会终止旧 Worker，旧会话消息会被丢弃。切换观察方时同步清除旧事件与检查结果，避免跨权限残留。显式性能模式还在客户端边界估算 Worker 消息载荷并采样同步消息处理耗时。
 
 此处不应计算伤亡、目标进度或胜负；它只组合 Worker 已给出的事实。
 
@@ -229,9 +229,10 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | `render/Battlefield.tsx` | Canvas、灯光、雾、正交镜头、镜头控制和场景组合 |
 | `render/Terrain.tsx` | 高度地形网格、标准地表/水深顶点色和水面组合 |
 | `render/StaticObjects.tsx` | 按稳定 ID 实例化权威树木、岩石和带方向墙段 |
-| `render/Units.tsx` | 成员实例、基础轮式/履带平台、编组标记、选择反馈和位置插值 |
+| `render/Units.tsx` | 成员实例、基础轮式/履带/自行火炮平台、编组标记、实体选择反馈和位置插值 |
 | `render/Objectives.tsx` | 贴合地形的目标区域、边界、进度环和旗标 |
-| `render/ShotEffects.tsx` | 从射击事件抽样生成非权威曳光和弹着闪光 |
+| `render/ShotEffects.tsx` | 从非逻辑弹丸射击事件抽样生成非权威曳光和直射弹着闪光 |
+| `render/ProjectileEffects.tsx` | 插值紧凑权威弹丸位置，以相邻权威位置定向随弹体移动的质量受控短曳光，并根据合法事件生成炮口闪光、爆炸与冲击环 |
 
 表现可以抽样事件，例如一次齐射只画少量曳光；不得因此减少模拟中的实际射击或改变命中结果。
 
@@ -243,8 +244,8 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | `ui/ScenarioLab.tsx` | 开发环境场景、seed 和暂停步进控制；不提供正式战术命令 |
 | `ui/FactionSummary.tsx` | 势力有效成员/平台、伤亡与溃散概览 |
 | `ui/ObjectiveSummary.tsx` | 目标状态、语义化进度条和占领力 |
-| `ui/Inspector.tsx` | 选中编组的行动原因、士气、压制、伤情、平台/运输摘要、接触、掩体评估和路线 |
-| `ui/EventFeed.tsx` | 将重要领域事件（含上下车事实）转换为有限的观察提示 |
+| `ui/Inspector.tsx` | 选中编组的行动原因、士气、压制、伤情、平台/运输摘要、接触、掩体评估和路线；选中平台的部件、展开与炮兵任务检查 |
+| `ui/EventFeed.tsx` | 将重要领域事件（含炮兵任务、弹着和上下车事实）转换为有限的观察提示 |
 | `styles.css` | 全局工作台布局和桌面/窄屏响应式规则 |
 
 行动原因码由模拟产生，UI 负责本地化。新增原因码时必须提供可理解标签，但不得在 UI 中重新推导原因。
@@ -254,10 +255,11 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - `src/sim/*.test.ts`：Node 环境 Vitest，覆盖地图图层与移动规则、确定性和完整场景。
 - `src/sim/generated-invariants.test.ts`：批量 seed 覆盖地图边界/路线、逐 tick 哈希、非敌对安全和结果人数守恒，并支持按 seed 重放。
 - `src/demo/setup.test.ts`：覆盖演示生成结果、标准输入验证和 Worker 初始化边界。
-- `src/demo/scenarios.test.ts`：覆盖六类人工场景验证、多目标配置和增援事件接线。
+- `src/demo/scenarios.test.ts`：覆盖人工场景验证、自行火炮自然任务/发射、多目标配置和增援事件接线。
+- `src/sim/artillery.test.ts`：覆盖炮兵部署、任务、整数弹道/爆炸、终止、紧凑弹丸投影和观察事件裁剪。
 - `src/sim/vehicle.test.ts`：覆盖旧输入迁移、车辆路线/转向/岗位，以及装甲面、穿透、外露部件、同 tick 双向伤害、部件/乘员结算、固定火力、撤离、弃车、投影/结果和逐 tick 复演。
 - `src/sim/transport.test.ts`：覆盖规则迁移、关系/容量验证、初始搭载、整组下车、取消、损毁伤情、受困恢复、同波次增援、目标占领负例和逐 tick 哈希。
-- `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、控制、模式与响应式布局。
+- `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、炮兵弹丸/爆炸、观察权限、控制、模式与响应式布局。
 - `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
 - `src/test-api.d.ts`：仅声明 E2E 调试桥。

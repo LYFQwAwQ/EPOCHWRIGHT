@@ -121,7 +121,7 @@ function advance(count: number, emitIntermediateFrames = true): void {
     if (collectPerformance) {
       recordMetric(tickDurationsMs, performance.now() - startedAt);
     }
-    pendingEvents.push(...simulation.drainEvents());
+    pendingEvents.push(...simulation.drainEvents(observerFactionId));
     if (emitIntermediateFrames && simulation.tick % RENDER_INTERVAL_TICKS === 0) {
       emitFrame();
     }
@@ -225,6 +225,7 @@ scope.onmessage = (event: MessageEvent<WorkerCommand>) => {
         break;
       case "set-observation":
         observerFactionId = command.observerFactionId;
+        pendingEvents = [];
         emitFrame();
         break;
       case "reset-performance":

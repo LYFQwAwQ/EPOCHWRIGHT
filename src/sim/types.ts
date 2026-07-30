@@ -842,6 +842,16 @@ export interface RenderPlatform {
   readonly disposition: PlatformDisposition;
   readonly damaged: boolean;
   readonly visualTypeId: string;
+  readonly deployment?: PlatformDeploymentState;
+}
+
+export interface RenderProjectile {
+  readonly id: string;
+  readonly sourceFactionId: FactionId;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
+  readonly visualTypeId: string;
 }
 
 export type ObjectiveControlState =
@@ -869,9 +879,11 @@ export interface RenderObjective {
 
 export interface RenderFrame {
   readonly tick: Tick;
+  readonly phase: "running" | "settling";
   readonly groups: readonly RenderGroup[];
   readonly members: readonly RenderMember[];
   readonly platforms: readonly RenderPlatform[];
+  readonly projectiles: readonly RenderProjectile[];
   readonly objectives: readonly RenderObjective[];
 }
 
@@ -1312,6 +1324,6 @@ export interface BattleSimulation {
     observerFactionId?: FactionId,
   ): EntityInspection | undefined;
   getResult(): BattleResult | undefined;
-  drainEvents(): readonly BattleEvent[];
+  drainEvents(observerFactionId?: FactionId): readonly BattleEvent[];
   getStateHash(): string;
 }
