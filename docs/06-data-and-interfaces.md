@@ -464,7 +464,7 @@ interface CrewStationRule {
 
 每个平台必须恰好有一个 `structure` 部件。轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位；`hover` 平台至少有一个 `powertrain`、一个 `lift` 和一个 `pilot` 岗位，并必须携带 `flightRule`。地面平台不得携带 `flightRule`。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。`deploymentRule` 是通用平台动作能力，不表示平台一定是火炮；其中引用的岗位和部件必须属于同一模板。
 
-`flightRule.clearanceMmByBand` 至少定义一个高度带；每个高度必须为正整数，并在具体 setup 验证时对齐地图高度量化。`AIR-001` 中高度在战斗内固定，运行时保存 `{ band, clearanceMm }`，后续高度切换沿用同一状态而不改写 spawn 含义。安全半径必须为正整数，空中移动和部署均使用 `02 §5` 的成对距离规则。
+`flightRule.clearanceMmByBand` 至少定义一个高度带；每个高度必须为正整数，并在具体 setup 验证时对齐地图高度量化。运行时保存当前 `{ altitudeBand, clearanceMm }`；`AIR-002` 另保存目标带、源/目标离地高度、总/剩余 tick 和高度候选评估，不改写 spawn 含义。安全半径必须为正整数，空中移动、部署和跨带动作均使用 `02 §5` 的成对距离规则。
 
 运行时部件完整度使用 `0..10000` 整数：`10000` 为正常，低于该值为受损，不高于 `disabledAtBps` 为失效，`0` 为摧毁。平台的机动、作战和存续状态只从部件、岗位与乘员状态派生。`capturePowerBps` 可以为零或低值，但乘员和乘客在车内时不额外叠加成员占领力。
 
@@ -697,7 +697,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-4` 提供步兵、车辆、自行火炮和无武装悬停侦察平台；直接/间接逻辑弹丸、平台展开、固定高度带和 `ground|air` 目标域均由模板显式表达。当前默认武器只支持 `ground`，因此不会攻击空中目标；空地/空空武器与高度切换仍由后续规则版本启用。功能门禁必须由规则版本和验证器明确执行。
+当前 `content-4` 提供步兵、车辆、自行火炮和无武装悬停侦察平台；直接/间接逻辑弹丸、平台展开、三个悬停高度带和 `ground|air` 目标域均由模板显式表达。`stage-4.1` 已启用通用高度动作和高度效用；当前默认武器仍只支持 `ground`，因此不会攻击空中目标，空地/空空武器由后续规则版本启用。功能门禁必须由规则版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -910,9 +910,17 @@ interface FireMissionEvaluationInspection {
 interface PlatformInspection {
   // Existing platform fields remain unchanged.
   readonly flight?: PlatformFlightInspection;
+  readonly flightControl?: {
+    readonly action: "holding" | "climbing" | "descending";
+    readonly targetAltitudeBand?: AirAltitudeBand;
+    readonly ticksRemaining: Tick;
+    readonly evaluation?: FlightAltitudeEvaluationInspection;
+  };
   readonly artillery?: ArtilleryPlatformInspection;
 }
 ```
+
+`RenderPlatform.flight` 和接触快照只携带观察时的当前高度带与离地高度。`PlatformInspection.flightControl` 只向本方或全知检查公开动作、剩余 tick、选择原因和整数候选分项；它不得进入敌方最后已知快照，也不得由 UI 反向成为 AI 输入。
 
 ## 15. 战斗事件
 
@@ -1043,7 +1051,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.0`，内容为 `content-4`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-4` 输入必须显式提供 `content-4`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.1`，内容为 `content-4`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8` 及固定高度 `stage-4.0` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-4` 输入必须显式提供 `content-4`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1070,6 +1078,8 @@ interface PlatformResult {
 - `ARTILLERY-004` 把规则升到 `stage-3.8`，启用间接任务、情报来源/接收 tick、确定性误差和炮兵 AI；`ARTILLERY-005` 只完成公开投影、客户端和验收时不升级 schema/rules，除非实现发现本文尚未定义的规则变化。
 
 `AIR-001` 把 setup schema 升到 `stage-4`、规则升到 `stage-4.0`、内容升到 `content-4`。`stage-3.1/stage-3.8/content-3` 输入通过一次显式迁移升级版本，既有地面模板、spawn 和行为字段保持不变；新增字段均为未引用地面内容的可选飞行结构。新的悬停 spawn 必须显式选择模板支持的高度带，运行时高度、空域预约和真实目标域进入状态哈希，inspection/render/result 使用同一飞行事实。
+
+`AIR-002` 保持 `stage-4/content-4` 数据字段不变，把规则升级到 `stage-4.1`：高度带采用通用规则数值推进，动作、评估和跨带容量进入运行时状态与哈希，inspection 增加只读控制投影。`stage-4.0` 输入只更新规则版本并完整保留调用方内容和 spawn。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

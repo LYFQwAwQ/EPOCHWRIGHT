@@ -25,6 +25,7 @@ import {
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_ALTITUDE_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
@@ -110,7 +111,10 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
-  if (isCurrent) {
+  const isPreAltitude =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_ALTITUDE_BATTLE_RULES_VERSION;
+  if (isCurrent || isPreAltitude) {
     if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
       throw new Error("stage-4 battle setup requires a content-4 content bundle.");
     }
@@ -182,7 +186,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreArtillery ||
     isPreProjectile ||
     isPreIndirect ||
-    isPreAir
+    isPreAir ||
+    isPreAltitude
   ) {
     return {
       ...inputSetup,
@@ -200,7 +205,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
           isPreArtillery ||
           isPreProjectile ||
           isPreIndirect ||
-          isPreAir
+          isPreAir ||
+          isPreAltitude
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),

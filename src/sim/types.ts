@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-4" as const;
-export const BATTLE_RULES_VERSION = "stage-4.0" as const;
+export const BATTLE_RULES_VERSION = "stage-4.1" as const;
+/** The fixed-altitude hover rules before authoritative altitude actions. */
+export const PRE_ALTITUDE_BATTLE_RULES_VERSION = "stage-4.0" as const;
 /** The final ground combined-arms contract before authoritative hover flight. */
 export const PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
 export const PRE_AIR_BATTLE_RULES_VERSION = "stage-3.8" as const;
@@ -975,6 +977,48 @@ export interface PlatformFlightInspection {
   readonly clearanceMm: number;
 }
 
+export type FlightAltitudeAction = "holding" | "climbing" | "descending";
+export type FlightAltitudeEvaluationReason =
+  | "hold-altitude"
+  | "improve-observation"
+  | "terrain-clearance"
+  | "reduce-exposure"
+  | "target-band-occupied"
+  | "capability-unavailable";
+
+export interface FlightAltitudeScoreComponentsInspection {
+  readonly observation: number;
+  readonly sensor: number;
+  readonly exposure: number;
+  readonly terrain: number;
+  readonly retention: number;
+  readonly transition: number;
+}
+
+export interface FlightAltitudeCandidateInspection {
+  readonly altitudeBand: AirAltitudeBand;
+  readonly clearanceMm: number;
+  readonly visibleInterestCount: number;
+  readonly routeClear: boolean;
+  readonly score: number;
+  readonly components: FlightAltitudeScoreComponentsInspection;
+  readonly rejectionReason?: "terrain-clearance";
+}
+
+export interface FlightAltitudeEvaluationInspection {
+  readonly evaluatedAt: Tick;
+  readonly reason: FlightAltitudeEvaluationReason;
+  readonly selectedAltitudeBand: AirAltitudeBand;
+  readonly candidates: readonly FlightAltitudeCandidateInspection[];
+}
+
+export interface PlatformFlightControlInspection {
+  readonly action: FlightAltitudeAction;
+  readonly targetAltitudeBand?: AirAltitudeBand;
+  readonly ticksRemaining: Tick;
+  readonly evaluation?: FlightAltitudeEvaluationInspection;
+}
+
 export interface PlatformComponentInspection {
   readonly id: string;
   readonly kind: PlatformComponentKind;
@@ -1068,6 +1112,7 @@ export interface PlatformInspection extends PlatformSummaryInspection {
   readonly observation: PlatformCapabilityInspection;
   readonly weapons: readonly PlatformWeaponInspection[];
   readonly transportAssignments: readonly TransportInspection[];
+  readonly flightControl?: PlatformFlightControlInspection;
   readonly artillery?: ArtilleryPlatformInspection;
 }
 

@@ -136,6 +136,15 @@ const altitudeBandLabels: Readonly<Record<PlatformFlightInspection["altitudeBand
   high: "高空",
 };
 
+const flightReasonLabels = {
+  "hold-altitude": "保持当前高度",
+  "improve-observation": "改善任务视野",
+  "terrain-clearance": "绕过低空障碍",
+  "reduce-exposure": "降低暴露",
+  "target-band-occupied": "目标高度拥挤",
+  "capability-unavailable": "飞行能力不足",
+} as const;
+
 function movementTypeLabel(movementType: PlatformMovementType): string {
   if (movementType === "hover") {
     return "悬停";
@@ -270,7 +279,22 @@ function PlatformInspector({
           <strong className="action-label">
             离地 {Math.round(inspection.flight.clearanceMm / 1_000)}m
           </strong>
-          <p>当前高度层固定</p>
+          <p>
+            {inspection.flightControl?.action === "climbing"
+              ? `爬升至 ${altitudeBandLabels[inspection.flightControl.targetAltitudeBand!]}`
+              : inspection.flightControl?.action === "descending"
+                ? `下降至 ${altitudeBandLabels[inspection.flightControl.targetAltitudeBand!]}`
+                : "保持高度"}
+            {inspection.flightControl && inspection.flightControl.ticksRemaining > 0
+              ? ` · 剩余 ${inspection.flightControl.ticksRemaining} tick`
+              : ""}
+          </p>
+          {inspection.flightControl?.evaluation && (
+            <p>
+              {flightReasonLabels[inspection.flightControl.evaluation.reason]}
+              {` · 选择 ${altitudeBandLabels[inspection.flightControl.evaluation.selectedAltitudeBand]}`}
+            </p>
+          )}
         </section>
       )}
 

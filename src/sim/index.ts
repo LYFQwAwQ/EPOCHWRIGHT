@@ -74,10 +74,20 @@ export {
   WHEELED_MOVEMENT_COST_MATRIX,
 } from "./map";
 export {
+  AIR_ALTITUDE_BANDS,
+  AIR_ALTITUDE_TRANSITION_TICKS_PER_BAND,
+  AIR_MIN_TERRAIN_CLEARANCE_MM,
+  altitudeBandIndex,
+  altitudeBandsBetweenInclusive,
+  altitudeBandModifiers,
+  altitudeTransitionTicks,
   airspaceOccupantsConflict,
   flightHeightUnits,
+  flightStepHasTerrainClearance,
+  flightTransitionClearanceMm,
   hasAirspaceConflict,
   isAirMovementType,
+  scoreFlightAltitudeCandidates,
 } from "./air";
 export { canTraverseStep, createPathfinder, movementStepCost } from "./pathfinder";
 export {
@@ -91,6 +101,7 @@ export {
   BATTLE_MAP_SCHEMA_VERSION,
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_ALTITUDE_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,

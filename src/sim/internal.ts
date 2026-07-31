@@ -3,6 +3,7 @@ import type {
   BattleResult,
   BattleSetup,
   BattleTerminationReason,
+  AirAltitudeBand,
   ArmorFace,
   CoverSlotId,
   CoverEvaluationReason,
@@ -42,6 +43,7 @@ import type {
   EffectDefinition,
   FireMissionEvaluationInspection,
   FireMissionIntelSource,
+  FlightAltitudeEvaluationInspection,
 } from "./types";
 
 export interface MemberState {
@@ -117,6 +119,23 @@ export interface ArtilleryFireMissionState {
   aimTicksRemaining: Tick;
 }
 
+export interface FlightAltitudeTransitionState {
+  readonly fromBand: AirAltitudeBand;
+  readonly toBand: AirAltitudeBand;
+  readonly startedAt: Tick;
+  readonly totalTicks: Tick;
+  ticksRemaining: Tick;
+  readonly startClearanceMm: number;
+  readonly targetClearanceMm: number;
+}
+
+export interface PlatformFlightState {
+  altitudeBand: AirAltitudeBand;
+  clearanceMm: number;
+  transition?: FlightAltitudeTransitionState;
+  evaluation?: FlightAltitudeEvaluationInspection;
+}
+
 export interface PlatformState {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -125,7 +144,7 @@ export interface PlatformState {
   readonly persistentPlatformId?: string;
   readonly movementType: PlatformMovementType;
   readonly visualTypeId: string;
-  readonly flight?: PlatformFlightInspection;
+  readonly flight?: PlatformFlightState;
   cell: GridCoord;
   facing: StaticObjectFacing;
   mobility: PlatformMobilityState;

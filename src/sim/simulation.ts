@@ -7,10 +7,18 @@ import {
   projectilePositionAtElapsed,
 } from "./artillery";
 import {
+  altitudeBandIndex,
+  altitudeBandModifiers,
+  altitudeBandsBetweenInclusive,
+  altitudeTransitionTicks,
   flightHeightUnits,
+  flightStepHasTerrainClearance,
+  flightTransitionClearanceMm,
   hasAirspaceConflict,
   isAirMovementType,
+  scoreFlightAltitudeCandidates,
   type AirspaceOccupant,
+  type FlightAltitudeCandidateInput,
 } from "./air";
 import {
   cellIndex,
@@ -127,6 +135,7 @@ import type {
   BattleSetupInput,
   BattleSimulation,
   BattleTerminationReason,
+  AirAltitudeBand,
   CoverEvaluationReason,
   CoverSlot,
   DirectionalCoverEffect,
@@ -135,6 +144,7 @@ import type {
   FactionId,
   FireMissionEvaluationCandidateInspection,
   FireMissionIntelSource,
+  FlightAltitudeEvaluationReason,
   GridCoord,
   GroupId,
   GroupInspection,
@@ -149,6 +159,8 @@ import type {
   PlatformCapabilityInspection,
   PlatformWeaponInspection,
   PlatformSummaryInspection,
+  PlatformFlightInspection,
+  PlatformFlightControlInspection,
   RenderFrame,
   RenderGroup,
   RenderMember,
@@ -422,9 +434,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             ? contact.targetFlight
               ? { ...contact.targetFlight }
               : undefined
-            : platform.flight
-              ? { ...platform.flight }
-              : undefined,
+            : this.flightSnapshotForPlatform(platform),
           ...(!contact && platform.deployment
             ? { deployment: platform.deployment.state }
             : {}),
@@ -557,6 +567,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         transportAssignments: (
           this.state.transportAssignmentsByPlatformId.get(platform.id) ?? []
         ).map((assignment) => this.transportInspection(assignment)),
+        flightControl: this.flightControlInspection(platform),
         artillery: platform.deployment
           ? {
               deployment: platform.deployment.state,
@@ -858,6 +869,31 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(platform.disposition);
         hasher.addString(platform.flight?.altitudeBand ?? "");
         hasher.addNumber(platform.flight?.clearanceMm ?? 0);
+        hasher.addString(platform.flight?.transition?.fromBand ?? "");
+        hasher.addString(platform.flight?.transition?.toBand ?? "");
+        hasher.addNumber(platform.flight?.transition?.startedAt ?? -1);
+        hasher.addNumber(platform.flight?.transition?.totalTicks ?? 0);
+        hasher.addNumber(platform.flight?.transition?.ticksRemaining ?? 0);
+        hasher.addNumber(platform.flight?.transition?.startClearanceMm ?? 0);
+        hasher.addNumber(platform.flight?.transition?.targetClearanceMm ?? 0);
+        const altitudeEvaluation = platform.flight?.evaluation;
+        hasher.addNumber(altitudeEvaluation?.evaluatedAt ?? -1);
+        hasher.addString(altitudeEvaluation?.reason ?? "");
+        hasher.addString(altitudeEvaluation?.selectedAltitudeBand ?? "");
+        for (const candidate of altitudeEvaluation?.candidates ?? []) {
+          hasher.addString(candidate.altitudeBand);
+          hasher.addNumber(candidate.clearanceMm);
+          hasher.addNumber(candidate.visibleInterestCount);
+          hasher.addNumber(candidate.routeClear ? 1 : 0);
+          hasher.addNumber(candidate.score);
+          hasher.addNumber(candidate.components.observation);
+          hasher.addNumber(candidate.components.sensor);
+          hasher.addNumber(candidate.components.exposure);
+          hasher.addNumber(candidate.components.terrain);
+          hasher.addNumber(candidate.components.retention);
+          hasher.addNumber(candidate.components.transition);
+          hasher.addString(candidate.rejectionReason ?? "");
+        }
         hasher.addString(platform.deployment?.state ?? "");
         hasher.addNumber(platform.deployment?.ticksRemaining ?? 0);
         hasher.addNumber(platform.deployment?.startedAt ?? -1);
@@ -1104,6 +1140,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.deliverIntelMessages();
     this.updateSensing();
     this.updateDecisions();
+    this.updateFlightAltitudeActions();
     this.updateArtilleryMissions();
     this.updatePlatformDeployments();
     this.advanceMovement();
@@ -1487,10 +1524,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       altitudeBand,
       safetyRadiusMm,
     };
-    const occupants = [...this.state.groups, ...pendingGroups].flatMap((group) => {
-      const occupant = this.airspaceOccupantForGroup(group, group.cell);
-      return occupant ? [occupant] : [];
-    });
+    const occupants = [...this.state.groups, ...pendingGroups].flatMap((group) =>
+      this.airspaceOccupantsForGroup(group, group.cell),
+    );
     return !hasAirspaceConflict(this.setup.map.cellSizeMm, candidate, occupants);
   }
 
@@ -3076,9 +3112,13 @@ class StageOneBattleSimulation implements BattleSimulation {
             this.state.tick - target.lastFiredTick <= this.setup.rules.ticksPerSecond
               ? this.groupExposureOnFireBps(target)
               : 0;
+          const targetFlight = this.flightForGroup(target);
+          const altitudeExposureBonus = targetFlight
+            ? altitudeBandModifiers(targetFlight.altitudeBand).exposureBps
+            : 0;
           const distanceBonus = Math.max(0, sightRangeSquared - distanceSquared) * 7;
           const detectionGain = applyBasisPointReduction(
-            480 + distanceBonus + exposureBonus,
+            480 + distanceBonus + exposureBonus + altitudeExposureBonus,
             cover?.effect.concealmentBps ?? 0,
           );
           detection.progressBps = Math.min(
@@ -3224,7 +3264,233 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
       group.lastDecisionTick = this.state.tick;
       this.decideForGroup(group);
+      this.evaluateFlightAltitude(group);
     });
+  }
+
+  private evaluateFlightAltitude(group: GroupState): void {
+    const platform = group.platforms.find(
+      (candidate) => candidate.flight && candidate.disposition === "crewed",
+    );
+    const flight = platform?.flight;
+    if (!platform || !flight || !isGroupSpatiallyActive(group)) {
+      return;
+    }
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const flightRule = template.flightRule;
+    if (!flightRule) {
+      return;
+    }
+    const interestPoints = this.flightAltitudeInterestPoints(group);
+    const routeDestination = group.movingTo ?? group.path.find(
+      (cell) => !sameCoord(cell, group.cell),
+    );
+    const candidates = (["low", "medium", "high"] as const).flatMap(
+      (altitudeBand): readonly FlightAltitudeCandidateInput[] => {
+        const clearanceMm = flightRule.clearanceMmByBand[altitudeBand];
+        if (clearanceMm === undefined) {
+          return [];
+        }
+        const observerHeightUnits =
+          heightAt(this.setup.map, group.cell) + clearanceMm / this.setup.map.heightUnitMm;
+        return [{
+          altitudeBand,
+          clearanceMm,
+          visibleInterestCount: interestPoints.filter((point) =>
+            hasLineOfSight(this.setup.map, group.cell, point.cell, {
+              observerHeightUnits,
+              targetHeightUnits: point.targetHeightUnits,
+            }),
+          ).length,
+          routeClear:
+            !routeDestination ||
+            flightStepHasTerrainClearance(
+              this.setup.map,
+              group.cell,
+              routeDestination,
+              clearanceMm,
+            ),
+        }];
+      },
+    );
+    const scored = scoreFlightAltitudeCandidates(flight.altitudeBand, candidates);
+    const selected =
+      scored.find((candidate) => !candidate.rejectionReason) ??
+      scored.find((candidate) => candidate.altitudeBand === flight.altitudeBand);
+    if (!selected) {
+      return;
+    }
+    flight.evaluation = {
+      evaluatedAt: this.state.tick,
+      reason: this.flightAltitudeEvaluationReason(
+        flight.altitudeBand,
+        selected.altitudeBand,
+        scored,
+      ),
+      selectedAltitudeBand: selected.altitudeBand,
+      candidates: scored,
+    };
+  }
+
+  private flightAltitudeInterestPoints(group: GroupState): readonly {
+    readonly cell: GridCoord;
+    readonly targetHeightUnits: number;
+  }[] {
+    const contacts = new Map<GroupId, ContactState>();
+    for (const contact of this.state.factionKnowledge.get(group.factionId)?.contacts.values() ?? []) {
+      if (contact.confidenceBps > 0 && this.isHostile(group.factionId, contact.targetFactionId)) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    }
+    for (const contact of group.localContacts.values()) {
+      const current = contacts.get(contact.targetGroupId);
+      if (
+        contact.confidenceBps > 0 &&
+        this.isHostile(group.factionId, contact.targetFactionId) &&
+        (!current || contact.observedAt >= current.observedAt)
+      ) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    }
+    const points = [...contacts.values()]
+      .sort((a, b) => compareStrings(a.targetGroupId, b.targetGroupId))
+      .map((contact) => ({
+        cell: { ...contact.lastKnown },
+        targetHeightUnits: contact.targetFlight
+          ? flightHeightUnits(this.setup.map, contact.lastKnown, contact.targetFlight)
+          : heightAt(this.setup.map, contact.lastKnown) + 3,
+      }));
+    if (group.goal) {
+      points.push({
+        cell: { ...group.goal },
+        targetHeightUnits: heightAt(this.setup.map, group.goal) + 3,
+      });
+    }
+    if (this.setup.mode.kind === "defense") {
+      for (const objective of this.state.objectives) {
+        if (
+          objective.unlocked &&
+          (objective.attackerFactionId === group.factionId ||
+            objective.defenderFactionId === group.factionId)
+        ) {
+          points.push({
+            cell: { ...objective.center },
+            targetHeightUnits: heightAt(this.setup.map, objective.center) + 3,
+          });
+        }
+      }
+    }
+    const unique = new Map<string, (typeof points)[number]>();
+    for (const point of points) {
+      unique.set(`${point.cell.x},${point.cell.z}`, point);
+    }
+    return [...unique.values()].sort(
+      (a, b) => cellIndex(this.setup.map, a.cell) - cellIndex(this.setup.map, b.cell),
+    );
+  }
+
+  private flightAltitudeEvaluationReason(
+    currentBand: AirAltitudeBand,
+    selectedBand: AirAltitudeBand,
+    candidates: readonly ReturnType<typeof scoreFlightAltitudeCandidates>[number][],
+  ): FlightAltitudeEvaluationReason {
+    if (currentBand === selectedBand) {
+      return "hold-altitude";
+    }
+    if (altitudeBandIndex(selectedBand) < altitudeBandIndex(currentBand)) {
+      return "reduce-exposure";
+    }
+    const current = candidates.find((candidate) => candidate.altitudeBand === currentBand);
+    return current?.routeClear === false ? "terrain-clearance" : "improve-observation";
+  }
+
+  private updateFlightAltitudeActions(): void {
+    const platforms = [...this.state.platformsById.values()].sort(compareById);
+    for (const platform of platforms) {
+      const flight = platform.flight;
+      const transition = flight?.transition;
+      if (!flight || !transition) {
+        continue;
+      }
+      if (!this.canPlatformChangeAltitude(platform)) {
+        flight.altitudeBand = transition.fromBand;
+        flight.clearanceMm = transition.startClearanceMm;
+        flight.transition = undefined;
+        if (flight.evaluation) {
+          flight.evaluation = {
+            ...flight.evaluation,
+            reason: "capability-unavailable",
+          };
+        }
+        continue;
+      }
+      transition.ticksRemaining = Math.max(0, transition.ticksRemaining - 1);
+      flight.clearanceMm = flightTransitionClearanceMm(
+        transition.startClearanceMm,
+        transition.targetClearanceMm,
+        transition.totalTicks,
+        transition.ticksRemaining,
+        this.setup.map.heightUnitMm,
+      );
+      if (transition.ticksRemaining === 0) {
+        flight.altitudeBand = transition.toBand;
+        flight.clearanceMm = transition.targetClearanceMm;
+        flight.transition = undefined;
+      }
+    }
+
+    for (const platform of platforms) {
+      const flight = platform.flight;
+      const evaluation = flight?.evaluation;
+      if (
+        !flight ||
+        flight.transition ||
+        !evaluation ||
+        evaluation.selectedAltitudeBand === flight.altitudeBand
+      ) {
+        continue;
+      }
+      if (!this.canPlatformChangeAltitude(platform)) {
+        flight.evaluation = { ...evaluation, reason: "capability-unavailable" };
+        continue;
+      }
+      const group = this.state.groupsById.get(platform.groupId);
+      const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+      const targetClearanceMm =
+        template.flightRule?.clearanceMmByBand[evaluation.selectedAltitudeBand];
+      if (!group || targetClearanceMm === undefined) {
+        continue;
+      }
+      if (!this.canOccupyFlightAltitudeBand(group, evaluation.selectedAltitudeBand)) {
+        flight.evaluation = { ...evaluation, reason: "target-band-occupied" };
+        continue;
+      }
+      const totalTicks = altitudeTransitionTicks(
+        flight.altitudeBand,
+        evaluation.selectedAltitudeBand,
+      );
+      if (totalTicks <= 0) {
+        continue;
+      }
+      this.cancelMovement(group);
+      flight.transition = {
+        fromBand: flight.altitudeBand,
+        toBand: evaluation.selectedAltitudeBand,
+        startedAt: this.state.tick,
+        totalTicks,
+        ticksRemaining: totalTicks,
+        startClearanceMm: flight.clearanceMm,
+        targetClearanceMm,
+      };
+    }
+  }
+
+  private canPlatformChangeAltitude(platform: PlatformState): boolean {
+    return (
+      platform.disposition === "crewed" &&
+      this.platformCapabilities(platform).mobility.available &&
+      getPlatformTemplate(this.setup.content, platform.platformTemplateId).flightRule !== undefined
+    );
   }
 
   private decideForGroup(group: GroupState): void {
@@ -3805,8 +4071,49 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private flightForGroup(group: GroupState) {
-    const flight = group.platforms.find((platform) => platform.flight)?.flight;
-    return flight ? { ...flight } : undefined;
+    const platform = group.platforms.find(
+      (candidate) => candidate.flight && candidate.disposition === "crewed",
+    );
+    return platform ? this.flightSnapshotForPlatform(platform) : undefined;
+  }
+
+  private flightSnapshotForPlatform(
+    platform: PlatformState,
+  ): PlatformFlightInspection | undefined {
+    return platform.flight
+      ? {
+          altitudeBand: platform.flight.altitudeBand,
+          clearanceMm: platform.flight.clearanceMm,
+        }
+      : undefined;
+  }
+
+  private flightControlInspection(
+    platform: PlatformState,
+  ): PlatformFlightControlInspection | undefined {
+    const flight = platform.flight;
+    if (!flight) {
+      return undefined;
+    }
+    const transition = flight.transition;
+    return {
+      action: transition
+        ? altitudeBandIndex(transition.toBand) > altitudeBandIndex(transition.fromBand)
+          ? "climbing"
+          : "descending"
+        : "holding",
+      targetAltitudeBand: transition?.toBand,
+      ticksRemaining: transition?.ticksRemaining ?? 0,
+      evaluation: flight.evaluation
+        ? {
+            ...flight.evaluation,
+            candidates: flight.evaluation.candidates.map((candidate) => ({
+              ...candidate,
+              components: { ...candidate.components },
+            })),
+          }
+        : undefined,
+    };
   }
 
   private groupSightHeightUnits(
@@ -4513,6 +4820,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private advanceMovement(): void {
     for (const group of this.state.groups) {
       if (
+        group.platforms.some((platform) => platform.flight?.transition) ||
         group.platforms.some(
           (platform) =>
             platform.disposition === "crewed" &&
@@ -4624,6 +4932,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             platform.deployment !== undefined &&
             platform.deployment.state !== "packed",
         ) ||
+        group.platforms.some((platform) => platform.flight?.transition) ||
         group.path.length === 0
       ) {
         continue;
@@ -4633,6 +4942,21 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
       const destination = group.path[0];
       if (!destination) {
+        continue;
+      }
+      const flight = group.platforms.find(
+        (platform) => platform.flight && platform.disposition === "crewed",
+      )?.flight;
+      if (
+        flight &&
+        !flightStepHasTerrainClearance(
+          this.setup.map,
+          group.cell,
+          destination,
+          flight.clearanceMm,
+        )
+      ) {
+        group.waitAge += 1;
         continue;
       }
       if (!canTraverseStep(this.setup.map, group.cell, destination, group.movementType)) {
@@ -6179,7 +6503,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             ...action,
           })),
           weaponStates: this.platformWeaponInspections(platform),
-          finalFlight: platform.flight ? { ...platform.flight } : undefined,
+          finalFlight: this.flightSnapshotForPlatform(platform),
           artillery: platform.deployment
             ? {
                 finalDeploymentState: platform.deployment.state,
@@ -6469,29 +6793,76 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.pathGoal = undefined;
   }
 
-  private airspaceOccupantForGroup(
+  private airspaceOccupantsForGroup(
     group: GroupState,
     cell: GridCoord,
-  ): AirspaceOccupant | undefined {
+  ): readonly AirspaceOccupant[] {
     const platform = group.platforms.find((candidate) => candidate.flight);
     if (!platform?.flight || platform.disposition !== "crewed") {
-      return undefined;
+      return [];
     }
     const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
     const safetyRadiusMm = template.flightRule?.safetyRadiusMm;
     if (safetyRadiusMm === undefined) {
-      return undefined;
+      return [];
     }
-    return {
+    const altitudeBands = platform.flight.transition
+      ? altitudeBandsBetweenInclusive(
+          platform.flight.transition.fromBand,
+          platform.flight.transition.toBand,
+        )
+      : [platform.flight.altitudeBand];
+    return altitudeBands.map((altitudeBand) => ({
       id: group.id,
       cell: { ...cell },
-      altitudeBand: platform.flight.altitudeBand,
+      altitudeBand,
       safetyRadiusMm,
-    };
+    }));
+  }
+
+  private canOccupyFlightAltitudeBand(
+    group: GroupState,
+    altitudeBand: AirAltitudeBand,
+  ): boolean {
+    const platform = group.platforms.find((candidate) => candidate.flight);
+    const template = platform
+      ? getPlatformTemplate(this.setup.content, platform.platformTemplateId)
+      : undefined;
+    const safetyRadiusMm = template?.flightRule?.safetyRadiusMm;
+    if (!platform || safetyRadiusMm === undefined) {
+      return false;
+    }
+    const currentBand = platform.flight?.altitudeBand;
+    if (!currentBand) {
+      return false;
+    }
+    const candidates = altitudeBandsBetweenInclusive(currentBand, altitudeBand).map(
+      (candidateBand): AirspaceOccupant => ({
+        id: group.id,
+        cell: { ...group.cell },
+        altitudeBand: candidateBand,
+        safetyRadiusMm,
+      }),
+    );
+    const occupants = this.state.groups.flatMap((other) => {
+      if (!isGroupSpatiallyActive(other) || !isAirMovementType(other.movementType)) {
+        return [];
+      }
+      const current = this.airspaceOccupantsForGroup(other, other.cell);
+      const reservedCell = this.state.airspaceReservations.get(other.id);
+      const reserved = reservedCell
+        ? this.airspaceOccupantsForGroup(other, reservedCell)
+        : [];
+      return [...current, ...reserved];
+    });
+    return candidates.every(
+      (candidate) =>
+        !hasAirspaceConflict(this.setup.map.cellSizeMm, candidate, occupants),
+    );
   }
 
   private canReserveAirspace(group: GroupState, destination: GridCoord): boolean {
-    const candidate = this.airspaceOccupantForGroup(group, destination);
+    const candidate = this.airspaceOccupantsForGroup(group, destination)[0];
     if (!candidate) {
       return false;
     }
@@ -6499,14 +6870,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       if (!isGroupSpatiallyActive(other) || !isAirMovementType(other.movementType)) {
         return [];
       }
-      const current = this.airspaceOccupantForGroup(other, other.cell);
+      const current = this.airspaceOccupantsForGroup(other, other.cell);
       const reservedCell = this.state.airspaceReservations.get(other.id);
       const reserved = reservedCell
-        ? this.airspaceOccupantForGroup(other, reservedCell)
-        : undefined;
-      return [current, reserved].filter(
-        (occupant): occupant is AirspaceOccupant => occupant !== undefined,
-      );
+        ? this.airspaceOccupantsForGroup(other, reservedCell)
+        : [];
+      return [...current, ...reserved];
     });
     return !hasAirspaceConflict(this.setup.map.cellSizeMm, candidate, occupants);
   }
@@ -6692,7 +7061,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         return member ? this.isActiveCrewMember(member, platform) : false;
       }).length,
       passengerGroupIds: [...platform.passengerGroupIds].sort(compareStrings),
-      flight: platform.flight ? { ...platform.flight } : undefined,
+      flight: this.flightSnapshotForPlatform(platform),
     };
   }
 
@@ -6917,7 +7286,15 @@ class StageOneBattleSimulation implements BattleSimulation {
             );
           }, range);
       }, 0);
-      return Math.min(this.setup.rules.sightRangeCells, maximum);
+      const flight = crewedPlatforms.find((platform) => platform.flight)?.flight;
+      if (!flight) {
+        return Math.min(this.setup.rules.sightRangeCells, maximum);
+      }
+      const sensorRangeBps = altitudeBandModifiers(flight.altitudeBand).sensorRangeBps;
+      return Math.min(
+        Math.floor((this.setup.rules.sightRangeCells * sensorRangeBps) / 10_000),
+        Math.floor((maximum * sensorRangeBps) / 10_000),
+      );
     }
     const maximum = group.members
       .filter(
