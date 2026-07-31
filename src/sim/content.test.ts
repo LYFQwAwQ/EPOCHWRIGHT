@@ -2,10 +2,18 @@ import { describe, expect, it } from "vitest";
 import { createDemoBattleSetup } from "../demo/setup";
 import {
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID,
+  DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+  DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+  DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+  DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID,
+  DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID,
+  DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
+  PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
   cloneBattleContent,
   createDefaultBattleContent,
@@ -38,7 +46,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-5");
+    expect(migrated.content?.contentVersion).toBe("content-6");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(
@@ -46,6 +54,96 @@ describe("battle content templates", () => {
         group.members.every((member) => member.memberTemplateId === DEFAULT_MEMBER_TEMPLATE_ID),
       ),
     ).toBe(true);
+    expect(() => validateBattleSetup(migrated)).not.toThrow();
+  });
+
+  it("registers armed helicopter and scout drone content with explicit hover capabilities", () => {
+    const content = createDefaultBattleContent();
+    const attackGroup = content.groupTemplates[DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID]!;
+    const attackPlatform = content.platformTemplates[DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID]!;
+    const droneGroup = content.groupTemplates[DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID]!;
+    const dronePlatform = content.platformTemplates[DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID]!;
+
+    expect(attackGroup.behaviorProfileId).toBe("air-combat");
+    expect(
+      attackPlatform.componentRules
+        .filter((component) => component.kind === "weapon")
+        .map((component) => component.weaponTemplateId)
+        .sort(),
+    ).toEqual([
+      DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID,
+      DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID,
+    ].sort());
+    expect(attackPlatform).toMatchObject({
+      movementType: "hover",
+      visualTypeId: "air-attack-helicopter",
+    });
+    expect(droneGroup.memberSlotRules).toHaveLength(1);
+    expect(dronePlatform).toMatchObject({
+      movementType: "hover",
+      visualTypeId: "air-scout-drone",
+    });
+    expect(dronePlatform.componentRules.some((component) => component.kind === "weapon"))
+      .toBe(false);
+    expect(() => validateBattleContent(content)).not.toThrow();
+  });
+
+  it("migrates content-5 snapshots to content-6 without changing setup rules", () => {
+    const current = createDemoBattleSetup({ seed: "air-units-content-migration", groupsPerFaction: 1 });
+    const era = current.content.eraTemplates[current.content.eraId]!;
+    const groupTemplates = Object.fromEntries(
+      Object.entries(current.content.groupTemplates).filter(
+        ([id]) =>
+          id !== DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID &&
+          id !== DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+      ),
+    );
+    const memberTemplates = Object.fromEntries(
+      Object.entries(current.content.memberTemplates).filter(
+        ([id]) => id !== DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
+      ),
+    );
+    const platformTemplates = Object.fromEntries(
+      Object.entries(current.content.platformTemplates).filter(
+        ([id]) =>
+          id !== DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID &&
+          id !== DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+      ),
+    );
+    const migrated = migrateBattleSetup({
+      ...current,
+      content: {
+        ...current.content,
+        contentVersion: PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
+        eraTemplates: {
+          ...current.content.eraTemplates,
+          [era.id]: {
+            ...era,
+            allowedGroupTemplateIds: era.allowedGroupTemplateIds.filter(
+              (id) =>
+                id !== DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID &&
+                id !== DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+            ),
+            allowedMemberTemplateIds: era.allowedMemberTemplateIds.filter(
+              (id) => id !== DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
+            ),
+            allowedPlatformTemplateIds: era.allowedPlatformTemplateIds.filter(
+              (id) =>
+                id !== DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID &&
+                id !== DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+            ),
+          },
+        },
+        groupTemplates,
+        memberTemplates,
+        platformTemplates,
+      },
+    } satisfies BattleSetupInput);
+
+    expect(migrated.rulesVersion).toBe(current.rulesVersion);
+    expect(migrated.content.contentVersion).toBe("content-6");
+    expect(migrated.content.groupTemplates[DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID]).toBeUndefined();
+    expect(migrated.content.groupTemplates[DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID]).toBeUndefined();
     expect(() => validateBattleSetup(migrated)).not.toThrow();
   });
 

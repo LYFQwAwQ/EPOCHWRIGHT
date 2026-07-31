@@ -230,6 +230,21 @@ async function countSelectedPlatformPixels(page: Page): Promise<number> {
   return count;
 }
 
+async function countDroneSensorPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    if (red > 105 && red < 190 && green > 205 && blue > 195) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 test("desktop battle renders, pauses, and exposes squad inspection", async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -480,6 +495,124 @@ test("air recon scenario renders flight height and exposes hover inspection", as
   expect(mobileMetrics.height).toBeGreaterThan(300);
   expect(mobileMetrics.luminanceRange).toBeGreaterThan(60);
   await page.screenshot({ path: testInfo.outputPath("air-recon-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("air operations renders distinct hover platforms and preserves observer boundaries", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(60_000);
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=air-operations&seed=scenario-air-operations-runtime",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      (window.__battleTest?.getPlatformIds().length ?? 0) === 6,
+  );
+
+  const initialPlatforms = await page.evaluate(() => window.__battleTest?.getPlatforms() ?? []);
+  expect(
+    Object.fromEntries(
+      initialPlatforms.map((platform) => [platform.id, platform.visualTypeId]),
+    ),
+  ).toEqual({
+    "azure-air-attack-1-platform": "air-attack-helicopter",
+    "azure-air-drone-1-platform": "air-scout-drone",
+    "azure-air-recon-1-platform": "air-recon-helicopter",
+    "ember-air-attack-1-platform": "air-attack-helicopter",
+    "ember-air-drone-1-platform": "air-scout-drone",
+    "ember-air-recon-1-platform": "air-recon-helicopter",
+  });
+  expect(await countDroneSensorPixels(page)).toBeGreaterThan(4);
+
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "ember-air-attack-1-platform",
+      "ember-air-attack-1",
+    ),
+  );
+  await expect(page.getByTestId("platform-inspection")).toContainText("武装直升机");
+  await expect(page.getByTestId("flight-status")).toContainText("中空");
+  await expect(page.getByTestId("flight-status")).toContainText("离地 44m");
+  await expect(page.getByTestId("flight-status")).toContainText("空中火力支援");
+  await expect(page.getByTestId("platform-weapons")).toContainText("空地机炮");
+  await expect(page.getByTestId("platform-weapons")).toContainText("空空机炮");
+
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "ember-air-drone-1-platform",
+      "ember-air-drone-1",
+    ),
+  );
+  await expect(page.getByTestId("platform-inspection")).toContainText("侦察无人机");
+  await expect(page.getByTestId("platform-inspection")).toContainText("无武装");
+  await expect(page.getByTestId("flight-status")).toContainText("高空");
+  await expect(page.getByTestId("flight-status")).toContainText("离地 64m");
+  await expect(page.getByTestId("flight-status")).toContainText("远程侦察");
+
+  const omniscientHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(omniscientHash);
+  expect(
+    await page.evaluate(() =>
+      window.__battleTest?.getPlatformIds().every((id) => id.startsWith("ember-")),
+    ),
+  ).toBe(true);
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "azure-air-attack-1-platform",
+      "azure-air-attack-1",
+    ),
+  );
+  await expect(page.getByTestId("platform-inspection")).toHaveCount(0);
+
+  await page.evaluate(() => window.__battleTest?.setObservation());
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "omniscient");
+  const allowedClearances: Readonly<Record<string, readonly number[]>> = {
+    "air-recon-helicopter": [12_000, 40_000, 80_000],
+    "air-attack-helicopter": [14_000, 44_000, 84_000],
+    "air-scout-drone": [10_000, 32_000, 64_000],
+  };
+  const initialById = new Map(initialPlatforms.map((platform) => [platform.id, platform]));
+  let transitioningPlatform: (typeof initialPlatforms)[number] | undefined;
+  for (let tick = 0; tick < 240 && !transitioningPlatform; tick += 1) {
+    await stepPausedBattle(page, 1);
+    const platforms = await page.evaluate(() => window.__battleTest?.getPlatforms() ?? []);
+    transitioningPlatform = platforms.find(
+      (platform) =>
+        platform.flight !== undefined &&
+        !allowedClearances[platform.visualTypeId]!.includes(platform.flight.clearanceMm),
+    );
+  }
+  expect(transitioningPlatform).toBeDefined();
+  expect(transitioningPlatform!.worldY).not.toBe(initialById.get(transitioningPlatform!.id)!.worldY);
+
+  const hashBeforeQuality = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.getByLabel("画质").selectOption("low");
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getRenderQuality())).toBe("low");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(
+    hashBeforeQuality,
+  );
+
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "ember-air-attack-1-platform",
+      "ember-air-attack-1",
+    ),
+  );
+  await page.screenshot({ path: testInfo.outputPath("air-operations-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("canvas")).toBeVisible();
+  const inspectorBox = await page.locator(".inspector-panel").boundingBox();
+  expect(inspectorBox).toBeTruthy();
+  expect(inspectorBox!.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("air-operations-mobile.png"), fullPage: true });
   expect(errors).toEqual([]);
 });
 

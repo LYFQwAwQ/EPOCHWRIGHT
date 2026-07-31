@@ -152,6 +152,24 @@ const flightReasonLabels = {
   "capability-unavailable": "飞行能力不足",
 } as const;
 
+const platformTypeLabels: Readonly<Record<string, string>> = {
+  "air-recon-helicopter": "侦察直升机",
+  "air-attack-helicopter": "武装直升机",
+  "air-scout-drone": "侦察无人机",
+};
+
+const platformTaskLabels: Readonly<Record<string, string>> = {
+  "air-recon-helicopter": "低空侦察",
+  "air-attack-helicopter": "空中火力支援",
+  "air-scout-drone": "远程侦察",
+};
+
+const weaponTemplateLabels: Readonly<Record<string, string>> = {
+  "air-autocannon-v1": "空地机炮",
+  "air-to-air-cannon-v1": "空空机炮",
+  "air-defense-cannon-v1": "防空机炮",
+};
+
 function movementTypeLabel(movementType: PlatformMovementType): string {
   if (movementType === "hover") {
     return "悬停";
@@ -257,7 +275,7 @@ function PlatformInspector({
       <section className="inspector-section" data-testid="platform-inspection">
         <div className="section-title">
           {inspection.flight ? <Plane size={15} /> : <Truck size={15} />}
-          <span>平台能力</span>
+          <span>{platformTypeLabels[inspection.visualTypeId] ?? "平台能力"}</span>
           <b>{movementTypeLabel(inspection.movementType)}</b>
         </div>
         <strong className="action-label">
@@ -268,7 +286,11 @@ function PlatformInspector({
               : inspection.mobility === "mobile"
                 ? "可机动"
                 : "失去机动"}
-          {inspection.combat === "effective" ? " · 武器有效" : " · 武器停用"}
+          {inspection.weapons.length === 0
+            ? " · 无武装"
+            : inspection.combat === "effective"
+              ? " · 武器有效"
+              : " · 武器停用"}
         </strong>
         <p>
           网格 {inspection.cell.x}, {inspection.cell.z} · {effectiveStations}/{inspection.stations.length} 有效岗位
@@ -289,6 +311,7 @@ function PlatformInspector({
               : `落点 ${inspection.cell.x}, ${inspection.cell.z}`}
           </strong>
           <p>
+            {`${platformTaskLabels[inspection.visualTypeId] ?? "飞行任务"} · `}
             {inspection.flight.state !== "airborne"
               ? flightStateLabels[inspection.flight.state]
               : inspection.flightControl?.action === "climbing"
@@ -362,7 +385,7 @@ function PlatformInspector({
         </section>
       )}
 
-      <section className="inspector-section">
+      <section className="inspector-section" data-testid="platform-weapons">
         <div className="section-title">
           <Activity size={15} />
           <span>武器与部件</span>
@@ -371,7 +394,7 @@ function PlatformInspector({
         {inspection.weapons.map((weapon) => (
           <div className="contact-row" key={weapon.componentId}>
             <Target size={14} />
-            <span>{weapon.weaponTemplateId}</span>
+            <span>{weaponTemplateLabels[weapon.weaponTemplateId] ?? weapon.weaponTemplateId}</span>
             <strong>{weapon.available ? `${weapon.magazineRounds} 发` : weapon.reason}</strong>
           </div>
         ))}

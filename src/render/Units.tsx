@@ -100,12 +100,14 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
   );
 }
 
-function AirPlatformVisual({
+function HelicopterPlatformVisual({
   color,
   rotorRef,
+  attack,
 }: {
   readonly color: string;
   readonly rotorRef: RefObject<Group | null>;
+  readonly attack: boolean;
 }) {
   return (
     <group rotation={[0, AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS, 0]}>
@@ -145,6 +147,24 @@ function AirPlatformVisual({
           <meshBasicMaterial color="#e0e6df" toneMapped={false} />
         </mesh>
       </group>
+      {attack && (
+        <>
+          <mesh position={[-1.45, -0.08, 0.15]} rotation={[0, 0, -0.08]} castShadow>
+            <boxGeometry args={[2.2, 0.14, 0.7]} />
+            <meshBasicMaterial color={color} toneMapped={false} />
+          </mesh>
+          <mesh position={[1.45, -0.08, 0.15]} rotation={[0, 0, 0.08]} castShadow>
+            <boxGeometry args={[2.2, 0.14, 0.7]} />
+            <meshBasicMaterial color={color} toneMapped={false} />
+          </mesh>
+          {[-1.85, 1.85].map((side) => (
+            <mesh key={side} position={[side, -0.34, 0.15]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.2, 0.2, 1.15, 10]} />
+              <meshBasicMaterial color="#2c3030" toneMapped={false} />
+            </mesh>
+          ))}
+        </>
+      )}
       {[-0.72, 0.72].map((side) => (
         <group key={side} position={[side, -0.7, 0.15]}>
           <mesh>
@@ -157,6 +177,77 @@ function AirPlatformVisual({
           </mesh>
           <mesh position={[0, 0.32, 0.92]} rotation={[0, 0, side * 0.48]}>
             <boxGeometry args={[0.1, 0.72, 0.1]} />
+            <meshBasicMaterial color="#303536" toneMapped={false} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function DronePlatformVisual({
+  color,
+  rotorRefs,
+}: {
+  readonly color: string;
+  readonly rotorRefs: RefObject<Group[]>;
+}) {
+  const rotorPositions = [
+    [-1.42, 0.35, -1.42],
+    [1.42, 0.35, -1.42],
+    [-1.42, 0.35, 1.42],
+    [1.42, 0.35, 1.42],
+  ] as const;
+
+  return (
+    <group rotation={[0, AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS, 0]}>
+      <mesh scale={[1.05, 0.42, 1.2]} castShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.48, -0.1]} scale={[0.78, 0.08, 0.82]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color="#8fe7e1" toneMapped={false} />
+      </mesh>
+      <mesh position={[0, -0.38, -0.62]} scale={[0.42, 0.32, 0.42]} castShadow>
+        <sphereGeometry args={[1, 12, 8]} />
+        <meshBasicMaterial color="#8fe7e1" toneMapped={false} />
+      </mesh>
+      {rotorPositions.map(([x, y, z], index) => (
+        <group key={`${x}:${z}`}>
+          <mesh position={[x / 2, 0.08, z / 2]} rotation={[0, Math.atan2(x, z), 0]}>
+            <boxGeometry args={[0.18, 0.14, 2.05]} />
+            <meshBasicMaterial color={color} toneMapped={false} />
+          </mesh>
+          <group
+            ref={(node) => {
+              if (node) rotorRefs.current[index] = node;
+            }}
+            position={[x, y, z]}
+          >
+            <mesh position={[0, 0.08, 0]}>
+              <cylinderGeometry args={[0.48, 0.48, 0.16, 12]} />
+              <meshBasicMaterial color="#8fe7e1" toneMapped={false} />
+            </mesh>
+            <mesh>
+              <boxGeometry args={[2.15, 0.06, 0.12]} />
+              <meshBasicMaterial color="#e8ece8" toneMapped={false} />
+            </mesh>
+            <mesh>
+              <boxGeometry args={[0.12, 0.06, 2.15]} />
+              <meshBasicMaterial color="#e8ece8" toneMapped={false} />
+            </mesh>
+          </group>
+        </group>
+      ))}
+      {[-0.72, 0.72].map((side) => (
+        <group key={side} position={[side, -0.55, 0.2]}>
+          <mesh>
+            <boxGeometry args={[0.08, 0.72, 0.08]} />
+            <meshBasicMaterial color="#303536" toneMapped={false} />
+          </mesh>
+          <mesh position={[0, -0.34, 0]}>
+            <boxGeometry args={[0.62, 0.08, 0.08]} />
             <meshBasicMaterial color="#303536" toneMapped={false} />
           </mesh>
         </group>
@@ -178,8 +269,11 @@ function PlatformMesh({
 }) {
   const groupRef = useRef<Group>(null);
   const rotorRef = useRef<Group>(null);
+  const droneRotorRefs = useRef<Group[]>([]);
   const currentPosition = useRef<Vector3 | undefined>(undefined);
   const airborne = platform.flight !== undefined;
+  const drone = platform.visualTypeId.includes("drone");
+  const attackHelicopter = platform.visualTypeId.includes("attack-helicopter");
   const artillery = platform.visualTypeId.includes("artillery");
   const tracked = artillery || platform.visualTypeId.includes("tracked");
   const deployed = platform.deployment === "deployed" || platform.deployment === "deploying";
@@ -206,6 +300,10 @@ function PlatformMesh({
     if (rotorRef.current) {
       rotorRef.current.rotation.y = (rotorRef.current.rotation.y + delta * 10) % (Math.PI * 2);
     }
+    droneRotorRefs.current.forEach((rotor, index) => {
+      const direction = index % 2 === 0 ? 1 : -1;
+      rotor.rotation.y = (rotor.rotation.y + direction * delta * 14) % (Math.PI * 2);
+    });
   });
 
   return (
@@ -218,10 +316,18 @@ function PlatformMesh({
       }}
     >
       {airborne ? (
-        <AirPlatformVisual
-          color={selected ? "#f3c969" : platformColor}
-          rotorRef={rotorRef}
-        />
+        drone ? (
+          <DronePlatformVisual
+            color={selected ? "#f3c969" : platformColor}
+            rotorRefs={droneRotorRefs}
+          />
+        ) : (
+          <HelicopterPlatformVisual
+            color={selected ? "#f3c969" : platformColor}
+            rotorRef={rotorRef}
+            attack={attackHelicopter}
+          />
+        )
       ) : (
         <>
           <mesh castShadow>

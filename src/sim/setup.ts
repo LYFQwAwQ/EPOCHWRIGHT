@@ -19,6 +19,7 @@ import {
   getPlatformTemplate,
   hashBattleContent,
   migrateBattleContent,
+  PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
   PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION,
   PRE_AIR_BATTLE_CONTENT_VERSION,
   validateBattleContent,
@@ -120,16 +121,22 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_ALTITUDE_BATTLE_RULES_VERSION;
   if (isCurrent) {
-    if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
-      throw new Error("stage-4.2 battle setup requires a content-5 content bundle.");
+    if (
+      candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
+    ) {
+      throw new Error(
+        "stage-4.2 battle setup requires a content-5 or content-6 content bundle.",
+      );
     }
   }
   if (isPreAirCombat || isPreAltitude) {
     if (
       candidate.content?.contentVersion !== PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
-      throw new Error("stage-4.0/4.1 battle setup requires a content-4 or content-5 bundle.");
+      throw new Error("stage-4.0/4.1 battle setup requires a content-4, content-5, or content-6 bundle.");
     }
   }
   if (isCurrent || isPreAirCombat || isPreAltitude) {
@@ -160,9 +167,12 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== "content-2" &&
       candidate.content?.contentVersion !== PRE_AIR_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
-      throw new Error("stage-3 battle setup requires a content-2 or content-3 content bundle.");
+      throw new Error(
+        "stage-3 battle setup requires a supported content-2 through content-6 bundle.",
+      );
     }
     if (candidate.transportAssignments === undefined) {
       throw new Error("stage-3 battle setup requires transportAssignments.");

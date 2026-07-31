@@ -69,4 +69,23 @@ describe("demo battle setup boundary", () => {
       vehicleGroupsPerFaction: 1,
     })).toThrow(/fit within groupsPerFaction/);
   });
+
+  it("keeps air group counts backward-compatible unless explicit types are supplied", () => {
+    const setup = createDemoBattleSetup({
+      seed: "default-air-group-types",
+      groupsPerFaction: 2,
+      airGroupsPerFaction: 2,
+    });
+    expect(
+      setup.groups
+        .filter((group) => group.id.startsWith("ember-air"))
+        .map((group) => group.id),
+    ).toEqual(["ember-air-recon-1", "ember-air-recon-2"]);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-air-group-types",
+      groupsPerFaction: 2,
+      airGroupsPerFaction: 2,
+      airGroupTypes: ["scout-drone"],
+    })).toThrow(/airGroupTypes/);
+  });
 });

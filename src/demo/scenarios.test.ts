@@ -90,6 +90,82 @@ describe("manual demo scenarios", () => {
     expect(setup.transportAssignments).toEqual([]);
   });
 
+  it("exposes recon, attack, and drone hover platforms in the air operations scenario", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("air-operations", "scenario-air-operations"),
+    );
+    const airGroups = setup.groups.filter((group) =>
+      group.platforms.some(
+        (platform) =>
+          setup.content.platformTemplates[platform.platformTemplateId]?.movementType === "hover",
+      ),
+    );
+    const visualTypes = airGroups.map((group) =>
+      setup.content.platformTemplates[group.platforms[0]!.platformTemplateId]!.visualTypeId,
+    );
+
+    expect(airGroups.map((group) => group.id)).toEqual([
+      "ember-air-recon-1",
+      "ember-air-attack-1",
+      "ember-air-drone-1",
+      "azure-air-recon-1",
+      "azure-air-attack-1",
+      "azure-air-drone-1",
+    ]);
+    expect(visualTypes).toEqual([
+      "air-recon-helicopter",
+      "air-attack-helicopter",
+      "air-scout-drone",
+      "air-recon-helicopter",
+      "air-attack-helicopter",
+      "air-scout-drone",
+    ]);
+    expect(
+      airGroups.map((group) => group.platforms[0]!.initialAltitudeBand),
+    ).toEqual(["low", "medium", "high", "low", "medium", "high"]);
+    expect(
+      airGroups
+        .filter((group) => group.id.includes("air-attack"))
+        .every((group) => {
+          const template = setup.content.platformTemplates[group.platforms[0]!.platformTemplateId]!;
+          return template.componentRules.filter((component) => component.kind === "weapon").length === 2;
+        }),
+    ).toBe(true);
+    expect(setup.transportAssignments).toEqual([]);
+  });
+
+  it("runs air operations deterministically with continuous altitude actions and armed fire", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("air-operations", "scenario-air-operations-runtime"),
+    );
+    const first = createSimulation(setup);
+    const second = createSimulation(setup);
+    let sawIntermediateClearance = false;
+    let sawAttackHelicopterFire = false;
+
+    for (let tick = 0; tick < 1_200 && !first.getResult(); tick += 1) {
+      first.step();
+      second.step();
+      expect(second.getStateHash()).toBe(first.getStateHash());
+      sawIntermediateClearance ||= first.getRenderFrame().platforms.some((platform) => {
+        if (!platform.flight) return false;
+        const template = setup.content.platformTemplates[
+          setup.groups
+            .flatMap((group) => group.platforms)
+            .find((spawn) => spawn.id === platform.id)!.platformTemplateId
+        ]!;
+        return !Object.values(template.flightRule!.clearanceMmByBand)
+          .includes(platform.flight.clearanceMm);
+      });
+      sawAttackHelicopterFire ||= first.drainEvents().some(
+        (event) => event.type === "weapon-fired" && event.groupId.includes("air-attack"),
+      );
+    }
+
+    expect(sawIntermediateClearance).toBe(true);
+    expect(sawAttackHelicopterFire).toBe(true);
+  }, 30_000);
+
   it("drives the artillery observation scenario through a natural indirect mission", () => {
     const setup = createDemoBattleSetup(
       createDemoScenarioOptions("artillery-observation", "scenario-artillery-mission"),

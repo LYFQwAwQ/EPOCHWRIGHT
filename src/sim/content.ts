@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreAirUnitsBattleContentBundle,
   PreAirCombatBattleContentBundle,
   PreAirBattleContentBundle,
   PreArtilleryBattleContentBundle,
@@ -23,7 +24,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-5" as const;
+export const BATTLE_CONTENT_VERSION = "content-6" as const;
+export const PRE_AIR_UNITS_BATTLE_CONTENT_VERSION = "content-5" as const;
 export const PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION = "content-4" as const;
 export const PRE_AIR_BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
@@ -47,8 +49,13 @@ export const DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID = "vehicle-tracked-scout-v1" a
 export const DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID = "artillery-self-propelled-v1" as const;
 export const DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID = "air-recon-helicopter-group-v1" as const;
 export const DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID = "air-recon-helicopter-v1" as const;
+export const DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID = "air-attack-helicopter-group-v1" as const;
+export const DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID = "air-attack-helicopter-v1" as const;
+export const DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID = "air-scout-drone-group-v1" as const;
+export const DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID = "air-scout-drone-v1" as const;
 export const DEFAULT_PILOT_MEMBER_TEMPLATE_ID = "air-pilot-v1" as const;
 export const DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID = "air-observer-v1" as const;
+export const DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID = "air-drone-operator-v1" as const;
 
 const DEFAULT_CELL_SIZE_MM = 4_000;
 
@@ -76,6 +83,8 @@ export function createDefaultBattleContent(
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
       DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+      DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID,
+      DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
     ],
     allowedMemberTemplateIds: [
       DEFAULT_MEMBER_TEMPLATE_ID,
@@ -84,12 +93,15 @@ export function createDefaultBattleContent(
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
       DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
+      DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
     ],
     allowedPlatformTemplateIds: [
       DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
       DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
       DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
       DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
+      DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+      DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
     ],
     allowedWeaponTemplateIds: [
       DEFAULT_WEAPON_TEMPLATE_ID,
@@ -175,6 +187,13 @@ export function createDefaultBattleContent(
     roleTags: ["observer"],
     silhouetteId: "aircrew",
   };
+  const droneOperatorMember: MemberTemplate = {
+    ...crewMember,
+    id: DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
+    tags: ["aircrew", "drone-operator"],
+    roleTags: ["pilot", "observer"],
+    silhouetteId: "aircrew",
+  };
   const wheeledPlatform = createDefaultPlatformTemplate(
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
     "wheeled",
@@ -204,6 +223,8 @@ export function createDefaultBattleContent(
     },
   );
   const airReconPlatform = createDefaultAirReconPlatformTemplate();
+  const airAttackPlatform = createDefaultAirAttackPlatformTemplate();
+  const airDronePlatform = createDefaultAirDronePlatformTemplate();
   const wheeledGroup = createDefaultVehicleGroupTemplate(
     DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
@@ -218,6 +239,8 @@ export function createDefaultBattleContent(
     ["vehicle", "artillery"],
   );
   const airReconGroup = createDefaultAirReconGroupTemplate();
+  const airAttackGroup = createDefaultAirAttackGroupTemplate();
+  const airDroneGroup = createDefaultAirDroneGroupTemplate();
   const sensor: SensorTemplate = {
     id: DEFAULT_SENSOR_TEMPLATE_ID,
     rangeMm: (options.sightRangeCells ?? 13) * cellSizeMm,
@@ -435,6 +458,8 @@ export function createDefaultBattleContent(
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
       [airReconGroup.id]: airReconGroup,
+      [airAttackGroup.id]: airAttackGroup,
+      [airDroneGroup.id]: airDroneGroup,
     },
     memberTemplates: {
       [member.id]: member,
@@ -443,12 +468,15 @@ export function createDefaultBattleContent(
       [reliefCrewMember.id]: reliefCrewMember,
       [pilotMember.id]: pilotMember,
       [airObserverMember.id]: airObserverMember,
+      [droneOperatorMember.id]: droneOperatorMember,
     },
     platformTemplates: {
       [wheeledPlatform.id]: wheeledPlatform,
       [trackedPlatform.id]: trackedPlatform,
       [artilleryPlatform.id]: artilleryPlatform,
       [airReconPlatform.id]: airReconPlatform,
+      [airAttackPlatform.id]: airAttackPlatform,
+      [airDronePlatform.id]: airDronePlatform,
     },
     weaponTemplates: {
       [weapon.id]: weapon,
@@ -615,6 +643,233 @@ function createDefaultAirReconPlatformTemplate(): PlatformTemplate {
   };
 }
 
+function createDefaultAirAttackGroupTemplate(): GroupTemplate {
+  return {
+    id: DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID,
+    tags: ["air", "combat", "helicopter"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    memberSlotRules: [
+      {
+        slotId: "pilot",
+        memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "gunner",
+        memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    platformSlotRules: [
+      {
+        slotId: "aircraft",
+        platformTemplateId: DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    cohesionRadiusCells: 0,
+    capturePowerScaleBps: 0,
+    behaviorProfileId: "air-combat",
+  };
+}
+
+function createDefaultAirAttackPlatformTemplate(): PlatformTemplate {
+  return {
+    id: DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+    tags: ["air", "combat", "helicopter", "hover"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    movementType: "hover",
+    flightRule: {
+      kind: "hover",
+      safetyRadiusMm: 2_500,
+      clearanceMmByBand: {
+        low: 14_000,
+        medium: 44_000,
+        high: 84_000,
+      },
+    },
+    visualTypeId: "air-attack-helicopter",
+    occupancyUnits: 1,
+    turnTicksPer45Degrees: 1,
+    armorRatingByFace: { front: 35, side: 25, rear: 18, top: 15 },
+    componentRules: [
+      {
+        id: "structure",
+        kind: "structure",
+        hitWeight: 4,
+        external: false,
+        disabledAtBps: 0,
+        requiredStationIds: [],
+      },
+      {
+        id: "powertrain",
+        kind: "powertrain",
+        hitWeight: 2,
+        external: false,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["pilot"],
+      },
+      {
+        id: "lift",
+        kind: "lift",
+        hitWeight: 3,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["pilot"],
+      },
+      {
+        id: "sensor",
+        kind: "sensor",
+        hitWeight: 1,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["gunner"],
+      },
+      {
+        id: "air-to-ground-weapon",
+        kind: "weapon",
+        hitWeight: 2,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["gunner"],
+        weaponTemplateId: DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID,
+      },
+      {
+        id: "air-to-air-weapon",
+        kind: "weapon",
+        hitWeight: 2,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["gunner"],
+        weaponTemplateId: DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID,
+      },
+    ],
+    crewStationRules: [
+      {
+        id: "pilot",
+        kind: "pilot",
+        requiredRoleTags: ["pilot"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+      {
+        id: "gunner",
+        kind: "gunner",
+        requiredRoleTags: ["gunner"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+    ],
+    transportCapacityUnits: 0,
+    embarkTicks: 0,
+    disembarkTicks: 0,
+    capturePowerBps: 0,
+  };
+}
+
+function createDefaultAirDroneGroupTemplate(): GroupTemplate {
+  return {
+    id: DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+    tags: ["air", "recon", "drone"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    memberSlotRules: [
+      {
+        slotId: "operator",
+        memberTemplateId: DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    platformSlotRules: [
+      {
+        slotId: "aircraft",
+        platformTemplateId: DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    cohesionRadiusCells: 0,
+    capturePowerScaleBps: 0,
+    behaviorProfileId: "air-recon",
+  };
+}
+
+function createDefaultAirDronePlatformTemplate(): PlatformTemplate {
+  return {
+    id: DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+    tags: ["air", "recon", "drone", "hover"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    movementType: "hover",
+    flightRule: {
+      kind: "hover",
+      safetyRadiusMm: 1_500,
+      clearanceMmByBand: {
+        low: 10_000,
+        medium: 32_000,
+        high: 64_000,
+      },
+    },
+    visualTypeId: "air-scout-drone",
+    occupancyUnits: 1,
+    turnTicksPer45Degrees: 0,
+    armorRatingByFace: { front: 8, side: 8, rear: 8, top: 8 },
+    componentRules: [
+      {
+        id: "structure",
+        kind: "structure",
+        hitWeight: 3,
+        external: false,
+        disabledAtBps: 0,
+        requiredStationIds: [],
+      },
+      {
+        id: "powertrain",
+        kind: "powertrain",
+        hitWeight: 2,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["operator"],
+      },
+      {
+        id: "lift",
+        kind: "lift",
+        hitWeight: 4,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["operator"],
+      },
+      {
+        id: "sensor",
+        kind: "sensor",
+        hitWeight: 2,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["operator"],
+      },
+    ],
+    crewStationRules: [
+      {
+        id: "operator",
+        kind: "pilot",
+        requiredRoleTags: ["pilot", "observer"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+    ],
+    transportCapacityUnits: 0,
+    embarkTicks: 0,
+    disembarkTicks: 0,
+    capturePowerBps: 0,
+  };
+}
+
 function createDefaultPlatformTemplate(
   id: string,
   movementType: PlatformTemplate["movementType"],
@@ -722,6 +977,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle
@@ -731,6 +987,7 @@ export function migrateBattleContent(
     return cloneBattleContent(content);
   }
   if (
+    content.contentVersion === PRE_AIR_UNITS_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AIR_BATTLE_CONTENT_VERSION
   ) {
@@ -906,7 +1163,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-5.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-6.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -916,12 +1173,12 @@ export function validateBattleContent(content: BattleContentBundle): void {
     const hoverPlatform = group.platformSlotRules.some(
       (slot) => content.platformTemplates[slot.platformTemplateId]?.movementType === "hover",
     );
-    const expectedBehavior = hoverPlatform
-      ? "air-recon"
+    const supportedBehaviors = hoverPlatform
+      ? ["air-recon", "air-combat"]
       : group.platformSlotRules.length > 0
-        ? "vehicle-basic"
-        : "infantry-basic";
-    if (group.behaviorProfileId !== expectedBehavior) {
+        ? ["vehicle-basic"]
+        : ["infantry-basic"];
+    if (!supportedBehaviors.includes(group.behaviorProfileId)) {
       throw new Error(`Group template ${group.id} uses an unsupported behavior profile.`);
     }
     for (const slot of group.platformSlotRules) {
@@ -940,7 +1197,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-5 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-6 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);

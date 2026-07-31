@@ -53,13 +53,13 @@ future game systems -> complete BattleSetup --+
 
 ### `src/demo/setup.ts`
 
-只负责把 seed、规模和演示模式等便利选项生成完整的当前版本 `BattleSetup`，并显式附带默认 `content-5` 内容、模板 ID、平台数组和运输关系数组。生成结果在返回前走标准验证器；模块不创建模拟，也不属于外部系统必须依赖的战斗输入契约。
+只负责把 seed、规模和演示模式等便利选项生成完整的当前版本 `BattleSetup`，并显式附带默认 `content-6` 内容、模板 ID、平台数组和运输关系数组。生成结果在返回前走标准验证器；模块不创建模拟，也不属于外部系统必须依赖的战斗输入契约。
 
-网页演示显式配置三方关系，生成器无参默认仍为两方步枪编组；`vehicleGroupsPerFaction` 和 `airGroupsPerFaction` 可以为观察场景生成一组一平台的地面车辆或悬停侦察编组。性能档位也只改写演示生成选项，最终仍向 Worker 发送完整 setup。
+网页演示显式配置三方关系，生成器无参默认仍为两方步枪编组；`vehicleGroupsPerFaction` 可以生成一组一平台的地面车辆，`airGroupsPerFaction` 默认保持既有观察直升机语义，显式 `airGroupTypes` 才选择观察直升机、武装直升机或侦察无人机。性能档位也只改写演示生成选项，最终仍向 Worker 发送完整 setup。
 
 ### `src/demo/scenarios.ts`
 
-定义只用于开发观察端的稳定场景目录，把三方同盟冲突、双边冲突、车辆遭遇战、自行火炮观察、低空侦察、合成兵种防守、单/多目标防守和增援波次转换为 `DemoBattleSetupOptions`。它可以组合公开模式、平台和增援输入，但不创建模拟、不绕过 `validateBattleSetup`，也不属于正式游戏输入协议。
+定义只用于开发观察端的稳定场景目录，把三方同盟冲突、双边冲突、车辆遭遇战、自行火炮观察、低空侦察、空中行动、合成兵种防守、单/多目标防守和增援波次转换为 `DemoBattleSetupOptions`。它可以组合公开模式、平台和增援输入，但不创建模拟、不绕过 `validateBattleSetup`，也不属于正式游戏输入协议。
 
 ### `src/sim/types.ts`
 
@@ -74,7 +74,7 @@ future game systems -> complete BattleSetup --+
 
 ### `src/sim/content.ts`
 
-拥有 `content-5` 默认时代、步兵、单平台车辆、自行火炮和无武装观察直升机编组，以及成员、平台、飞行规则、部件、岗位、展开规则、传感器、空地/空空/防空和既有 fire mode 武器模板；同时负责 `content-1/2/3/4` 显式迁移、内容深拷贝、引用/数值/能力门禁验证和规范哈希。悬停平台必须具备动力、升力、飞行员和合法安全半径/高度；地面平台不得携带飞行规则。
+拥有 `content-6` 默认时代、步兵、单平台车辆、自行火炮、观察/武装直升机和侦察无人机编组，以及成员、平台、飞行规则、部件、岗位、展开规则、传感器、空地/空空/防空和既有 fire mode 武器模板；同时负责 `content-1/2/3/4/5` 显式迁移、内容深拷贝、引用/数值/能力门禁验证和规范哈希。悬停平台必须具备动力、升力、飞行员和合法安全半径/高度；地面平台不得携带飞行规则。
 
 ### `src/sim/internal.ts`
 
@@ -84,7 +84,7 @@ future game systems -> complete BattleSetup --+
 
 ### `src/sim/setup.ts`
 
-负责迁移、严格验证和哈希完整 `BattleSetup`。旧输入沿显式迁移链统一转换为当前 `stage-4/stage-4.2/content-5`；新的当前输入缺失内容、模板引用、平台数组、运输关系或编制槽位时明确拒绝。出生、撤离、任务和增援路线按 `foot/wheeled/tracked/hover` 实际验证；悬停平台还验证高度带、量化离地高度、有效飞行员和初始同带安全间隔。`hashBattleSetup` 覆盖内容规范哈希、平台 spawn/高度带、初始乘员分配、运输关系和全部静态规则输入。
+负责迁移、严格验证和哈希完整 `BattleSetup`。旧输入沿显式迁移链统一转换为当前 `stage-4/stage-4.2/content-6`；新的当前输入缺失内容、模板引用、平台数组、运输关系或编制槽位时明确拒绝。出生、撤离、任务和增援路线按 `foot/wheeled/tracked/hover` 实际验证；悬停平台还验证高度带、量化离地高度、有效飞行员和初始同带安全间隔。`hashBattleSetup` 覆盖内容规范哈希、平台 spawn/高度带、初始乘员分配、运输关系和全部静态规则输入。
 
 演示、未来城市/养成系统和持久化加载器都通过相同的 `BattleSetup` 边界接入，并在创建运行时状态前走同一个验证器。
 

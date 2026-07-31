@@ -508,7 +508,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-5";
+  readonly contentVersion: "content-6";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -520,6 +520,10 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreAirUnitsBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+  readonly contentVersion: "content-5";
+};
 
 export type PreAirCombatBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
   readonly contentVersion: "content-4";
@@ -743,6 +747,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle

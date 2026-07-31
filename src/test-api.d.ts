@@ -45,6 +45,7 @@ interface BattleTestApi {
     worldY: number;
     worldZ: number;
     headingRadians: number;
+    visualTypeId: string;
     flight?: {
       altitudeBand: "low" | "medium" | "high";
       clearanceMm: number;

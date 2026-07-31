@@ -697,7 +697,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-5` 提供步兵、车辆、自行火炮、无武装悬停侦察平台，以及显式的空地、空空和防空武器模板；直接/间接逻辑弹丸、平台展开、三个悬停高度带和 `ground|air` 目标域均由模板表达。`stage-4.2` 启用通用高度动作、攻击高度效用、三维直射距离和迫降/坠毁；默认侦察平台仍不挂载武器，具体空军编组内容由后续切片组合这些模板。功能门禁必须由规则版本和验证器明确执行。
+当前 `content-6` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机，以及可组合的防空武器模板；直接/间接逻辑弹丸、平台展开、三个悬停高度带和 `ground|air` 目标域均由模板表达。`stage-4.2` 启用通用高度动作、攻击高度效用、三维直射距离和迫降/坠毁。功能门禁必须由规则版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -1072,7 +1072,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-5`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0` 及高度动作 `stage-4.1/content-4` 输入显式升级；`content-2` 武器会转换为单一直接 mode。新的当前 `stage-4.2` 输入必须显式提供 `content-5`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-6`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4` 及 `stage-4.2/content-5` 输入显式升级；`content-2` 武器会转换为单一直接 mode。新的当前输入必须显式提供 `content-6`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1103,6 +1103,8 @@ interface PlatformResult {
 `AIR-002` 保持 `stage-4/content-4` 数据字段不变，把规则升级到 `stage-4.1`：高度带采用通用规则数值推进，动作、评估和跨带容量进入运行时状态与哈希，inspection 增加只读控制投影。`stage-4.0` 输入只更新规则版本并完整保留调用方内容和 spawn。
 
 `AIR-003` 保持 setup schema 为 `stage-4`，把规则升级到 `stage-4.2`、内容升级到 `content-5`：武器模板可使用空地/空空目标域，直接射击以地表高程和飞行净空计算三维距离；飞行状态、攻击高度候选、迫降/坠毁事件及最终状态进入哈希和投影。`stage-4.1/content-4` 输入显式升级版本并保留调用方内容与 spawn；当前默认 `content-5` 另提供空地、空空和防空武器模板。
+
+`AIR-004` 保持 setup schema 和 `stage-4.2` 规则不变，只把默认内容升级到 `content-6`：新增武装直升机与侦察无人机模板、编组和演示 spawn，武装平台复用既有空地/空空武器部件。`content-5` 快照迁移时只升级版本并深拷贝调用方内容，不静默注入新模板；新的默认 `content-6` 才包含这些空军编组。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

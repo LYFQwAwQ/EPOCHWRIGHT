@@ -1,12 +1,17 @@
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID,
+  DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+  DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+  DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
   DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
   DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
   DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
   DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
   DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
+  DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
   DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
@@ -51,6 +56,7 @@ export interface DemoBattleSetupOptions {
   readonly vehicleGroupsPerFaction?: number;
   readonly artilleryGroupsPerFaction?: number;
   readonly airGroupsPerFaction?: number;
+  readonly airGroupTypes?: readonly DemoAirGroupType[];
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -67,6 +73,11 @@ export interface DemoBattleSetupOptions {
   readonly reinforcementEntrances?: readonly ReinforcementEntranceSetup[];
   readonly reinforcements?: readonly ReinforcementWaveSetup[];
 }
+
+export type DemoAirGroupType =
+  | "recon-helicopter"
+  | "attack-helicopter"
+  | "scout-drone";
 
 const DEFAULT_FACTIONS: readonly FactionSetup[] = [
   { id: "ember", displayName: "赤焰", color: "#e45f62" },
@@ -86,6 +97,10 @@ export function createDemoBattleSetup(
   const vehicleGroupsPerFaction = options.vehicleGroupsPerFaction ?? 0;
   const artilleryGroupsPerFaction = options.artilleryGroupsPerFaction ?? 0;
   const airGroupsPerFaction = options.airGroupsPerFaction ?? 0;
+  const airGroupTypes = options.airGroupTypes ?? Array.from(
+    { length: airGroupsPerFaction },
+    () => "recon-helicopter" as const,
+  );
   const transportPairsPerFaction = options.transportPairsPerFaction ?? 0;
 
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
@@ -115,6 +130,17 @@ export function createDemoBattleSetup(
     airGroupsPerFaction > groupsPerFaction - artilleryGroupsPerFaction
   ) {
     throw new Error("airGroupsPerFaction must fit within groupsPerFaction.");
+  }
+  if (
+    airGroupTypes.length !== airGroupsPerFaction ||
+    airGroupTypes.some(
+      (type) =>
+        type !== "recon-helicopter" &&
+        type !== "attack-helicopter" &&
+        type !== "scout-drone",
+    )
+  ) {
+    throw new Error("airGroupTypes must provide one supported type per air group.");
   }
   if (
     !Number.isInteger(vehicleGroupsPerFaction) ||
@@ -158,6 +184,7 @@ export function createDemoBattleSetup(
     vehicleGroupsPerFaction,
     artilleryGroupsPerFaction,
     airGroupsPerFaction,
+    airGroupTypes,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -230,7 +257,9 @@ function createTransportPairs(
         group.factionId === faction.id &&
         group.platforms.length > 0 &&
         group.groupTemplateId !== DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID &&
-        group.groupTemplateId !== DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+        group.groupTemplateId !== DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID &&
+        group.groupTemplateId !== DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID &&
+        group.groupTemplateId !== DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
     );
     const passengers = groups.filter(
       (group) => group.factionId === faction.id && group.platforms.length === 0,
@@ -338,6 +367,7 @@ function createGroupSpawns(
   vehicleGroupsPerFaction: number,
   artilleryGroupsPerFaction: number,
   airGroupsPerFaction: number,
+  airGroupTypes: readonly DemoAirGroupType[],
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -395,32 +425,10 @@ function createGroupSpawns(
       }
       if (groupIndex < artilleryGroupsPerFaction + airGroupsPerFaction) {
         const airIndex = groupIndex - artilleryGroupsPerFaction;
-        const groupId = `${faction.id}-air-recon-${airIndex + 1}`;
-        const pilotId = `${groupId}-pilot`;
-        const observerId = `${groupId}-observer`;
-        groups.push({
-          id: groupId,
-          factionId: faction.id,
-          groupTemplateId: DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
-          spawn,
-          evacuation: { ...spawn },
-          members: [
-            { id: pilotId, memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID },
-            { id: observerId, memberTemplateId: DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID },
-          ],
-          platforms: [
-            {
-              id: `${groupId}-platform`,
-              platformTemplateId: DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
-              initialFacing: side === 0 ? 2 : side === 1 ? 6 : 0,
-              initialAltitudeBand: "low",
-              crewAssignments: [
-                { stationId: "pilot", memberId: pilotId },
-                { stationId: "observer", memberId: observerId },
-              ],
-            },
-          ],
-        });
+        const airGroupType = airGroupTypes[airIndex]!;
+        const typeIndex =
+          airGroupTypes.slice(0, airIndex + 1).filter((type) => type === airGroupType).length;
+        groups.push(createAirGroupSpawn(faction.id, side, airGroupType, typeIndex, spawn));
         continue;
       }
       if (
@@ -489,6 +497,91 @@ function createGroupSpawns(
     }
   }
   return groups;
+}
+
+function createAirGroupSpawn(
+  factionId: string,
+  side: number,
+  type: DemoAirGroupType,
+  typeIndex: number,
+  spawn: GridCoord,
+): GroupSpawn {
+  const initialFacing = side === 0 ? 2 : side === 1 ? 6 : 0;
+  switch (type) {
+    case "recon-helicopter": {
+      const groupId = `${factionId}-air-recon-${typeIndex}`;
+      const pilotId = `${groupId}-pilot`;
+      const observerId = `${groupId}-observer`;
+      return {
+        id: groupId,
+        factionId,
+        groupTemplateId: DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+        spawn,
+        evacuation: { ...spawn },
+        members: [
+          { id: pilotId, memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID },
+          { id: observerId, memberTemplateId: DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID },
+        ],
+        platforms: [{
+          id: `${groupId}-platform`,
+          platformTemplateId: DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
+          initialFacing,
+          initialAltitudeBand: "low",
+          crewAssignments: [
+            { stationId: "pilot", memberId: pilotId },
+            { stationId: "observer", memberId: observerId },
+          ],
+        }],
+      };
+    }
+    case "attack-helicopter": {
+      const groupId = `${factionId}-air-attack-${typeIndex}`;
+      const pilotId = `${groupId}-pilot`;
+      const gunnerId = `${groupId}-gunner`;
+      return {
+        id: groupId,
+        factionId,
+        groupTemplateId: DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID,
+        spawn,
+        evacuation: { ...spawn },
+        members: [
+          { id: pilotId, memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID },
+          { id: gunnerId, memberTemplateId: DEFAULT_GUNNER_MEMBER_TEMPLATE_ID },
+        ],
+        platforms: [{
+          id: `${groupId}-platform`,
+          platformTemplateId: DEFAULT_AIR_ATTACK_PLATFORM_TEMPLATE_ID,
+          initialFacing,
+          initialAltitudeBand: "medium",
+          crewAssignments: [
+            { stationId: "pilot", memberId: pilotId },
+            { stationId: "gunner", memberId: gunnerId },
+          ],
+        }],
+      };
+    }
+    case "scout-drone": {
+      const groupId = `${factionId}-air-drone-${typeIndex}`;
+      const operatorId = `${groupId}-operator`;
+      return {
+        id: groupId,
+        factionId,
+        groupTemplateId: DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID,
+        spawn,
+        evacuation: { ...spawn },
+        members: [
+          { id: operatorId, memberTemplateId: DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID },
+        ],
+        platforms: [{
+          id: `${groupId}-platform`,
+          platformTemplateId: DEFAULT_AIR_DRONE_PLATFORM_TEMPLATE_ID,
+          initialFacing,
+          initialAltitudeBand: "high",
+          crewAssignments: [{ stationId: "operator", memberId: operatorId }],
+        }],
+      };
+    }
+  }
 }
 
 function findAvailableSpawn(
