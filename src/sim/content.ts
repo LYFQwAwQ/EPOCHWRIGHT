@@ -8,6 +8,8 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PrePassiveAbilityBattleContentBundle,
+  PrePassiveAbilityMemberTemplate,
   PreAirUnitsBattleContentBundle,
   PreAirCombatBattleContentBundle,
   PreAirBattleContentBundle,
@@ -24,13 +26,17 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-6" as const;
+export const BATTLE_CONTENT_VERSION = "content-7" as const;
+export const PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-6" as const;
 export const PRE_AIR_UNITS_BATTLE_CONTENT_VERSION = "content-5" as const;
 export const PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION = "content-4" as const;
 export const PRE_AIR_BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
 export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
 export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
+export const DEFAULT_PASSIVE_GROUP_TEMPLATE_ID = "infantry-disciplined-squad-v1" as const;
+export const DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID = "infantry-squad-leader-v1" as const;
+export const DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID = "formation-discipline-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
@@ -79,6 +85,7 @@ export function createDefaultBattleContent(
     tags: ["default"],
     allowedGroupTemplateIds: [
       DEFAULT_GROUP_TEMPLATE_ID,
+      DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
@@ -88,6 +95,7 @@ export function createDefaultBattleContent(
     ],
     allowedMemberTemplateIds: [
       DEFAULT_MEMBER_TEMPLATE_ID,
+      DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
       DEFAULT_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
@@ -146,12 +154,57 @@ export function createDefaultBattleContent(
         required: true,
       },
     ],
+    abilityTemplateIds: [],
     roleTags: ["rifleman"],
     transportOccupancyUnits: 1,
     silhouetteId: "infantry",
     protectionBps: 0,
     suppressionResistanceBps: 0,
     capturePowerBps: 10_000,
+  };
+  const passiveAbility: AbilityTemplate = {
+    id: DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
+    displayName: "队列纪律",
+    tags: ["discipline", "infantry"],
+    kind: "passive",
+    targetRule: "own-group",
+    conditions: [
+      { kind: "health", states: ["healthy", "wounded"] },
+      { kind: "presence", states: ["deployed"] },
+    ],
+    effects: [
+      {
+        kind: "attribute-modifier",
+        attribute: "suppression-resistance-bps",
+        modifierBps: 2_000,
+      },
+    ],
+  };
+  const passiveMember: MemberTemplate = {
+    ...member,
+    id: DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+    tags: ["infantry", "leader"],
+    roleTags: ["rifleman", "leader"],
+    abilityTemplateIds: [DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID],
+  };
+  const passiveGroup: GroupTemplate = {
+    ...group,
+    id: DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
+    tags: ["infantry", "squad", "disciplined"],
+    memberSlotRules: [
+      {
+        slotId: "leader",
+        memberTemplateId: DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "riflemen",
+        memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+        count: 7,
+        required: true,
+      },
+    ],
   };
   const crewMember: MemberTemplate = {
     ...member,
@@ -454,6 +507,7 @@ export function createDefaultBattleContent(
     eraTemplates: { [era.id]: era },
     groupTemplates: {
       [group.id]: group,
+      [passiveGroup.id]: passiveGroup,
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
@@ -463,6 +517,7 @@ export function createDefaultBattleContent(
     },
     memberTemplates: {
       [member.id]: member,
+      [passiveMember.id]: passiveMember,
       [crewMember.id]: crewMember,
       [gunnerMember.id]: gunnerMember,
       [reliefCrewMember.id]: reliefCrewMember,
@@ -487,7 +542,7 @@ export function createDefaultBattleContent(
       [airDefenseWeapon.id]: airDefenseWeapon,
     },
     sensorTemplates: { [sensor.id]: sensor },
-    abilityTemplates: {},
+    abilityTemplates: { [passiveAbility.id]: passiveAbility },
     statusTemplates: {},
     terrainCatalog: { version: "map-2" },
   };
@@ -977,6 +1032,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
@@ -987,6 +1043,7 @@ export function migrateBattleContent(
     return cloneBattleContent(content);
   }
   if (
+    content.contentVersion === PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AIR_UNITS_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AIR_BATTLE_CONTENT_VERSION
@@ -996,11 +1053,11 @@ export function migrateBattleContent(
       contentVersion: BATTLE_CONTENT_VERSION,
       eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
       groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
-      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      memberTemplates: migratePrePassiveMemberTemplates(content.memberTemplates),
       platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
       weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
       sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
-      abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+      abilityTemplates: {},
       statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
       terrainCatalog: { ...content.terrainCatalog },
     };
@@ -1011,7 +1068,7 @@ export function migrateBattleContent(
       contentVersion: BATTLE_CONTENT_VERSION,
       eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
       groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
-      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      memberTemplates: migratePrePassiveMemberTemplates(content.memberTemplates),
       platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
       weaponTemplates: Object.fromEntries(
         Object.entries(content.weaponTemplates).map(([id, template]) => [
@@ -1020,7 +1077,7 @@ export function migrateBattleContent(
         ]),
       ),
       sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
-      abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+      abilityTemplates: {},
       statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
       terrainCatalog: { ...content.terrainCatalog },
     };
@@ -1072,7 +1129,7 @@ export function migrateBattleContent(
     platformTemplates: {},
     weaponTemplates: cloneRecord(content.weaponTemplates, clonePreArtilleryWeaponTemplate),
     sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
-    abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+    abilityTemplates: {},
     statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
     terrainCatalog: { ...content.terrainCatalog },
   };
@@ -1088,7 +1145,7 @@ export function cloneBattleContent(content: BattleContentBundle): BattleContentB
     platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
     weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
     sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
-    abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+    abilityTemplates: cloneRecord(content.abilityTemplates, cloneAbilityTemplate),
     statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
     terrainCatalog: { ...content.terrainCatalog },
   };
@@ -1107,7 +1164,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
   validateRecord(content.weaponTemplates, "weapon", validateWeaponTemplate);
   validateRecord(content.sensorTemplates, "sensor", validateSensorTemplate);
   validateRecord(content.platformTemplates, "platform", validatePlatformTemplate);
-  validateRecord(content.abilityTemplates, "ability", validateSimpleTemplate);
+  validateRecord(content.abilityTemplates, "ability", validateAbilityTemplate);
   validateRecord(content.statusTemplates, "status", validateSimpleTemplate);
   if (!content.terrainCatalog.version) {
     throw new Error("Battle content terrain catalog requires a version.");
@@ -1143,6 +1200,11 @@ export function validateBattleContent(content: BattleContentBundle): void {
         );
       }
     }
+    for (const abilityId of member.abilityTemplateIds) {
+      if (!content.abilityTemplates[abilityId]) {
+        throw new Error(`Member template ${member.id} references an unknown ability template.`);
+      }
+    }
   }
 
   const era = content.eraTemplates[content.eraId]!;
@@ -1163,7 +1225,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-6.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-7.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -1197,7 +1259,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-6 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-7 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -1244,7 +1306,7 @@ export function hashBattleContent(content: BattleContentBundle): string {
   hashRecord(hasher, "platform", content.platformTemplates, hashPlatformTemplate);
   hashRecord(hasher, "weapon", content.weaponTemplates, hashWeaponTemplate);
   hashRecord(hasher, "sensor", content.sensorTemplates, hashSensorTemplate);
-  hashRecord(hasher, "ability", content.abilityTemplates, hashSimpleTemplate);
+  hashRecord(hasher, "ability", content.abilityTemplates, hashAbilityTemplate);
   hashRecord(hasher, "status", content.statusTemplates, hashSimpleTemplate);
   hasher.addString(content.terrainCatalog.version);
   return hasher.digest();
@@ -1345,7 +1407,80 @@ function validateMemberTemplate(template: MemberTemplate): void {
   validateBps(template.protectionBps, `Member template ${template.id}`);
   validateBps(template.suppressionResistanceBps, `Member template ${template.id}`);
   validateBps(template.capturePowerBps, `Member template ${template.id}`);
+  if (
+    new Set(template.abilityTemplateIds).size !== template.abilityTemplateIds.length ||
+    template.abilityTemplateIds.some((id) => !id)
+  ) {
+    throw new Error(`Member template ${template.id} has duplicate or empty ability references.`);
+  }
   validateSlotRules(template.id, template.weaponSlotRules, "weapon");
+}
+
+function validateAbilityTemplate(template: AbilityTemplate): void {
+  validateSimpleTemplate(template);
+  if (!template.displayName || template.kind !== "passive") {
+    throw new Error(`Ability template ${template.id} requires a name and passive kind.`);
+  }
+  if (template.targetRule !== "self" && template.targetRule !== "own-group") {
+    throw new Error(`Ability template ${template.id} has an invalid target rule.`);
+  }
+  if (
+    new Set(template.conditions.map((condition) => condition.kind)).size !==
+    template.conditions.length
+  ) {
+    throw new Error(`Ability template ${template.id} has duplicate conditions.`);
+  }
+  for (const condition of template.conditions) {
+    if (condition.kind !== "health" && condition.kind !== "presence") {
+      throw new Error(`Ability template ${template.id} has an invalid condition kind.`);
+    }
+    if (
+      condition.states.length === 0 ||
+      new Set(condition.states).size !== condition.states.length
+    ) {
+      throw new Error(`Ability template ${template.id} has an invalid ${condition.kind} condition.`);
+    }
+    if (
+      condition.kind === "health" &&
+      condition.states.some(
+        (state) => !["healthy", "wounded", "incapacitated", "dead"].includes(state),
+      )
+    ) {
+      throw new Error(`Ability template ${template.id} has an invalid health condition.`);
+    }
+    if (
+      condition.kind === "presence" &&
+      condition.states.some((state) => !["undeployed", "deployed", "evacuated"].includes(state))
+    ) {
+      throw new Error(`Ability template ${template.id} has an invalid presence condition.`);
+    }
+  }
+  if (
+    template.effects.length === 0 ||
+    new Set(template.effects.map((effect) => effect.attribute)).size !== template.effects.length
+  ) {
+    throw new Error(`Ability template ${template.id} requires unique attribute effects.`);
+  }
+  for (const effect of template.effects) {
+    if (
+      effect.kind !== "attribute-modifier" ||
+      ![
+        "protection-bps",
+        "suppression-resistance-bps",
+        "capture-power-bps",
+      ].includes(effect.attribute) ||
+      !Number.isInteger(effect.modifierBps) ||
+      effect.modifierBps < -10_000 ||
+      effect.modifierBps > 10_000
+    ) {
+      throw new Error(`Ability template ${template.id} has an invalid attribute modifier.`);
+    }
+    if (template.targetRule === "own-group" && effect.attribute === "protection-bps") {
+      throw new Error(
+        `Ability template ${template.id} cannot apply group protection without aura rules.`,
+      );
+    }
+  }
 }
 
 function validateWeaponTemplate(template: WeaponTemplate): void {
@@ -1721,12 +1856,33 @@ function hashMemberTemplate(hasher: StateHasher, template: MemberTemplate): void
     hasher.addNumber(slot.count);
     hasher.addNumber(slot.required ? 1 : 0);
   }
+  addSortedStrings(hasher, template.abilityTemplateIds);
   addSortedStrings(hasher, template.roleTags);
   hasher.addNumber(template.transportOccupancyUnits);
   hasher.addString(template.silhouetteId);
   hasher.addNumber(template.protectionBps);
   hasher.addNumber(template.suppressionResistanceBps);
   hasher.addNumber(template.capturePowerBps);
+}
+
+function hashAbilityTemplate(hasher: StateHasher, template: AbilityTemplate): void {
+  hasher.addString(template.id);
+  addSortedStrings(hasher, template.tags);
+  hasher.addString(template.kind);
+  hasher.addString(template.targetRule);
+  for (const condition of [...template.conditions].sort((a, b) =>
+    compareStrings(a.kind, b.kind),
+  )) {
+    hasher.addString(condition.kind);
+    addSortedStrings(hasher, condition.states);
+  }
+  for (const effect of [...template.effects].sort((a, b) =>
+    compareStrings(a.attribute, b.attribute),
+  )) {
+    hasher.addString(effect.kind);
+    hasher.addString(effect.attribute);
+    hasher.addNumber(effect.modifierBps);
+  }
 }
 
 function hashPlatformTemplate(hasher: StateHasher, template: PlatformTemplate): void {
@@ -1923,8 +2079,34 @@ function cloneMemberTemplate(template: MemberTemplate): MemberTemplate {
     eraTags: [...template.eraTags],
     techTags: [...template.techTags],
     weaponSlotRules: template.weaponSlotRules.map((slot) => ({ ...slot })),
+    abilityTemplateIds: [...template.abilityTemplateIds],
     roleTags: [...template.roleTags],
   };
+}
+
+function migratePrePassiveMemberTemplate(
+  template: PrePassiveAbilityMemberTemplate,
+): MemberTemplate {
+  return {
+    ...template,
+    tags: [...template.tags],
+    eraTags: [...template.eraTags],
+    techTags: [...template.techTags],
+    weaponSlotRules: template.weaponSlotRules.map((slot) => ({ ...slot })),
+    abilityTemplateIds: [],
+    roleTags: [...template.roleTags],
+  };
+}
+
+function migratePrePassiveMemberTemplates(
+  templates: Readonly<Record<string, PrePassiveAbilityMemberTemplate>>,
+): Record<string, MemberTemplate> {
+  return Object.fromEntries(
+    Object.entries(templates).map(([id, template]) => [
+      id,
+      migratePrePassiveMemberTemplate(template),
+    ]),
+  );
 }
 
 function cloneWeaponTemplate(template: WeaponTemplate): WeaponTemplate {
@@ -2016,6 +2198,19 @@ function cloneSensorTemplate(template: SensorTemplate): SensorTemplate {
 
 function cloneSimpleTemplate<T extends { readonly id: string; readonly tags: readonly string[] }>(template: T): T {
   return { ...template, tags: [...template.tags] };
+}
+
+function cloneAbilityTemplate(template: AbilityTemplate): AbilityTemplate {
+  return {
+    ...template,
+    tags: [...template.tags],
+    conditions: template.conditions.map((condition) =>
+      condition.kind === "health"
+        ? { kind: "health", states: [...condition.states] }
+        : { kind: "presence", states: [...condition.states] },
+    ),
+    effects: template.effects.map((effect) => ({ ...effect })),
+  };
 }
 
 function missingTemplate(namespace: string, id: string): never {

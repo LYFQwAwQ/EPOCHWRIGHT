@@ -10,8 +10,8 @@ describe("simulation architecture boundaries", () => {
       conflict: collectHashes("arch-001-conflict", "conflict"),
       defense: collectHashes("arch-001-defense", "defense"),
     }).toEqual({
-      conflict: ["4cab8037", "9d7eec3f", "87c812b6", "fc0c74fe", "7f17356c"],
-      defense: ["ca6381eb", "9d803b20", "8e42e963", "a62ddd17", "a76b6d19"],
+      conflict: ["c7b98f10", "7f86192a", "f5cd407d", "2a0624f7", "7a453d7d"],
+      defense: ["f3dd6a71", "14f44356", "5fb9afc1", "deb05651", "3559d29f"],
     });
   });
 });

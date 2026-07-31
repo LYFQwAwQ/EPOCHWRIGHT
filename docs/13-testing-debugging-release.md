@@ -129,6 +129,8 @@ window.__battleTest?.step(200);
 
 `AIR-004` 在 `src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-5 -> content-6` 迁移、武装直升机/侦察无人机编制、标准空地/空空挂载、无武装无人机、自然开火、连续净空和逐 tick 双实例哈希。`air-operations` 的真实 Worker/WebGL E2E 同时检查三种悬停轮廓、无人机顶部特征像素、任务/武器/弹药 inspection、未发现敌方平台不投影且不能检查、非档位端点的连续世界 Y、质量档切换不改变哈希，以及桌面和 `390 x 844` 无溢出截图。
 
+`ABILITY-001` 在 `src/sim/ability.test.ts`、`src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-6 -> content-7` 迁移、成员能力引用、条件/目标/效果负例、显示名不进哈希、效果值进入哈希、固定 seed 有无能力派生值对照、条件失效、`self|own-group`、逐 tick 双实例复演和敌方已知接触裁剪。`passive-ability` 的真实 Worker E2E 检查全知/本方中文解释、敌方 inspection 无能力字段、观察切换哈希不变，以及桌面和 `390 x 844` 无溢出截图。
+
 ### 批量 seed 重放
 
 `src/sim/generated-invariants.test.ts` 默认运行 12 个稳定 seed，每个 seed 分别验证生成地图的边界/路线/哈希，以及三方交火的逐 tick 哈希、非敌对安全和结果人数守恒。测试名直接包含 seed；失败后可只重放该输入：

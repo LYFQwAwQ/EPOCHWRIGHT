@@ -11,9 +11,12 @@ import {
   DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
+  DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
   DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
   PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
+  PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
   cloneBattleContent,
   createDefaultBattleContent,
@@ -46,7 +49,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-6");
+    expect(migrated.content?.contentVersion).toBe("content-7");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(
@@ -88,7 +91,7 @@ describe("battle content templates", () => {
     expect(() => validateBattleContent(content)).not.toThrow();
   });
 
-  it("migrates content-5 snapshots to content-6 without changing setup rules", () => {
+  it("migrates content-5 snapshots to content-7 without changing setup rules", () => {
     const current = createDemoBattleSetup({ seed: "air-units-content-migration", groupsPerFaction: 1 });
     const era = current.content.eraTemplates[current.content.eraId]!;
     const groupTemplates = Object.fromEntries(
@@ -141,9 +144,30 @@ describe("battle content templates", () => {
     } satisfies BattleSetupInput);
 
     expect(migrated.rulesVersion).toBe(current.rulesVersion);
-    expect(migrated.content.contentVersion).toBe("content-6");
+    expect(migrated.content.contentVersion).toBe("content-7");
     expect(migrated.content.groupTemplates[DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID]).toBeUndefined();
     expect(migrated.content.groupTemplates[DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID]).toBeUndefined();
+    expect(() => validateBattleSetup(migrated)).not.toThrow();
+  });
+
+  it("migrates content-6 snapshots with empty member ability references", () => {
+    const current = createDemoBattleSetup({ seed: "passive-content-migration", groupsPerFaction: 1 });
+    const migrated = migrateBattleSetup({
+      ...current,
+      content: {
+        ...current.content,
+        contentVersion: PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION,
+      },
+    } satisfies BattleSetupInput);
+
+    expect(migrated.rulesVersion).toBe(current.rulesVersion);
+    expect(migrated.content.contentVersion).toBe("content-7");
+    expect(
+      Object.values(migrated.content.memberTemplates).every(
+        (member) => member.abilityTemplateIds.length === 0,
+      ),
+    ).toBe(true);
+    expect(migrated.content.abilityTemplates).toEqual({});
     expect(() => validateBattleSetup(migrated)).not.toThrow();
   });
 
@@ -252,6 +276,51 @@ describe("battle content templates", () => {
       },
     };
     expect(() => validateBattleContent(malformedPlatformEffect)).toThrow(/platform effect/i);
+
+    const missingAbilityBase = cloneBattleContent(createDefaultBattleContent());
+    const passiveMember = missingAbilityBase.memberTemplates[DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID]!;
+    const missingAbility = {
+      ...missingAbilityBase,
+      memberTemplates: {
+        ...missingAbilityBase.memberTemplates,
+        [passiveMember.id]: {
+          ...passiveMember,
+          abilityTemplateIds: ["missing-ability-template"],
+        },
+      },
+    };
+    expect(() => validateBattleContent(missingAbility)).toThrow(/unknown ability/i);
+
+    const invalidGroupAbilityBase = cloneBattleContent(createDefaultBattleContent());
+    const passiveAbility =
+      invalidGroupAbilityBase.abilityTemplates[DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]!;
+    const invalidGroupAbility = {
+      ...invalidGroupAbilityBase,
+      abilityTemplates: {
+        ...invalidGroupAbilityBase.abilityTemplates,
+        [passiveAbility.id]: {
+          ...passiveAbility,
+          effects: [{
+            kind: "attribute-modifier" as const,
+            attribute: "protection-bps" as const,
+            modifierBps: 1_000,
+          }],
+        },
+      },
+    };
+    expect(() => validateBattleContent(invalidGroupAbility)).toThrow(/group protection/i);
+
+    const invalidCondition = {
+      ...invalidGroupAbilityBase,
+      abilityTemplates: {
+        ...invalidGroupAbilityBase.abilityTemplates,
+        [passiveAbility.id]: {
+          ...passiveAbility,
+          conditions: [{ kind: "health" as const, states: [] }],
+        },
+      },
+    };
+    expect(() => validateBattleContent(invalidCondition)).toThrow(/health condition/i);
   });
 
   it("hashes content canonically while excluding observation-only era labels", () => {
@@ -299,6 +368,31 @@ describe("battle content templates", () => {
       },
     };
     expect(hashBattleContent(changedPenetration)).not.toBe(hashBattleContent(first));
+
+    const passiveAbility = first.abilityTemplates[DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]!;
+    const renamedAbility = {
+      ...first,
+      abilityTemplates: {
+        ...first.abilityTemplates,
+        [passiveAbility.id]: { ...passiveAbility, displayName: "仅观察名称" },
+      },
+    };
+    expect(hashBattleContent(renamedAbility)).toBe(hashBattleContent(first));
+
+    const changedAbility = {
+      ...first,
+      abilityTemplates: {
+        ...first.abilityTemplates,
+        [passiveAbility.id]: {
+          ...passiveAbility,
+          effects: passiveAbility.effects.map((effect) => ({
+            ...effect,
+            modifierBps: effect.modifierBps + 1,
+          })),
+        },
+      },
+    };
+    expect(hashBattleContent(changedAbility)).not.toBe(hashBattleContent(first));
   });
 
   it("initializes member weapon state from content data", () => {

@@ -22,6 +22,13 @@ import {
   type FlightAltitudeCandidateInput,
 } from "./air";
 import {
+  clampBasisPoints,
+  memberAbilityAttributeBps,
+  memberAbilityAttributes,
+  ownGroupAbilityModifierBps,
+  passiveAbilityInspections,
+} from "./ability";
+import {
   cellIndex,
   hasLineOfSight,
   heightAt,
@@ -613,6 +620,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       health: member.health,
       presence: member.presence,
       placement: { ...member.placement },
+      attributes: memberAbilityAttributes(this.setup.content, member),
+      passiveAbilities: passiveAbilityInspections(this.setup.content, [member]),
       magazineRounds: member.magazineRounds,
       reloadTicksRemaining: member.reloadTicksRemaining,
       shotCooldownTicks: member.shotCooldownTicks,
@@ -6267,10 +6276,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       hit.randomEntityKey ?? `${hit.shooterGroupId}:${member.id}`,
       hit.randomOrdinal ?? hit.shotOrdinal,
     );
-    const memberTemplate = getMemberTemplate(this.setup.content!, member.memberTemplateId);
     const damageScale = applyBasisPointReduction(
       Math.max(0, Math.min(20_000, hit.damageBps)),
-      memberTemplate.protectionBps,
+      memberAbilityAttributeBps(this.setup.content, member, "protection-bps"),
     );
     if (damageScale === 0) {
       return;
@@ -7220,6 +7228,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       moraleBps: group.moraleBps,
       moraleState: group.moraleState,
       suppressionBps: group.suppressionBps,
+      suppressionResistanceBps: this.groupSuppressionResistanceBps(group),
+      capturePower: this.groupCapturePower(group),
+      passiveAbilities: passiveAbilityInspections(this.setup.content, group.members),
       modeEffective: this.isGroupModeEffective(group),
       activeMembers: activeMemberCount(group),
       woundedMembers: group.members.filter((member) => member.health === "wounded").length,
@@ -7666,10 +7677,22 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
     const total = activeMembers.reduce(
       (sum, member) =>
-        sum + getMemberTemplate(this.setup.content!, member.memberTemplateId).suppressionResistanceBps,
+        sum +
+        memberAbilityAttributeBps(
+          this.setup.content,
+          member,
+          "suppression-resistance-bps",
+        ),
       0,
     );
-    return Math.floor(total / activeMembers.length);
+    return clampBasisPoints(
+      Math.floor(total / activeMembers.length) +
+        ownGroupAbilityModifierBps(
+          this.setup.content,
+          group.members,
+          "suppression-resistance-bps",
+        ),
+    );
   }
 
   private groupCapturePower(group: GroupState): number {
@@ -7682,9 +7705,14 @@ class StageOneBattleSimulation implements BattleSimulation {
       )
       .reduce(
         (sum, member) =>
-          sum + getMemberTemplate(this.setup.content!, member.memberTemplateId).capturePowerBps,
+          sum + memberAbilityAttributeBps(this.setup.content, member, "capture-power-bps"),
         0,
       );
+    const groupAbilityPowerBps = ownGroupAbilityModifierBps(
+      this.setup.content,
+      group.members,
+      "capture-power-bps",
+    );
     const groupScaleBps = getGroupTemplate(
       this.setup.content!,
       group.groupTemplateId,
@@ -7700,7 +7728,11 @@ class StageOneBattleSimulation implements BattleSimulation {
           : 0),
       0,
     );
-    return Math.floor(((memberPowerBps + platformPowerBps) * groupScaleBps) / 100_000_000);
+    return Math.floor(
+      ((Math.max(0, memberPowerBps + groupAbilityPowerBps) + platformPowerBps) *
+        groupScaleBps) /
+        100_000_000,
+    );
   }
 
   private isGroupModeEffective(group: GroupState): boolean {

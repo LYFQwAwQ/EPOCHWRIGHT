@@ -314,6 +314,7 @@ export interface MemberTemplate {
   readonly movementType: MovementType;
   readonly sensorTemplateId: TemplateId;
   readonly weaponSlotRules: readonly WeaponSlotRule[];
+  readonly abilityTemplateIds: readonly TemplateId[];
   readonly roleTags: readonly string[];
   readonly transportOccupancyUnits: number;
   readonly silhouetteId: string;
@@ -493,9 +494,38 @@ export interface PlatformTemplate {
   readonly capturePowerBps: number;
 }
 
+export type AbilityTargetRule = "self" | "own-group";
+export type AbilityAttribute =
+  | "protection-bps"
+  | "suppression-resistance-bps"
+  | "capture-power-bps";
+
+export type AbilityCondition =
+  | {
+      readonly kind: "health";
+      readonly states: readonly HealthState[];
+    }
+  | {
+      readonly kind: "presence";
+      readonly states: readonly PresenceState[];
+    };
+
+export interface AttributeModifierAbilityEffect {
+  readonly kind: "attribute-modifier";
+  readonly attribute: AbilityAttribute;
+  readonly modifierBps: number;
+}
+
+export type AbilityEffectDefinition = AttributeModifierAbilityEffect;
+
 export interface AbilityTemplate {
   readonly id: TemplateId;
+  readonly displayName: string;
   readonly tags: readonly string[];
+  readonly kind: "passive";
+  readonly targetRule: AbilityTargetRule;
+  readonly conditions: readonly AbilityCondition[];
+  readonly effects: readonly AbilityEffectDefinition[];
 }
 
 export interface StatusTemplate {
@@ -508,7 +538,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-6";
+  readonly contentVersion: "content-7";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -521,15 +551,40 @@ export interface BattleContentBundle {
   readonly terrainCatalog: TerrainCatalog;
 }
 
-export type PreAirUnitsBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+export type PrePassiveAbilityMemberTemplate = Omit<MemberTemplate, "abilityTemplateIds">;
+
+export interface PrePassiveAbilityTemplate {
+  readonly id: TemplateId;
+  readonly tags: readonly string[];
+}
+
+export type PrePassiveAbilityBattleContentBundle = Omit<
+  BattleContentBundle,
+  "contentVersion" | "memberTemplates" | "abilityTemplates"
+> & {
+  readonly contentVersion: "content-6";
+  readonly memberTemplates: Readonly<Record<TemplateId, PrePassiveAbilityMemberTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, PrePassiveAbilityTemplate>>;
+};
+
+export type PreAirUnitsBattleContentBundle = Omit<
+  PrePassiveAbilityBattleContentBundle,
+  "contentVersion"
+> & {
   readonly contentVersion: "content-5";
 };
 
-export type PreAirCombatBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+export type PreAirCombatBattleContentBundle = Omit<
+  PrePassiveAbilityBattleContentBundle,
+  "contentVersion"
+> & {
   readonly contentVersion: "content-4";
 };
 
-export type PreAirBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+export type PreAirBattleContentBundle = Omit<
+  PrePassiveAbilityBattleContentBundle,
+  "contentVersion"
+> & {
   readonly contentVersion: "content-3";
 };
 
@@ -558,11 +613,11 @@ export interface PreArtilleryBattleContentBundle {
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
-  readonly memberTemplates: Readonly<Record<TemplateId, MemberTemplate>>;
+  readonly memberTemplates: Readonly<Record<TemplateId, PrePassiveAbilityMemberTemplate>>;
   readonly platformTemplates: Readonly<Record<TemplateId, PlatformTemplate>>;
   readonly weaponTemplates: Readonly<Record<TemplateId, PreArtilleryWeaponTemplate>>;
   readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
-  readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, PrePassiveAbilityTemplate>>;
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
@@ -571,7 +626,7 @@ export type LegacyEraTemplate = Omit<EraTemplate, "allowedPlatformTemplateIds">;
 export type LegacyGroupTemplate = Omit<GroupTemplate, "platformSlotRules"> & {
   readonly platformSlotRules: readonly unknown[];
 };
-export type LegacyMemberTemplate = Omit<MemberTemplate, "transportOccupancyUnits">;
+export type LegacyMemberTemplate = Omit<PrePassiveAbilityMemberTemplate, "transportOccupancyUnits">;
 
 export interface LegacyBattleContentBundle {
   readonly contentVersion: "content-1";
@@ -582,7 +637,7 @@ export interface LegacyBattleContentBundle {
   readonly platformTemplates: Readonly<Record<TemplateId, { readonly id: string; readonly tags: readonly string[] }>>;
   readonly weaponTemplates: Readonly<Record<TemplateId, PreArtilleryWeaponTemplate>>;
   readonly sensorTemplates: Readonly<Record<TemplateId, SensorTemplate>>;
-  readonly abilityTemplates: Readonly<Record<TemplateId, AbilityTemplate>>;
+  readonly abilityTemplates: Readonly<Record<TemplateId, PrePassiveAbilityTemplate>>;
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
@@ -747,6 +802,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
@@ -953,6 +1009,9 @@ export interface GroupInspection {
   readonly moraleBps: number;
   readonly moraleState: MoraleState;
   readonly suppressionBps: number;
+  readonly suppressionResistanceBps?: number;
+  readonly capturePower?: number;
+  readonly passiveAbilities?: readonly PassiveAbilityInspection[];
   readonly modeEffective?: boolean;
   readonly activeMembers: number;
   readonly woundedMembers: number;
@@ -1141,9 +1200,27 @@ export interface MemberInspection {
   readonly health: HealthState;
   readonly presence: PresenceState;
   readonly placement: MemberPlacement;
+  readonly attributes: MemberAttributeInspection;
+  readonly passiveAbilities: readonly PassiveAbilityInspection[];
   readonly magazineRounds: number;
   readonly reloadTicksRemaining: Tick;
   readonly shotCooldownTicks: Tick;
+}
+
+export interface MemberAttributeInspection {
+  readonly protectionBps: number;
+  readonly suppressionResistanceBps: number;
+  readonly capturePowerBps: number;
+}
+
+export interface PassiveAbilityInspection {
+  readonly sourceMemberId: MemberId;
+  readonly abilityTemplateId: TemplateId;
+  readonly displayName: string;
+  readonly targetRule: AbilityTargetRule;
+  readonly active: boolean;
+  readonly unmetCondition?: AbilityCondition["kind"];
+  readonly effects: readonly AbilityEffectDefinition[];
 }
 
 export interface ObjectiveInspection {

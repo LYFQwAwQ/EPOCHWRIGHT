@@ -1,4 +1,4 @@
-import { Activity, Plane, Radio, Route, ShieldAlert, ShieldCheck, Target, Truck } from "lucide-react";
+import { Activity, Plane, Radio, Route, ShieldAlert, ShieldCheck, Sparkles, Target, Truck } from "lucide-react";
 import type {
   GroupInspection,
   PlatformFlightInspection,
@@ -168,6 +168,22 @@ const weaponTemplateLabels: Readonly<Record<string, string>> = {
   "air-autocannon-v1": "空地机炮",
   "air-to-air-cannon-v1": "空空机炮",
   "air-defense-cannon-v1": "防空机炮",
+};
+
+const abilityTargetLabels: Readonly<Record<string, string>> = {
+  self: "自身",
+  "own-group": "所属编组",
+};
+
+const abilityAttributeLabels: Readonly<Record<string, string>> = {
+  "protection-bps": "防护",
+  "suppression-resistance-bps": "压制抗性",
+  "capture-power-bps": "占领力",
+};
+
+const abilityConditionLabels: Readonly<Record<string, string>> = {
+  health: "健康条件未满足",
+  presence: "在场条件未满足",
 };
 
 function movementTypeLabel(movementType: PlatformMovementType): string {
@@ -562,6 +578,41 @@ export function Inspector({
                   {` · ${inspection.transport.dismountEvaluation.knownThreats.length} 个已知威胁`}
                 </p>
               )}
+            </section>
+          )}
+
+          {inspection.passiveAbilities && inspection.passiveAbilities.length > 0 && (
+            <section className="inspector-section" data-testid="passive-abilities">
+              <div className="section-title">
+                <Sparkles size={15} />
+                <span>被动能力</span>
+                <b>
+                  {inspection.passiveAbilities.filter((ability) => ability.active).length}/
+                  {inspection.passiveAbilities.length}
+                </b>
+              </div>
+              {inspection.passiveAbilities.map((ability) => (
+                <div
+                  className="contact-row"
+                  key={`${ability.sourceMemberId}:${ability.abilityTemplateId}`}
+                >
+                  <Sparkles size={14} />
+                  <span>
+                    {ability.displayName} ·{" "}
+                    {abilityTargetLabels[ability.targetRule] ?? ability.targetRule}
+                  </span>
+                  <strong>
+                    {ability.active
+                      ? ability.effects
+                          .map((effect) => {
+                            const sign = effect.modifierBps >= 0 ? "+" : "";
+                            return `${abilityAttributeLabels[effect.attribute] ?? effect.attribute} ${sign}${Math.round(effect.modifierBps / 100)}%`;
+                          })
+                          .join(" / ")
+                      : abilityConditionLabels[ability.unmetCondition ?? ""] ?? "条件未满足"}
+                  </strong>
+                </div>
+              ))}
             </section>
           )}
 

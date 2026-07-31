@@ -97,7 +97,7 @@ interface BattleContentBundle {
 
 - `contentVersion` 使用独立的 `content-1` 版本；`BattleSetup` schema 在实现接入时从 `stage-2.1` 升为 `stage-2.2`，`rulesVersion` 保持 `stage-2.5`。模板替换当前等价常量时不改变规则语义。
 - `BattleContentBundle.eraId` 标识本场已选择的时代，`eraTemplates` 保存时代元数据和允许的模板 ID。时代选择发生在外部内容解析层；模拟不根据 `eraId`、`displayName` 或时代标签分支。
-- `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 是本切片的必需集合；`sensorTemplates` 至少包含每个成员引用的传感器。平台、能力和状态模板保留接口，但在本切片中可以为空且不能被 spawn 引用。
+- `CONTENT-001` 首个切片要求 `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 为必需集合，`sensorTemplates` 至少包含每个成员引用的传感器；当时平台、能力和状态模板只保留接口。当前平台已由 spawn 引用，`content-7` 还允许成员模板按 `abilityTemplateIds` 引用通过 §9.3 验证的被动能力。
 - 不引入模板继承、运行时脚本或任意字段覆盖。模板之间使用显式 ID 引用；成员 spawn 只允许引用模板并提供健康、持久化 ID 等边界字段。这样可以避免继承环、字符串特判和不可复现的内容脚本。
 - 每个模板的数值在初始化时一次性验证，随后运行时只使用不可变的解析结果。模板引用缺失、时代白名单不匹配、槽位数量不匹配或不支持的移动/目标域必须在初始化阶段拒绝。
 
@@ -361,6 +361,7 @@ interface MemberTemplate {
   readonly movementType: "foot";
   readonly sensorTemplateId: TemplateId;
   readonly weaponSlotRules: readonly WeaponSlotRule[];
+  readonly abilityTemplateIds: readonly TemplateId[];
   readonly roleTags: readonly string[];
   readonly transportOccupancyUnits: number;
   readonly silhouetteId: string;
@@ -392,7 +393,7 @@ interface WeaponSlotRule {
 }
 ```
 
-`GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额。`MemberTemplate.weaponSlotRules` 决定成员的默认装备，首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员名称推导。
+`GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额。`MemberTemplate.weaponSlotRules` 决定成员的默认装备，`abilityTemplateIds` 是唯一且可解析的被动能力引用；首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员名称推导。
 
 ### 9.1.2 平台、部件与岗位
 
@@ -655,18 +656,37 @@ interface LogicalProjectileState {
 ```ts
 interface AbilityTemplate {
   readonly id: TemplateId;
-  readonly kind: "passive" | "aura" | "triggered" | "activated";
-  readonly targetRule: AbilityTargetRule;
+  readonly displayName: string;
+  readonly tags: readonly string[];
+  readonly kind: "passive";
+  readonly targetRule: "self" | "own-group";
   readonly conditions: readonly AbilityCondition[];
-  readonly effects: readonly EffectDefinition[];
-  readonly cooldownTicks: Tick;
-  readonly maxUses?: number;
-  readonly aiProfile: AbilityAiProfile;
-  readonly handlerId?: string;
+  readonly effects: readonly AbilityEffectDefinition[];
 }
+
+type AbilityCondition =
+  | { readonly kind: "health"; readonly states: readonly HealthState[] }
+  | { readonly kind: "presence"; readonly states: readonly PresenceState[] };
+
+interface AttributeModifierAbilityEffect {
+  readonly kind: "attribute-modifier";
+  readonly attribute:
+    | "protection-bps"
+    | "suppression-resistance-bps"
+    | "capture-power-bps";
+  readonly modifierBps: number;
+}
+
+type AbilityEffectDefinition = AttributeModifierAbilityEffect;
 ```
 
-标准效果使用判别联合，例如伤害、治疗、状态、属性修正、区域效果和情报效果。`handlerId` 只能引用构建时注册且具有确定性测试的代码，禁止 `eval` 或从内容包执行任意脚本。
+`content-7` 的首个能力切片只允许成员模板通过唯一 `abilityTemplateIds` 引用被动能力。条件全部检查能力来源成员，按 `health`、`presence` 固定顺序求交；没有条件表示始终满足。修正值是 `-10_000..10_000` 的整数，多个来源按稳定成员 ID 和能力 ID 累加；成员属性和编组压制抗性最终钳制到 `0..10_000`，编组占领力聚合在应用编组倍率前钳制为非负整数。
+
+`self` 可以修正来源成员的防护、压制抗性或占领力。`own-group` 只允许修正编组聚合的压制抗性或占领力：前者在有效成员基础值取平均后相加，后者在成员占领力求和后相加，再应用编组倍率。它不按空间范围把效果复制到其他成员，也不建立光环来源状态；范围、叠加来源和离场移除属于后续光环切片。
+
+本方或全知 inspection 返回来源成员、能力名、目标规则、条件是否满足和修正明细；敌方已知接触不返回能力字段。被动能力没有冷却、次数、层数或持续时间，因此当前不新增运行时能力状态和 `BattleResult` 字段；内容哈希、成员现有健康/在场状态和最终成员结果已经覆盖复现与持久化边界。
+
+后续标准效果继续使用判别联合，例如伤害、治疗、状态、区域和情报效果。任意脚本文本始终禁止；未来 `handlerId` 也只能引用构建时注册且具有确定性测试的代码。
 
 ### 9.4 时代模板与内容选择
 
@@ -697,7 +717,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-6` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机，以及可组合的防空武器模板；直接/间接逻辑弹丸、平台展开、三个悬停高度带和 `ground|air` 目标域均由模板表达。`stage-4.2` 启用通用高度动作、攻击高度效用、三维直射距离和迫降/坠毁。功能门禁必须由规则版本和验证器明确执行。
+当前 `content-7` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机、可组合的防空武器模板，以及带一名队列纪律来源成员的被动能力步兵编组；直接/间接逻辑弹丸、平台展开、三个悬停高度带、`ground|air` 目标域和首个属性修正能力均由模板表达。`stage-4.2` 规则保持不变；功能门禁必须由规则版本、内容版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -1072,7 +1092,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-6`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4` 及 `stage-4.2/content-5` 输入显式升级；`content-2` 武器会转换为单一直接 mode。新的当前输入必须显式提供 `content-6`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-7`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4`、`stage-4.2/content-5` 及 `content-6` 输入显式升级；`content-2` 武器会转换为单一直接 mode，`content-6` 成员会补入空能力引用并丢弃当时不可引用的占位能力模板。新的当前输入必须显式提供 `content-7`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1105,6 +1125,8 @@ interface PlatformResult {
 `AIR-003` 保持 setup schema 为 `stage-4`，把规则升级到 `stage-4.2`、内容升级到 `content-5`：武器模板可使用空地/空空目标域，直接射击以地表高程和飞行净空计算三维距离；飞行状态、攻击高度候选、迫降/坠毁事件及最终状态进入哈希和投影。`stage-4.1/content-4` 输入显式升级版本并保留调用方内容与 spawn；当前默认 `content-5` 另提供空地、空空和防空武器模板。
 
 `AIR-004` 保持 setup schema 和 `stage-4.2` 规则不变，只把默认内容升级到 `content-6`：新增武装直升机与侦察无人机模板、编组和演示 spawn，武装平台复用既有空地/空空武器部件。`content-5` 快照迁移时只升级版本并深拷贝调用方内容，不静默注入新模板；新的默认 `content-6` 才包含这些空军编组。
+
+`ABILITY-001` 同样保持 setup schema 和 `stage-4.2` 规则不变，把默认内容升级到 `content-7`：成员模板新增能力 ID 引用，能力模板启用 §9.3 的被动条件和属性修正，inspection 增加本方/全知解释。`content-6` 快照迁移为空引用且不注入新模板；普通场景未引用新增能力成员时只因规范内容哈希升级而改变 setup/state 黄金哈希，不改变 tick 行为。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

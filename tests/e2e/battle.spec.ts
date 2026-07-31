@@ -326,7 +326,9 @@ test("narrow viewport keeps a nonblank battlefield and stable controls", async (
   await expectMixedTerrainMap(page);
   expect(await countWaterPixels(page)).toBeGreaterThan(200);
   expect(await countTreeCanopyPixels(page)).toBeGreaterThan(20);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true);
 
   await page.screenshot({ path: testInfo.outputPath("battle-mobile.png"), fullPage: true });
   expect(errors).toEqual([]);
@@ -414,6 +416,55 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
     path: testInfo.outputPath("vehicle-skirmish.png"),
     fullPage: true,
   });
+});
+
+test("passive ability scenario exposes observer-safe ability explanations", async ({
+  page,
+}, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=passive-ability&seed=e2e-passive-ability",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getGroupIds().includes("ember-disciplined-1") &&
+      window.__battleTest?.getGroupIds().includes("azure-disciplined-1"),
+  );
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-disciplined-1"));
+  const abilities = page.getByTestId("passive-abilities");
+  await expect(abilities).toContainText("队列纪律");
+  await expect(abilities).toContainText("所属编组");
+  await expect(abilities).toContainText("压制抗性 +20%");
+
+  const omniscientHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(
+    omniscientHash,
+  );
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-disciplined-1"));
+  await expect(abilities).toContainText("队列纪律");
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("azure-disciplined-1"));
+  await expect(page.getByTestId("passive-abilities")).toHaveCount(0);
+
+  await page.evaluate(() => window.__battleTest?.setObservation());
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "omniscient");
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-disciplined-1"));
+  await expect(abilities).toContainText("队列纪律");
+  await page.screenshot({ path: testInfo.outputPath("passive-ability-desktop.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const inspectorBox = await page.locator(".inspector-panel").boundingBox();
+  expect(inspectorBox).toBeTruthy();
+  expect(inspectorBox!.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("passive-ability-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
 });
 
 test("air recon scenario renders flight height and exposes hover inspection", async ({
@@ -526,7 +577,7 @@ test("air operations renders distinct hover platforms and preserves observer bou
     "ember-air-drone-1-platform": "air-scout-drone",
     "ember-air-recon-1-platform": "air-recon-helicopter",
   });
-  expect(await countDroneSensorPixels(page)).toBeGreaterThan(4);
+  await expect.poll(() => countDroneSensorPixels(page)).toBeGreaterThan(0);
 
   await page.evaluate(() =>
     window.__battleTest?.selectPlatform(

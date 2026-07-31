@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createSimulation, validateBattleSetup } from "../sim";
+import {
+  DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
+  DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
+  DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+  createSimulation,
+  validateBattleSetup,
+} from "../sim";
 import {
   DEMO_SCENARIOS,
   createDemoBattleSetup,
@@ -15,6 +21,31 @@ describe("manual demo scenarios", () => {
     expect(setup.battleId).toBe(`demo-${id}-scenario-${id}`);
     expect(setup.mode.kind).toBe(mode);
     expect(() => validateBattleSetup(setup)).not.toThrow();
+  });
+
+  it("exposes one explainable passive ability group per faction", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("passive-ability", "scenario-passive-ability"),
+    );
+    const passiveGroups = setup.groups.filter(
+      (group) => group.groupTemplateId === DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
+    );
+
+    expect(passiveGroups).toHaveLength(setup.factions.length);
+    expect(passiveGroups.map((group) => group.factionId).sort()).toEqual(
+      setup.factions.map((faction) => faction.id).sort(),
+    );
+    expect(
+      passiveGroups.every(
+        (group) =>
+          group.members.filter(
+            (member) => member.memberTemplateId === DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+          ).length === 1,
+      ),
+    ).toBe(true);
+    expect(
+      setup.content.memberTemplates[DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID]?.abilityTemplateIds,
+    ).toEqual([DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]);
   });
 
   it("exposes sequence objectives and a defender reserve", () => {
