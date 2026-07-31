@@ -32,6 +32,7 @@ export interface FlightAltitudeCandidateInput {
   readonly altitudeBand: AirAltitudeBand;
   readonly clearanceMm: number;
   readonly visibleInterestCount: number;
+  readonly attackOpportunityBps?: number;
   readonly routeClear: boolean;
 }
 
@@ -106,6 +107,7 @@ export function scoreFlightAltitudeCandidates(
       const modifiers = altitudeBandModifiers(candidate.altitudeBand);
       const components = {
         observation: candidate.visibleInterestCount * 4_000,
+        attack: Math.max(0, Math.min(8_000, candidate.attackOpportunityBps ?? 0)),
         sensor: Math.trunc((modifiers.sensorRangeBps - 9_000) / 2),
         exposure: -modifiers.exposureBps,
         terrain: candidate.routeClear ? 0 : -10_000,
@@ -117,6 +119,7 @@ export function scoreFlightAltitudeCandidates(
       };
       return {
         ...candidate,
+        attackOpportunityBps: candidate.attackOpportunityBps ?? 0,
         score: Object.values(components).reduce((sum, value) => sum + value, 0),
         components,
         rejectionReason: candidate.routeClear ? undefined : "terrain-clearance",
@@ -162,6 +165,27 @@ export function flightHeightUnits(
   flight: PlatformFlightInspection,
 ): number {
   return heightAt(map, cell) + flight.clearanceMm / map.heightUnitMm;
+}
+
+export function spatialDistanceSquaredMm(
+  map: BattleMap,
+  firstCell: GridCoord,
+  secondCell: GridCoord,
+  firstFlight?: PlatformFlightInspection,
+  secondFlight?: PlatformFlightInspection,
+): number {
+  const dxMm = (firstCell.x - secondCell.x) * map.cellSizeMm;
+  const dzMm = (firstCell.z - secondCell.z) * map.cellSizeMm;
+  const firstHeightMm = heightAt(map, firstCell) * map.heightUnitMm +
+    (firstFlight?.state === "airborne" ? firstFlight.clearanceMm : 0);
+  const secondHeightMm = heightAt(map, secondCell) * map.heightUnitMm +
+    (secondFlight?.state === "airborne" ? secondFlight.clearanceMm : 0);
+  const dyMm = firstHeightMm - secondHeightMm;
+  const squared = dxMm * dxMm + dyMm * dyMm + dzMm * dzMm;
+  if (!Number.isSafeInteger(squared)) {
+    throw new RangeError("Air combat distance exceeds the safe integer range.");
+  }
+  return squared;
 }
 
 export function airspaceOccupantsConflict(

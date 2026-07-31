@@ -153,6 +153,7 @@ export function createGroupState(
       flight:
         template.movementType === "hover" && platform.initialAltitudeBand
           ? {
+              state: "airborne",
               altitudeBand: platform.initialAltitudeBand,
               clearanceMm:
                 template.flightRule?.clearanceMmByBand[platform.initialAltitudeBand] ?? 0,

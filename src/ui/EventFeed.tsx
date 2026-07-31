@@ -1,4 +1,4 @@
-import { Crosshair, Flag, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
+import { Crosshair, Flag, PlaneLanding, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
 import type { BattleEvent } from "../sim/types";
 
 interface EventFeedProps {
@@ -42,6 +42,10 @@ function describeEvent(event: BattleEvent): string | undefined {
           : `${event.groupId} 平台武器停用`;
       }
       return undefined;
+    case "platform-flight-resolved":
+      return event.outcome === "forced-landing"
+        ? `${event.groupId} 完成迫降`
+        : `${event.groupId} 坠毁`;
     case "platform-deployment-changed":
       if (event.phase === "cancelled") {
         const cancellationLabels: Readonly<Record<string, string>> = {
@@ -125,6 +129,7 @@ function describeEvent(event: BattleEvent): string | undefined {
 
 function EventIcon({ event }: { readonly event: BattleEvent }) {
   if (event.type === "contact-spotted") return <Radio size={14} />;
+  if (event.type === "platform-flight-resolved") return <PlaneLanding size={14} />;
   if (event.type === "artillery-mission-changed" || event.type === "projectile-impacted") {
     return <Crosshair size={14} />;
   }

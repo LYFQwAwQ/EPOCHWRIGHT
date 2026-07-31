@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreAirCombatBattleContentBundle,
   PreAirBattleContentBundle,
   PreArtilleryBattleContentBundle,
   PreArtilleryWeaponTemplate,
@@ -22,7 +23,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-4" as const;
+export const BATTLE_CONTENT_VERSION = "content-5" as const;
+export const PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION = "content-4" as const;
 export const PRE_AIR_BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
 export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
@@ -31,6 +33,9 @@ export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
 export const DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID = "artillery-howitzer-v1" as const;
+export const DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID = "air-autocannon-v1" as const;
+export const DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID = "air-to-air-cannon-v1" as const;
+export const DEFAULT_AIR_DEFENSE_WEAPON_TEMPLATE_ID = "air-defense-cannon-v1" as const;
 export const DEFAULT_CREW_MEMBER_TEMPLATE_ID = "vehicle-driver-v1" as const;
 export const DEFAULT_GUNNER_MEMBER_TEMPLATE_ID = "vehicle-gunner-v1" as const;
 export const DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID = "vehicle-relief-crew-v1" as const;
@@ -90,6 +95,9 @@ export function createDefaultBattleContent(
       DEFAULT_WEAPON_TEMPLATE_ID,
       DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
       DEFAULT_ARTILLERY_WEAPON_TEMPLATE_ID,
+      DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID,
+      DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID,
+      DEFAULT_AIR_DEFENSE_WEAPON_TEMPLATE_ID,
     ],
     allowedSensorTemplateIds: [DEFAULT_SENSOR_TEMPLATE_ID],
   };
@@ -316,6 +324,106 @@ export function createDefaultBattleContent(
     suppressionBps: 120,
     exposureOnFireBps: 3_000,
   };
+  const airToGroundWeapon: WeaponTemplate = {
+    ...platformWeapon,
+    id: DEFAULT_AIR_TO_GROUND_WEAPON_TEMPLATE_ID,
+    tags: ["air-weapon", "autocannon", "air-to-ground", "anti-vehicle"],
+    techTags: ["basic-aviation"],
+    targetDomains: ["ground"],
+    fireModes: [{
+      id: "direct",
+      targeting: "direct",
+      trajectory: "resolved",
+      minimumRangeMm: 0,
+      optimalRangeMm: 24_000,
+      maximumRangeMm: 64_000,
+      aimTicks: 0,
+      requiresDeployedPlatform: false,
+    }],
+    magazineSize: 10,
+    reloadTicks: 50,
+    shotIntervalTicks: 10,
+    damageEffects: [
+      { kind: "damage", amountBps: 14_000 },
+      { kind: "suppression", amountBps: 220 },
+      {
+        kind: "platform-damage",
+        penetrationRating: 150,
+        componentDamageBps: 5_000,
+        crewDamageBps: 7_000,
+        externalDamageBps: 2_000,
+        attackTags: ["top-attack"],
+      },
+    ],
+    suppressionBps: 90,
+    exposureOnFireBps: 3_000,
+  };
+  const airToAirWeapon: WeaponTemplate = {
+    ...platformWeapon,
+    id: DEFAULT_AIR_TO_AIR_WEAPON_TEMPLATE_ID,
+    tags: ["air-weapon", "autocannon", "air-to-air"],
+    techTags: ["basic-aviation"],
+    targetDomains: ["air"],
+    fireModes: [{
+      id: "direct",
+      targeting: "direct",
+      trajectory: "resolved",
+      minimumRangeMm: 0,
+      optimalRangeMm: 36_000,
+      maximumRangeMm: 120_000,
+      aimTicks: 0,
+      requiresDeployedPlatform: false,
+    }],
+    magazineSize: 8,
+    reloadTicks: 54,
+    shotIntervalTicks: 12,
+    damageEffects: [
+      { kind: "suppression", amountBps: 180 },
+      {
+        kind: "platform-damage",
+        penetrationRating: 130,
+        componentDamageBps: 5_000,
+        crewDamageBps: 7_000,
+        externalDamageBps: 2_000,
+        attackTags: [],
+      },
+    ],
+    suppressionBps: 75,
+    exposureOnFireBps: 3_000,
+  };
+  const airDefenseWeapon: WeaponTemplate = {
+    ...platformWeapon,
+    id: DEFAULT_AIR_DEFENSE_WEAPON_TEMPLATE_ID,
+    tags: ["air-defense", "autocannon", "anti-air"],
+    techTags: ["basic-air-defense"],
+    targetDomains: ["air"],
+    fireModes: [{
+      id: "direct",
+      targeting: "direct",
+      trajectory: "resolved",
+      minimumRangeMm: 0,
+      optimalRangeMm: 28_000,
+      maximumRangeMm: 60_000,
+      aimTicks: 0,
+      requiresDeployedPlatform: false,
+    }],
+    magazineSize: 8,
+    reloadTicks: 48,
+    shotIntervalTicks: 10,
+    damageEffects: [
+      { kind: "suppression", amountBps: 200 },
+      {
+        kind: "platform-damage",
+        penetrationRating: 140,
+        componentDamageBps: 5_000,
+        crewDamageBps: 8_000,
+        externalDamageBps: 2_000,
+        attackTags: [],
+      },
+    ],
+    suppressionBps: 85,
+    exposureOnFireBps: 2_800,
+  };
 
   return {
     contentVersion: BATTLE_CONTENT_VERSION,
@@ -346,6 +454,9 @@ export function createDefaultBattleContent(
       [weapon.id]: weapon,
       [platformWeapon.id]: platformWeapon,
       [artilleryWeapon.id]: artilleryWeapon,
+      [airToGroundWeapon.id]: airToGroundWeapon,
+      [airToAirWeapon.id]: airToAirWeapon,
+      [airDefenseWeapon.id]: airDefenseWeapon,
     },
     sensorTemplates: { [sensor.id]: sensor },
     abilityTemplates: {},
@@ -611,6 +722,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle
     | LegacyBattleContentBundle,
@@ -618,7 +730,10 @@ export function migrateBattleContent(
   if (content.contentVersion === BATTLE_CONTENT_VERSION) {
     return cloneBattleContent(content);
   }
-  if (content.contentVersion === PRE_AIR_BATTLE_CONTENT_VERSION) {
+  if (
+    content.contentVersion === PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION ||
+    content.contentVersion === PRE_AIR_BATTLE_CONTENT_VERSION
+  ) {
     return {
       ...content,
       contentVersion: BATTLE_CONTENT_VERSION,
@@ -782,7 +897,6 @@ export function validateBattleContent(content: BattleContentBundle): void {
   for (const weaponId of era.allowedWeaponTemplateIds) {
     const weapon = content.weaponTemplates[weaponId]!;
     if (
-      !weapon.targetDomains.includes("ground") ||
       weapon.fireModes.some(
         (mode) =>
           (mode.targeting === "indirect" &&
@@ -792,7 +906,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-4.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-5.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -826,7 +940,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-4 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-5 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);

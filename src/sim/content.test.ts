@@ -38,7 +38,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-4");
+    expect(migrated.content?.contentVersion).toBe("content-5");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(

@@ -128,7 +128,11 @@ describe("AIR-001 hover airspace", () => {
     )!;
     const expectedHeightUnits = flightHeightUnits(setup.map, group.spawn, inspection.flight!);
 
-    expect(inspection.flight).toEqual({ altitudeBand: "low", clearanceMm: 12_000 });
+    expect(inspection.flight).toEqual({
+      state: "airborne",
+      altitudeBand: "low",
+      clearanceMm: 12_000,
+    });
     expect(rendered.flight).toEqual(inspection.flight);
     expect(rendered.worldY).toBe(expectedHeightUnits * setup.map.heightUnitMm / 1_000);
 
@@ -226,7 +230,11 @@ describe("AIR-001 hover airspace", () => {
     expect(finalCell).not.toEqual(initial);
     expect(first.getResult()?.platforms.find(
       (platform) => platform.id === "ember-air-recon-1-platform",
-    )?.finalFlight).toEqual({ altitudeBand: "low", clearanceMm: 12_000 });
+    )?.finalFlight).toEqual({
+      state: "airborne",
+      altitudeBand: "low",
+      clearanceMm: 12_000,
+    });
     const frozenHash = first.getStateHash();
     first.step(20);
     expect(first.getStateHash()).toBe(frozenHash);

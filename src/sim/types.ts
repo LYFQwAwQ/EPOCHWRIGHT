@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
 export const BATTLE_SETUP_SCHEMA_VERSION = "stage-4" as const;
-export const BATTLE_RULES_VERSION = "stage-4.1" as const;
+export const BATTLE_RULES_VERSION = "stage-4.2" as const;
+/** The altitude-capable hover rules before air weapon and recovery behavior. */
+export const PRE_AIR_COMBAT_BATTLE_RULES_VERSION = "stage-4.1" as const;
 /** The fixed-altitude hover rules before authoritative altitude actions. */
 export const PRE_ALTITUDE_BATTLE_RULES_VERSION = "stage-4.0" as const;
 /** The final ground combined-arms contract before authoritative hover flight. */
@@ -422,6 +424,7 @@ export interface EraTemplate {
 
 export type PlatformMovementType = Extract<MovementType, "wheeled" | "tracked" | "hover">;
 export type AirAltitudeBand = "low" | "medium" | "high";
+export type AirFlightState = "airborne" | "forced-landed" | "crashed";
 export type ArmorFace = "front" | "side" | "rear" | "top";
 export type PlatformComponentKind =
   | "structure"
@@ -505,7 +508,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-4";
+  readonly contentVersion: "content-5";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -517,6 +520,10 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreAirCombatBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+  readonly contentVersion: "content-4";
+};
 
 export type PreAirBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
   readonly contentVersion: "content-3";
@@ -736,6 +743,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreAirCombatBattleContentBundle
     | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle
     | LegacyBattleContentBundle;
@@ -973,6 +981,7 @@ export interface PlatformSummaryInspection {
 }
 
 export interface PlatformFlightInspection {
+  readonly state: AirFlightState;
   readonly altitudeBand: AirAltitudeBand;
   readonly clearanceMm: number;
 }
@@ -981,6 +990,7 @@ export type FlightAltitudeAction = "holding" | "climbing" | "descending";
 export type FlightAltitudeEvaluationReason =
   | "hold-altitude"
   | "improve-observation"
+  | "improve-attack"
   | "terrain-clearance"
   | "reduce-exposure"
   | "target-band-occupied"
@@ -988,6 +998,7 @@ export type FlightAltitudeEvaluationReason =
 
 export interface FlightAltitudeScoreComponentsInspection {
   readonly observation: number;
+  readonly attack: number;
   readonly sensor: number;
   readonly exposure: number;
   readonly terrain: number;
@@ -999,6 +1010,7 @@ export interface FlightAltitudeCandidateInspection {
   readonly altitudeBand: AirAltitudeBand;
   readonly clearanceMm: number;
   readonly visibleInterestCount: number;
+  readonly attackOpportunityBps: number;
   readonly routeClear: boolean;
   readonly score: number;
   readonly components: FlightAltitudeScoreComponentsInspection;
@@ -1227,6 +1239,14 @@ export type BattleEvent =
         readonly integrityBps: number;
         readonly state: PlatformComponentState;
       };
+    })
+  | (BattleEventBase & {
+      readonly type: "platform-flight-resolved";
+      readonly platformId: PlatformId;
+      readonly groupId: GroupId;
+      readonly outcome: "forced-landing" | "crash";
+      readonly fromAltitudeBand: AirAltitudeBand;
+      readonly landingCell: GridCoord;
     })
   | (BattleEventBase & {
       readonly type: "platform-deployment-changed";

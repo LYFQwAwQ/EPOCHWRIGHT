@@ -136,6 +136,7 @@ function filterObservationEvents(
       case "group-evacuated":
       case "crew-station-changed":
       case "platform-state-changed":
+      case "platform-flight-resolved":
       case "platform-component-changed":
       case "platform-deployment-changed":
         return visibleGroupIds.has(event.groupId);
@@ -494,6 +495,7 @@ export function App() {
         type: event.type,
         ...(event.type === "artillery-mission-changed" ||
         event.type === "weapon-fired" ||
+        event.type === "platform-flight-resolved" ||
         event.type === "platform-deployment-changed"
           ? { groupId: event.groupId }
           : {}),

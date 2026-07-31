@@ -136,9 +136,16 @@ const altitudeBandLabels: Readonly<Record<PlatformFlightInspection["altitudeBand
   high: "高空",
 };
 
+const flightStateLabels: Readonly<Record<PlatformFlightInspection["state"], string>> = {
+  airborne: "飞行中",
+  "forced-landed": "已迫降",
+  crashed: "已坠毁",
+};
+
 const flightReasonLabels = {
   "hold-altitude": "保持当前高度",
   "improve-observation": "改善任务视野",
+  "improve-attack": "进入合法攻击高度",
   "terrain-clearance": "绕过低空障碍",
   "reduce-exposure": "降低暴露",
   "target-band-occupied": "目标高度拥挤",
@@ -274,13 +281,17 @@ function PlatformInspector({
           <div className="section-title">
             <Plane size={15} />
             <span>飞行状态</span>
-            <b>{altitudeBandLabels[inspection.flight.altitudeBand]}</b>
+            <b>{flightStateLabels[inspection.flight.state]}</b>
           </div>
           <strong className="action-label">
-            离地 {Math.round(inspection.flight.clearanceMm / 1_000)}m
+            {inspection.flight.state === "airborne"
+              ? `${altitudeBandLabels[inspection.flight.altitudeBand]} · 离地 ${Math.round(inspection.flight.clearanceMm / 1_000)}m`
+              : `落点 ${inspection.cell.x}, ${inspection.cell.z}`}
           </strong>
           <p>
-            {inspection.flightControl?.action === "climbing"
+            {inspection.flight.state !== "airborne"
+              ? flightStateLabels[inspection.flight.state]
+              : inspection.flightControl?.action === "climbing"
               ? `爬升至 ${altitudeBandLabels[inspection.flightControl.targetAltitudeBand!]}`
               : inspection.flightControl?.action === "descending"
                 ? `下降至 ${altitudeBandLabels[inspection.flightControl.targetAltitudeBand!]}`
@@ -496,7 +507,9 @@ export function Inspector({
                       : ""}
                     {platform.damaged && platform.disposition === "crewed" ? " · 受损" : ""}
                     {platform.flight
-                      ? ` · ${altitudeBandLabels[platform.flight.altitudeBand]} ${Math.round(platform.flight.clearanceMm / 1_000)}m`
+                      ? platform.flight.state === "airborne"
+                        ? ` · ${altitudeBandLabels[platform.flight.altitudeBand]} ${Math.round(platform.flight.clearanceMm / 1_000)}m`
+                        : ` · ${flightStateLabels[platform.flight.state]}`
                       : ""}
                   </strong>
                 </div>

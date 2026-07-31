@@ -4,6 +4,7 @@ import type {
   BattleSetup,
   BattleTerminationReason,
   AirAltitudeBand,
+  AirFlightState,
   ArmorFace,
   CoverSlotId,
   CoverEvaluationReason,
@@ -130,6 +131,7 @@ export interface FlightAltitudeTransitionState {
 }
 
 export interface PlatformFlightState {
+  state: AirFlightState;
   altitudeBand: AirAltitudeBand;
   clearanceMm: number;
   transition?: FlightAltitudeTransitionState;

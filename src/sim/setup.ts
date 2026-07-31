@@ -19,12 +19,14 @@ import {
   getPlatformTemplate,
   hashBattleContent,
   migrateBattleContent,
+  PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION,
   PRE_AIR_BATTLE_CONTENT_VERSION,
   validateBattleContent,
 } from "./content";
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_AIR_COMBAT_BATTLE_RULES_VERSION,
   PRE_ALTITUDE_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
@@ -111,13 +113,26 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
+  const isPreAirCombat =
+    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_AIR_COMBAT_BATTLE_RULES_VERSION;
   const isPreAltitude =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_ALTITUDE_BATTLE_RULES_VERSION;
-  if (isCurrent || isPreAltitude) {
+  if (isCurrent) {
     if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
-      throw new Error("stage-4 battle setup requires a content-4 content bundle.");
+      throw new Error("stage-4.2 battle setup requires a content-5 content bundle.");
     }
+  }
+  if (isPreAirCombat || isPreAltitude) {
+    if (
+      candidate.content?.contentVersion !== PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
+    ) {
+      throw new Error("stage-4.0/4.1 battle setup requires a content-4 or content-5 bundle.");
+    }
+  }
+  if (isCurrent || isPreAirCombat || isPreAltitude) {
     if (candidate.transportAssignments === undefined) {
       throw new Error("stage-4 battle setup requires transportAssignments.");
     }
@@ -144,6 +159,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     if (
       candidate.content?.contentVersion !== "content-2" &&
       candidate.content?.contentVersion !== PRE_AIR_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error("stage-3 battle setup requires a content-2 or content-3 content bundle.");
@@ -187,6 +203,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreProjectile ||
     isPreIndirect ||
     isPreAir ||
+    isPreAirCombat ||
     isPreAltitude
   ) {
     return {
@@ -206,6 +223,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
           isPreProjectile ||
           isPreIndirect ||
           isPreAir ||
+          isPreAirCombat ||
           isPreAltitude
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],

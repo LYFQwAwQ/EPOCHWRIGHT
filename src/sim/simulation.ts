@@ -17,6 +17,7 @@ import {
   hasAirspaceConflict,
   isAirMovementType,
   scoreFlightAltitudeCandidates,
+  spatialDistanceSquaredMm,
   type AirspaceOccupant,
   type FlightAltitudeCandidateInput,
 } from "./air";
@@ -711,6 +712,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       case "group-evacuated":
         return this.isOwnGroup(observerFactionId, event.groupId) ? event : undefined;
       case "platform-state-changed":
+      case "platform-flight-resolved":
         return this.isOwnGroup(observerFactionId, event.groupId) ||
           this.isGroupDirectlyObservedByFaction(observerFactionId, event.groupId)
           ? event
@@ -867,6 +869,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(platform.mobility);
         hasher.addString(platform.combat);
         hasher.addString(platform.disposition);
+        hasher.addString(platform.flight?.state ?? "");
         hasher.addString(platform.flight?.altitudeBand ?? "");
         hasher.addNumber(platform.flight?.clearanceMm ?? 0);
         hasher.addString(platform.flight?.transition?.fromBand ?? "");
@@ -884,9 +887,11 @@ class StageOneBattleSimulation implements BattleSimulation {
           hasher.addString(candidate.altitudeBand);
           hasher.addNumber(candidate.clearanceMm);
           hasher.addNumber(candidate.visibleInterestCount);
+          hasher.addNumber(candidate.attackOpportunityBps);
           hasher.addNumber(candidate.routeClear ? 1 : 0);
           hasher.addNumber(candidate.score);
           hasher.addNumber(candidate.components.observation);
+          hasher.addNumber(candidate.components.attack);
           hasher.addNumber(candidate.components.sensor);
           hasher.addNumber(candidate.components.exposure);
           hasher.addNumber(candidate.components.terrain);
@@ -1572,6 +1577,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
 
       this.refreshPlatformState(platform, true);
+      this.resolveAirFlightFailure(platform);
       if (platform.disposition !== "crewed") {
         this.abandonPlatform(platform);
         continue;
@@ -1683,11 +1689,21 @@ class StageOneBattleSimulation implements BattleSimulation {
       disposition: platform.disposition,
     };
     const capabilities = this.platformCapabilities(platform);
-    platform.mobility = capabilities.mobility.available ? "mobile" : "immobilized";
-    platform.combat = capabilities.weapons.some((weapon) => weapon.available)
-      ? "effective"
-      : "ineffective";
-    platform.disposition = capabilities.disposition;
+    if (platform.flight?.state === "forced-landed") {
+      platform.mobility = "immobilized";
+      platform.combat = "ineffective";
+      platform.disposition = "abandoned";
+    } else if (platform.flight?.state === "crashed") {
+      platform.mobility = "immobilized";
+      platform.combat = "ineffective";
+      platform.disposition = "destroyed";
+    } else {
+      platform.mobility = capabilities.mobility.available ? "mobile" : "immobilized";
+      platform.combat = capabilities.weapons.some((weapon) => weapon.available)
+        ? "effective"
+        : "ineffective";
+      platform.disposition = capabilities.disposition;
+    }
     if (
       emitEvent &&
       (previous.mobility !== platform.mobility ||
@@ -1707,6 +1723,91 @@ class StageOneBattleSimulation implements BattleSimulation {
       });
       this.markMeaningfulProgress();
     }
+  }
+
+  private resolveAirFlightFailure(platform: PlatformState): void {
+    const flight = platform.flight;
+    const group = this.state.groupsById.get(platform.groupId);
+    if (!flight || flight.state !== "airborne" || !group) {
+      return;
+    }
+    const capabilities = this.platformCapabilities(platform);
+    if (platform.disposition === "crewed" && capabilities.mobility.available) {
+      return;
+    }
+
+    const fromAltitudeBand = flight.altitudeBand;
+    const forcedLandingCell =
+      fromAltitudeBand === "low" && platform.disposition !== "destroyed"
+        ? this.findAirRecoveryCell(group, platform, 2)
+        : undefined;
+    const recoveryCell =
+      forcedLandingCell ?? this.findAirRecoveryCell(group, platform);
+    const forcedLanding = forcedLandingCell !== undefined;
+    const landingCell = recoveryCell ?? { ...platform.cell };
+
+    this.cancelMovement(group);
+    group.cell = { ...landingCell };
+    platform.cell = { ...landingCell };
+    flight.state = forcedLanding ? "forced-landed" : "crashed";
+    flight.clearanceMm = 0;
+    flight.transition = undefined;
+    flight.evaluation = undefined;
+    this.emit({
+      type: "platform-flight-resolved",
+      platformId: platform.id,
+      groupId: group.id,
+      outcome: forcedLanding ? "forced-landing" : "crash",
+      fromAltitudeBand,
+      landingCell: { ...landingCell },
+    });
+    this.refreshPlatformState(platform, true);
+    this.abandonPlatform(platform);
+    const landingIndex = cellIndex(this.setup.map, landingCell);
+    if (activeMemberCount(group) > 0) {
+      this.state.occupancy.set(landingIndex, group.id);
+    }
+    this.markMeaningfulProgress();
+  }
+
+  private findAirRecoveryCell(
+    group: GroupState,
+    platform: PlatformState,
+    maximumDistanceSquared = Number.MAX_SAFE_INTEGER,
+  ): GridCoord | undefined {
+    let selected: GridCoord | undefined;
+    let selectedDistance = Number.MAX_SAFE_INTEGER;
+    let selectedIndex = Number.MAX_SAFE_INTEGER;
+    for (let z = 0; z < this.setup.map.height; z += 1) {
+      for (let x = 0; x < this.setup.map.width; x += 1) {
+        const candidate = { x, z };
+        const index = cellIndex(this.setup.map, candidate);
+        const occupyingGroupId = this.state.occupancy.get(index);
+        const occupyingPlatformId = this.state.staticPlatformOccupancy.get(index);
+        const reservingGroupId = this.state.reservations.get(index);
+        if (
+          !isWalkable(this.setup.map, candidate, "foot") ||
+          (occupyingGroupId !== undefined && occupyingGroupId !== group.id) ||
+          (occupyingPlatformId !== undefined && occupyingPlatformId !== platform.id) ||
+          (reservingGroupId !== undefined && reservingGroupId !== group.id)
+        ) {
+          continue;
+        }
+        const distance = squaredGridDistance(group.cell, candidate);
+        if (distance > maximumDistanceSquared) {
+          continue;
+        }
+        if (
+          distance < selectedDistance ||
+          (distance === selectedDistance && index < selectedIndex)
+        ) {
+          selected = candidate;
+          selectedDistance = distance;
+          selectedIndex = index;
+        }
+      }
+    }
+    return selected ? { ...selected } : undefined;
   }
 
   private updateArtilleryMissions(): void {
@@ -3270,7 +3371,8 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private evaluateFlightAltitude(group: GroupState): void {
     const platform = group.platforms.find(
-      (candidate) => candidate.flight && candidate.disposition === "crewed",
+      (candidate) =>
+        candidate.flight?.state === "airborne" && candidate.disposition === "crewed",
     );
     const flight = platform?.flight;
     if (!platform || !flight || !isGroupSpatiallyActive(group)) {
@@ -3302,6 +3404,12 @@ class StageOneBattleSimulation implements BattleSimulation {
               targetHeightUnits: point.targetHeightUnits,
             }),
           ).length,
+          attackOpportunityBps: this.flightAttackOpportunityBps(
+            group,
+            platform,
+            altitudeBand,
+            clearanceMm,
+          ),
           routeClear:
             !routeDestination ||
             flightStepHasTerrainClearance(
@@ -3389,6 +3497,88 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
   }
 
+  private flightAttackOpportunityBps(
+    group: GroupState,
+    platform: PlatformState,
+    altitudeBand: AirAltitudeBand,
+    clearanceMm: number,
+  ): number {
+    const contacts = new Map<GroupId, ContactState>();
+    for (const contact of this.state.factionKnowledge.get(group.factionId)?.contacts.values() ?? []) {
+      if (contact.confidenceBps > 0 && this.isHostile(group.factionId, contact.targetFactionId)) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    }
+    for (const contact of group.localContacts.values()) {
+      const current = contacts.get(contact.targetGroupId);
+      if (
+        contact.confidenceBps > 0 &&
+        this.isHostile(group.factionId, contact.targetFactionId) &&
+        (!current || contact.observedAt >= current.observedAt)
+      ) {
+        contacts.set(contact.targetGroupId, contact);
+      }
+    }
+    const capabilities = this.platformCapabilities(platform);
+    const shooterFlight: PlatformFlightInspection = {
+      state: "airborne",
+      altitudeBand,
+      clearanceMm,
+    };
+    let best = 0;
+    for (const contact of [...contacts.values()].sort((a, b) =>
+      compareStrings(a.targetGroupId, b.targetGroupId),
+    )) {
+      const targetHeightUnits = contact.targetFlight?.state === "airborne"
+        ? flightHeightUnits(this.setup.map, contact.lastKnown, contact.targetFlight)
+        : heightAt(this.setup.map, contact.lastKnown) + 4;
+      if (
+        !hasLineOfSight(this.setup.map, group.cell, contact.lastKnown, {
+          observerHeightUnits: flightHeightUnits(this.setup.map, group.cell, shooterFlight),
+          targetHeightUnits,
+        })
+      ) {
+        continue;
+      }
+      for (const weaponState of [...platform.weaponStates].sort((a, b) =>
+        compareStrings(a.componentId, b.componentId),
+      )) {
+        const capability = capabilities.weapons.find(
+          (candidate) => candidate.componentId === weaponState.componentId,
+        );
+        if (!capability?.available || !this.platformWeaponOperator(platform, weaponState.componentId)) {
+          continue;
+        }
+        const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+        const effectivenessBps = weaponTargetEffectivenessBps(
+          weapon,
+          contact.targetProfile,
+          contact.targetDomain,
+        );
+        if (effectivenessBps <= 0) {
+          continue;
+        }
+        const distanceSquaredMm = spatialDistanceSquaredMm(
+          this.setup.map,
+          group.cell,
+          contact.lastKnown,
+          shooterFlight,
+          contact.targetFlight,
+        );
+        const inRange = weapon.fireModes.some(
+          (mode) =>
+            mode.targeting === "direct" &&
+            distanceSquaredMm >= mode.minimumRangeMm ** 2 &&
+            distanceSquaredMm <= mode.maximumRangeMm ** 2,
+        );
+        if (inRange) {
+          best = Math.max(best, Math.min(8_000, Math.floor(effectivenessBps / 4)));
+        }
+      }
+    }
+    return best;
+  }
+
   private flightAltitudeEvaluationReason(
     currentBand: AirAltitudeBand,
     selectedBand: AirAltitudeBand,
@@ -3397,10 +3587,17 @@ class StageOneBattleSimulation implements BattleSimulation {
     if (currentBand === selectedBand) {
       return "hold-altitude";
     }
+    const current = candidates.find((candidate) => candidate.altitudeBand === currentBand);
+    const selected = candidates.find((candidate) => candidate.altitudeBand === selectedBand);
+    if (
+      (selected?.components.attack ?? 0) > 0 &&
+      (selected?.components.attack ?? 0) > (current?.components.attack ?? 0)
+    ) {
+      return "improve-attack";
+    }
     if (altitudeBandIndex(selectedBand) < altitudeBandIndex(currentBand)) {
       return "reduce-exposure";
     }
-    const current = candidates.find((candidate) => candidate.altitudeBand === currentBand);
     return current?.routeClear === false ? "terrain-clearance" : "improve-observation";
   }
 
@@ -3409,7 +3606,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     for (const platform of platforms) {
       const flight = platform.flight;
       const transition = flight?.transition;
-      if (!flight || !transition) {
+      if (!flight || flight.state !== "airborne" || !transition) {
         continue;
       }
       if (!this.canPlatformChangeAltitude(platform)) {
@@ -3444,6 +3641,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       const evaluation = flight?.evaluation;
       if (
         !flight ||
+        flight.state !== "airborne" ||
         flight.transition ||
         !evaluation ||
         evaluation.selectedAltitudeBand === flight.altitudeBand
@@ -3488,6 +3686,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private canPlatformChangeAltitude(platform: PlatformState): boolean {
     return (
       platform.disposition === "crewed" &&
+      platform.flight?.state === "airborne" &&
       this.platformCapabilities(platform).mobility.available &&
       getPlatformTemplate(this.setup.content, platform.platformTemplateId).flightRule !== undefined
     );
@@ -3948,6 +4147,13 @@ class StageOneBattleSimulation implements BattleSimulation {
     contact: ContactState,
     source: "direct-contact" | "local-contact" | "shared-contact",
   ): TargetCandidateScoreInput {
+    const distanceSquaredMm = spatialDistanceSquaredMm(
+      this.setup.map,
+      group.cell,
+      contact.lastKnown,
+      this.flightForGroup(group),
+      contact.targetFlight,
+    );
     return {
       targetGroupId: contact.targetGroupId,
       targetProfile: contact.targetProfile,
@@ -3956,7 +4162,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       observedAt: contact.observedAt,
       confidenceBps: contact.confidenceBps,
       source,
-      distanceSquared: squaredGridDistance(group.cell, contact.lastKnown),
+      distanceSquared: Math.floor(
+        distanceSquaredMm / this.setup.map.cellSizeMm ** 2,
+      ),
       effectivenessBps: this.groupTargetEffectivenessBps(
         group,
         contact.targetProfile,
@@ -4019,6 +4227,33 @@ class StageOneBattleSimulation implements BattleSimulation {
     return Math.min(40_000, effectivenessBps);
   }
 
+  private platformHasDirectWeaponInRange(
+    platform: PlatformState,
+    targetProfile: TargetProfile,
+    targetDomain: WeaponTargetDomain,
+    distanceSquaredMm: number,
+  ): boolean {
+    const capabilities = this.platformCapabilities(platform);
+    return platform.weaponStates.some((weaponState) => {
+      const available = capabilities.weapons.find(
+        (candidate) => candidate.componentId === weaponState.componentId,
+      )?.available;
+      if (!available || !this.platformWeaponOperator(platform, weaponState.componentId)) {
+        return false;
+      }
+      const weapon = getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId);
+      if (weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) <= 0) {
+        return false;
+      }
+      return weapon.fireModes.some(
+        (mode) =>
+          mode.targeting === "direct" &&
+          distanceSquaredMm >= mode.minimumRangeMm ** 2 &&
+          distanceSquaredMm <= mode.maximumRangeMm ** 2,
+      );
+    });
+  }
+
   private targetTaskRelevanceBps(group: GroupState, targetCell: GridCoord): number {
     if (this.setup.mode.kind !== "defense") {
       return 0;
@@ -4072,7 +4307,8 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private flightForGroup(group: GroupState) {
     const platform = group.platforms.find(
-      (candidate) => candidate.flight && candidate.disposition === "crewed",
+      (candidate) =>
+        candidate.flight?.state === "airborne" && candidate.disposition === "crewed",
     );
     return platform ? this.flightSnapshotForPlatform(platform) : undefined;
   }
@@ -4082,6 +4318,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   ): PlatformFlightInspection | undefined {
     return platform.flight
       ? {
+          state: platform.flight.state,
           altitudeBand: platform.flight.altitudeBand,
           clearanceMm: platform.flight.clearanceMm,
         }
@@ -4092,7 +4329,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     platform: PlatformState,
   ): PlatformFlightControlInspection | undefined {
     const flight = platform.flight;
-    if (!flight) {
+    if (!flight || flight.state !== "airborne") {
       return undefined;
     }
     const transition = flight.transition;
@@ -4125,6 +4362,20 @@ class StageOneBattleSimulation implements BattleSimulation {
     return flight
       ? flightHeightUnits(this.setup.map, cell, flight)
       : heightAt(this.setup.map, cell) + groundOffset;
+  }
+
+  private directTargetDistanceSquaredMm(
+    shooter: GroupState,
+    target: GroupState,
+    shooterCell: GridCoord = shooter.cell,
+  ): number {
+    return spatialDistanceSquaredMm(
+      this.setup.map,
+      shooterCell,
+      target.cell,
+      this.flightForGroup(shooter),
+      this.flightForGroup(target),
+    );
   }
 
   private decideVehicleEngagement(group: GroupState, target: GroupState): boolean {
@@ -4266,6 +4517,11 @@ class StageOneBattleSimulation implements BattleSimulation {
         Math.abs(candidate.x - target.cell.x),
         Math.abs(candidate.z - target.cell.z),
       );
+      const distanceSquaredMm = this.directTargetDistanceSquaredMm(
+        group,
+        target,
+        candidate,
+      );
       return (
         isWalkable(this.setup.map, candidate, group.movementType) &&
         (occupyingGroupId === undefined || occupyingGroupId === group.id) &&
@@ -4273,7 +4529,16 @@ class StageOneBattleSimulation implements BattleSimulation {
         (reservingGroupId === undefined || reservingGroupId === group.id) &&
         rangeCells >= rangeBand.minimum &&
         rangeCells <= rangeBand.maximum &&
-        hasLineOfSight(this.setup.map, candidate, target.cell) &&
+        this.platformHasDirectWeaponInRange(
+          platform,
+          targetProfile,
+          targetDomain,
+          distanceSquaredMm,
+        ) &&
+        hasLineOfSight(this.setup.map, candidate, target.cell, {
+          observerHeightUnits: this.groupSightHeightUnits(group, candidate),
+          targetHeightUnits: this.groupSightHeightUnits(target),
+        }) &&
         !this.hasFriendlyBlockerFrom(group, candidate, target)
       );
     };
@@ -4445,10 +4710,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.setup.rules.preferredRangeCells,
         Math.max(...weapons.map((weapon) => this.weaponPreferredRangeCells(weapon))),
       ),
-      maximum: Math.min(
-        this.setup.rules.weaponRangeCells,
-        Math.max(...weapons.map((weapon) => this.weaponRangeCells(weapon))),
-      ),
+      maximum: Math.max(...weapons.map((weapon) => this.weaponRangeCells(weapon))),
     };
   }
 
@@ -5294,12 +5556,17 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
       const distanceSquared = squaredGridDistance(group.cell, target.cell);
+      const distanceSquaredMm = this.directTargetDistanceSquaredMm(group, target);
+      const targetProfile = targetPlatform ? "platform" : "personnel";
+      const targetDomain = this.targetDomainForGroup(target);
       const cover = targetPlatform ? undefined : this.getDirectionalCover(target, group.cell);
       const shooterCover = this.getDirectionalCover(group, target.cell);
       if (
         distanceSquared > this.groupWeaponRangeCells(group) ** 2 ||
         !hasLineOfSight(this.setup.map, group.cell, target.cell, {
           ignoredStaticObjectCells: this.activeCoverObjectCells(shooterCover, cover),
+          observerHeightUnits: this.groupSightHeightUnits(group),
+          targetHeightUnits: this.groupSightHeightUnits(target),
         }) ||
         this.hasFriendlyBlocker(group, target)
       ) {
@@ -5315,12 +5582,15 @@ class StageOneBattleSimulation implements BattleSimulation {
         const weapon = this.weaponForMember(member);
         const fireMode = getPrimaryFireMode(weapon);
         const platformDamage = firstPlatformDamageEffect(weapon);
-        if (targetPlatform && !platformDamage) {
+        if (
+          weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) <= 0 ||
+          (targetPlatform && !platformDamage)
+        ) {
           continue;
         }
         if (
-          distanceSquared > this.weaponRangeCells(weapon) ** 2 ||
-          distanceSquared < this.weaponMinimumRangeCells(weapon) ** 2
+          distanceSquaredMm > fireMode.maximumRangeMm ** 2 ||
+          distanceSquaredMm < fireMode.minimumRangeMm ** 2
         ) {
           continue;
         }
@@ -5402,12 +5672,15 @@ class StageOneBattleSimulation implements BattleSimulation {
             continue;
           }
           const platformDamage = firstPlatformDamageEffect(weapon);
-          if (targetPlatform && !platformDamage) {
+          if (
+            weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) <= 0 ||
+            (targetPlatform && !platformDamage)
+          ) {
             continue;
           }
           if (
-            distanceSquared > this.weaponRangeCells(weapon) ** 2 ||
-            distanceSquared < this.weaponMinimumRangeCells(weapon) ** 2
+            distanceSquaredMm > fireMode.maximumRangeMm ** 2 ||
+            distanceSquaredMm < fireMode.minimumRangeMm ** 2
           ) {
             continue;
           }
@@ -5648,6 +5921,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
       this.refreshPlatformState(platform, true);
+      this.resolveAirFlightFailure(platform);
       if (platform.disposition === "destroyed") {
         this.abandonPlatform(platform);
       }
@@ -6798,7 +7072,11 @@ class StageOneBattleSimulation implements BattleSimulation {
     cell: GridCoord,
   ): readonly AirspaceOccupant[] {
     const platform = group.platforms.find((candidate) => candidate.flight);
-    if (!platform?.flight || platform.disposition !== "crewed") {
+    if (
+      !platform?.flight ||
+      platform.flight.state !== "airborne" ||
+      platform.disposition !== "crewed"
+    ) {
       return [];
     }
     const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
@@ -7215,7 +7493,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             : platformRange;
         }, range);
       }, 0);
-      return Math.min(this.setup.rules.weaponRangeCells, maximum);
+      return maximum;
     }
     const maximum = group.members
       .filter(
@@ -7225,7 +7503,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         (range, member) => Math.max(range, this.weaponRangeCells(this.weaponForMember(member))),
         0,
       );
-    return Math.min(this.setup.rules.weaponRangeCells, maximum);
+    return maximum;
   }
 
   private groupSightRangeCells(group: GroupState): number {
