@@ -1,14 +1,23 @@
+import { squaredGridDistance } from "./map";
 import type {
   AbilityAttribute,
   AbilityCondition,
+  AbilityEffectDefinition,
   AbilityTemplate,
+  AuraAbilityTemplate,
+  AuraApplicationInspection,
   BattleContentBundle,
+  FactionId,
+  GridCoord,
+  GroupId,
   HealthState,
   MemberAttributeInspection,
   MemberId,
   PassiveAbilityInspection,
+  PassiveAbilityTemplate,
   PresenceState,
   TemplateId,
+  Tick,
 } from "./types";
 
 export interface AbilityMemberContext {
@@ -18,12 +27,39 @@ export interface AbilityMemberContext {
   readonly presence: PresenceState;
 }
 
+export interface AuraGroupContext {
+  readonly id: GroupId;
+  readonly factionId: FactionId;
+  readonly cell: GridCoord;
+  readonly members: readonly AbilityMemberContext[];
+}
+
+export interface ActiveAuraApplication {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly sourceMemberId: MemberId;
+  readonly sourceGroupId: GroupId;
+  readonly abilityTemplateId: TemplateId;
+  readonly targetGroupId: GroupId;
+  readonly distanceSquared: number;
+  readonly appliedAt: Tick;
+  readonly effects: readonly AbilityEffectDefinition[];
+}
+
+interface AuraCandidate extends Omit<ActiveAuraApplication, "appliedAt"> {
+  readonly ability: AuraAbilityTemplate;
+}
+
 export function memberAbilityAttributes(
   content: BattleContentBundle,
   member: AbilityMemberContext,
+  auraProtectionModifierBps = 0,
 ): MemberAttributeInspection {
   return {
-    protectionBps: memberAbilityAttributeBps(content, member, "protection-bps"),
+    protectionBps: clampBasisPoints(
+      memberAbilityAttributeBps(content, member, "protection-bps") +
+        auraProtectionModifierBps,
+    ),
     suppressionResistanceBps: memberAbilityAttributeBps(
       content,
       member,
@@ -43,7 +79,7 @@ export function memberAbilityAttributeBps(
     throw new Error(`Unknown member template: ${member.memberTemplateId}.`);
   }
   const base = attributeBaseValue(memberTemplate, attribute);
-  const modifier = abilityTemplatesForMember(content, member.memberTemplateId)
+  const modifier = passiveAbilitiesForMember(content, member.memberTemplateId)
     .filter(
       (ability) =>
         ability.targetRule === "self" && evaluatePassiveAbility(ability, member).active,
@@ -62,7 +98,7 @@ export function ownGroupAbilityModifierBps(
   return [...members]
     .sort((a, b) => compareStrings(a.id, b.id))
     .flatMap((member) =>
-      abilityTemplatesForMember(content, member.memberTemplateId)
+      passiveAbilitiesForMember(content, member.memberTemplateId)
         .filter(
           (ability) =>
             ability.targetRule === "own-group" &&
@@ -74,6 +110,110 @@ export function ownGroupAbilityModifierBps(
     .reduce((sum, effect) => sum + effect.modifierBps, 0);
 }
 
+export function resolveActiveAuras(
+  content: BattleContentBundle,
+  groups: readonly AuraGroupContext[],
+  tick: Tick,
+  previous: readonly ActiveAuraApplication[] = [],
+): readonly ActiveAuraApplication[] {
+  const sortedGroups = [...groups].sort((a, b) => compareStrings(a.id, b.id));
+  const candidates: AuraCandidate[] = [];
+
+  for (const sourceGroup of sortedGroups) {
+    for (const member of [...sourceGroup.members].sort((a, b) => compareStrings(a.id, b.id))) {
+      if (!isAuraSourceActive(member)) {
+        continue;
+      }
+      for (const ability of auraAbilitiesForMember(content, member.memberTemplateId)) {
+        if (!evaluateAbilityConditions(ability, member).active) {
+          continue;
+        }
+        const sourceId = auraSourceId(member.id, ability.id);
+        for (const targetGroup of sortedGroups) {
+          if (
+            targetGroup.factionId !== sourceGroup.factionId ||
+            !targetGroup.members.some(isAuraTargetMemberActive)
+          ) {
+            continue;
+          }
+          const distanceSquared = squaredGridDistance(sourceGroup.cell, targetGroup.cell);
+          if (
+            (ability.targetRule === "own-group" && targetGroup.id !== sourceGroup.id) ||
+            (ability.targetRule === "nearby-friendly-groups" &&
+              distanceSquared > ability.rangeCells ** 2)
+          ) {
+            continue;
+          }
+          candidates.push({
+            id: auraApplicationId(sourceId, targetGroup.id),
+            sourceId,
+            sourceMemberId: member.id,
+            sourceGroupId: sourceGroup.id,
+            abilityTemplateId: ability.id,
+            targetGroupId: targetGroup.id,
+            distanceSquared,
+            effects: ability.effects.map((effect) => ({ ...effect })),
+            ability,
+          });
+        }
+      }
+    }
+  }
+
+  const selected = selectStackedAuraCandidates(candidates);
+  const previousById = new Map(previous.map((application) => [application.id, application]));
+  return selected.map((candidate) => {
+    const prior = previousById.get(candidate.id);
+    return {
+      id: candidate.id,
+      sourceId: candidate.sourceId,
+      sourceMemberId: candidate.sourceMemberId,
+      sourceGroupId: candidate.sourceGroupId,
+      abilityTemplateId: candidate.abilityTemplateId,
+      targetGroupId: candidate.targetGroupId,
+      distanceSquared: candidate.distanceSquared,
+      appliedAt:
+        prior && effectsEqual(prior.effects, candidate.effects) ? prior.appliedAt : tick,
+      effects: candidate.effects.map((effect) => ({ ...effect })),
+    };
+  });
+}
+
+export function auraModifierBps(
+  applications: readonly ActiveAuraApplication[],
+  targetGroupId: GroupId,
+  attribute: AbilityAttribute,
+): number {
+  return applications
+    .filter((application) => application.targetGroupId === targetGroupId)
+    .flatMap((application) => application.effects)
+    .filter((effect) => effect.attribute === attribute)
+    .reduce((sum, effect) => sum + effect.modifierBps, 0);
+}
+
+export function auraApplicationInspections(
+  content: BattleContentBundle,
+  applications: readonly ActiveAuraApplication[],
+  targetGroupId: GroupId,
+): readonly AuraApplicationInspection[] {
+  return applications
+    .filter((application) => application.targetGroupId === targetGroupId)
+    .map((application) => {
+      const ability = content.abilityTemplates[application.abilityTemplateId];
+      if (!ability || ability.kind !== "aura") {
+        throw new Error(`Unknown aura ability template: ${application.abilityTemplateId}.`);
+      }
+      return {
+        ...application,
+        displayName: ability.displayName,
+        targetRule: ability.targetRule,
+        rangeCells: ability.rangeCells,
+        stacking: ability.stacking,
+        effects: application.effects.map((effect) => ({ ...effect })),
+      };
+    });
+}
+
 export function passiveAbilityInspections(
   content: BattleContentBundle,
   members: readonly AbilityMemberContext[],
@@ -81,7 +221,7 @@ export function passiveAbilityInspections(
   return [...members]
     .sort((a, b) => compareStrings(a.id, b.id))
     .flatMap((member) =>
-      abilityTemplatesForMember(content, member.memberTemplateId).map((ability) => {
+      passiveAbilitiesForMember(content, member.memberTemplateId).map((ability) => {
         const evaluation = evaluatePassiveAbility(ability, member);
         return {
           sourceMemberId: member.id,
@@ -97,6 +237,63 @@ export function passiveAbilityInspections(
 }
 
 export function evaluatePassiveAbility(
+  ability: PassiveAbilityTemplate,
+  member: AbilityMemberContext,
+): { readonly active: boolean; readonly unmetCondition?: AbilityCondition["kind"] } {
+  return evaluateAbilityConditions(ability, member);
+}
+
+export function auraSourceId(memberId: MemberId, abilityTemplateId: TemplateId): string {
+  return `aura:${memberId.length}:${memberId}:${abilityTemplateId.length}:${abilityTemplateId}`;
+}
+
+export function clampBasisPoints(value: number): number {
+  return Math.max(0, Math.min(10_000, value));
+}
+
+function selectStackedAuraCandidates(
+  candidates: readonly AuraCandidate[],
+): readonly AuraCandidate[] {
+  const stacked = candidates.filter((candidate) => candidate.ability.stacking === "stack");
+  const strongestEffects = new Map<
+    string,
+    { readonly candidate: AuraCandidate; readonly effect: AbilityEffectDefinition }
+  >();
+
+  for (const candidate of candidates.filter(
+    (entry) => entry.ability.stacking === "strongest",
+  )) {
+    for (const effect of candidate.effects) {
+      const key = `${candidate.targetGroupId}\u0000${candidate.abilityTemplateId}\u0000${effect.attribute}`;
+      const current = strongestEffects.get(key);
+      if (
+        !current ||
+        Math.abs(effect.modifierBps) > Math.abs(current.effect.modifierBps) ||
+        (Math.abs(effect.modifierBps) === Math.abs(current.effect.modifierBps) &&
+          compareStrings(candidate.sourceId, current.candidate.sourceId) < 0)
+      ) {
+        strongestEffects.set(key, { candidate, effect });
+      }
+    }
+  }
+
+  const strongestByApplication = new Map<string, AuraCandidate>();
+  for (const { candidate, effect } of strongestEffects.values()) {
+    const existing = strongestByApplication.get(candidate.id);
+    strongestByApplication.set(candidate.id, {
+      ...candidate,
+      effects: [...(existing?.effects ?? []), { ...effect }].sort((a, b) =>
+        compareStrings(a.attribute, b.attribute),
+      ),
+    });
+  }
+
+  return [...stacked, ...strongestByApplication.values()].sort((a, b) =>
+    compareStrings(a.id, b.id),
+  );
+}
+
+function evaluateAbilityConditions(
   ability: AbilityTemplate,
   member: AbilityMemberContext,
 ): { readonly active: boolean; readonly unmetCondition?: AbilityCondition["kind"] } {
@@ -111,8 +308,37 @@ export function evaluatePassiveAbility(
   return { active: true };
 }
 
-export function clampBasisPoints(value: number): number {
-  return Math.max(0, Math.min(10_000, value));
+function isAuraSourceActive(member: AbilityMemberContext): boolean {
+  return isAuraTargetMemberActive(member);
+}
+
+function isAuraTargetMemberActive(member: AbilityMemberContext): boolean {
+  return (
+    member.presence === "deployed" &&
+    (member.health === "healthy" || member.health === "wounded")
+  );
+}
+
+function auraApplicationId(sourceId: string, targetGroupId: GroupId): string {
+  return `${sourceId}:${targetGroupId.length}:${targetGroupId}`;
+}
+
+function passiveAbilitiesForMember(
+  content: BattleContentBundle,
+  memberTemplateId: TemplateId,
+): readonly PassiveAbilityTemplate[] {
+  return abilityTemplatesForMember(content, memberTemplateId).filter(
+    (ability): ability is PassiveAbilityTemplate => ability.kind === "passive",
+  );
+}
+
+function auraAbilitiesForMember(
+  content: BattleContentBundle,
+  memberTemplateId: TemplateId,
+): readonly AuraAbilityTemplate[] {
+  return abilityTemplatesForMember(content, memberTemplateId).filter(
+    (ability): ability is AuraAbilityTemplate => ability.kind === "aura",
+  );
 }
 
 function abilityTemplatesForMember(
@@ -146,6 +372,20 @@ function attributeBaseValue(
     case "capture-power-bps":
       return template.capturePowerBps;
   }
+}
+
+function effectsEqual(
+  left: readonly AbilityEffectDefinition[],
+  right: readonly AbilityEffectDefinition[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (effect, index) =>
+        effect.attribute === right[index]?.attribute &&
+        effect.modifierBps === right[index]?.modifierBps,
+    )
+  );
 }
 
 function compareStrings(a: string, b: string): number {

@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreAuraAbilityBattleContentBundle,
   PrePassiveAbilityBattleContentBundle,
   PrePassiveAbilityMemberTemplate,
   PreAirUnitsBattleContentBundle,
@@ -26,7 +27,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-7" as const;
+export const BATTLE_CONTENT_VERSION = "content-8" as const;
+export const PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION = "content-7" as const;
 export const PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-6" as const;
 export const PRE_AIR_UNITS_BATTLE_CONTENT_VERSION = "content-5" as const;
 export const PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION = "content-4" as const;
@@ -37,6 +39,9 @@ export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
 export const DEFAULT_PASSIVE_GROUP_TEMPLATE_ID = "infantry-disciplined-squad-v1" as const;
 export const DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID = "infantry-squad-leader-v1" as const;
 export const DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID = "formation-discipline-v1" as const;
+export const DEFAULT_AURA_GROUP_TEMPLATE_ID = "infantry-command-squad-v1" as const;
+export const DEFAULT_AURA_MEMBER_TEMPLATE_ID = "infantry-command-leader-v1" as const;
+export const DEFAULT_AURA_ABILITY_TEMPLATE_ID = "rallying-presence-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
@@ -86,6 +91,7 @@ export function createDefaultBattleContent(
     allowedGroupTemplateIds: [
       DEFAULT_GROUP_TEMPLATE_ID,
       DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
+      DEFAULT_AURA_GROUP_TEMPLATE_ID,
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
@@ -96,6 +102,7 @@ export function createDefaultBattleContent(
     allowedMemberTemplateIds: [
       DEFAULT_MEMBER_TEMPLATE_ID,
       DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+      DEFAULT_AURA_MEMBER_TEMPLATE_ID,
       DEFAULT_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
@@ -195,6 +202,52 @@ export function createDefaultBattleContent(
       {
         slotId: "leader",
         memberTemplateId: DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "riflemen",
+        memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+        count: 7,
+        required: true,
+      },
+    ],
+  };
+  const auraAbility: AbilityTemplate = {
+    id: DEFAULT_AURA_ABILITY_TEMPLATE_ID,
+    displayName: "集结号令",
+    tags: ["command", "infantry", "aura"],
+    kind: "aura",
+    targetRule: "nearby-friendly-groups",
+    rangeCells: 3,
+    stacking: "stack",
+    conditions: [
+      { kind: "health", states: ["healthy", "wounded"] },
+      { kind: "presence", states: ["deployed"] },
+    ],
+    effects: [
+      {
+        kind: "attribute-modifier",
+        attribute: "suppression-resistance-bps",
+        modifierBps: 1_500,
+      },
+    ],
+  };
+  const auraMember: MemberTemplate = {
+    ...member,
+    id: DEFAULT_AURA_MEMBER_TEMPLATE_ID,
+    tags: ["infantry", "commander"],
+    roleTags: ["rifleman", "commander"],
+    abilityTemplateIds: [DEFAULT_AURA_ABILITY_TEMPLATE_ID],
+  };
+  const auraGroup: GroupTemplate = {
+    ...group,
+    id: DEFAULT_AURA_GROUP_TEMPLATE_ID,
+    tags: ["infantry", "squad", "command"],
+    memberSlotRules: [
+      {
+        slotId: "commander",
+        memberTemplateId: DEFAULT_AURA_MEMBER_TEMPLATE_ID,
         count: 1,
         required: true,
       },
@@ -508,6 +561,7 @@ export function createDefaultBattleContent(
     groupTemplates: {
       [group.id]: group,
       [passiveGroup.id]: passiveGroup,
+      [auraGroup.id]: auraGroup,
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
@@ -518,6 +572,7 @@ export function createDefaultBattleContent(
     memberTemplates: {
       [member.id]: member,
       [passiveMember.id]: passiveMember,
+      [auraMember.id]: auraMember,
       [crewMember.id]: crewMember,
       [gunnerMember.id]: gunnerMember,
       [reliefCrewMember.id]: reliefCrewMember,
@@ -542,7 +597,10 @@ export function createDefaultBattleContent(
       [airDefenseWeapon.id]: airDefenseWeapon,
     },
     sensorTemplates: { [sensor.id]: sensor },
-    abilityTemplates: { [passiveAbility.id]: passiveAbility },
+    abilityTemplates: {
+      [passiveAbility.id]: passiveAbility,
+      [auraAbility.id]: auraAbility,
+    },
     statusTemplates: {},
     terrainCatalog: { version: "map-2" },
   };
@@ -1032,6 +1090,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
@@ -1041,6 +1100,21 @@ export function migrateBattleContent(
 ): BattleContentBundle {
   if (content.contentVersion === BATTLE_CONTENT_VERSION) {
     return cloneBattleContent(content);
+  }
+  if (content.contentVersion === PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION) {
+    return {
+      ...content,
+      contentVersion: BATTLE_CONTENT_VERSION,
+      eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
+      groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
+      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
+      weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
+      sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
+      abilityTemplates: cloneRecord(content.abilityTemplates, cloneAbilityTemplate),
+      statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
+      terrainCatalog: { ...content.terrainCatalog },
+    };
   }
   if (
     content.contentVersion === PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION ||
@@ -1225,7 +1299,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-7.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-8.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -1259,7 +1333,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-7 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-8 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -1418,11 +1492,27 @@ function validateMemberTemplate(template: MemberTemplate): void {
 
 function validateAbilityTemplate(template: AbilityTemplate): void {
   validateSimpleTemplate(template);
-  if (!template.displayName || template.kind !== "passive") {
-    throw new Error(`Ability template ${template.id} requires a name and passive kind.`);
+  if (!template.displayName || (template.kind !== "passive" && template.kind !== "aura")) {
+    throw new Error(`Ability template ${template.id} requires a name and supported kind.`);
   }
-  if (template.targetRule !== "self" && template.targetRule !== "own-group") {
+  if (
+    (template.kind === "passive" &&
+      template.targetRule !== "self" &&
+      template.targetRule !== "own-group") ||
+    (template.kind === "aura" &&
+      template.targetRule !== "own-group" &&
+      template.targetRule !== "nearby-friendly-groups")
+  ) {
     throw new Error(`Ability template ${template.id} has an invalid target rule.`);
+  }
+  if (
+    template.kind === "aura" &&
+    (!Number.isInteger(template.rangeCells) ||
+      template.rangeCells < 0 ||
+      template.rangeCells > 64 ||
+      (template.stacking !== "stack" && template.stacking !== "strongest"))
+  ) {
+    throw new Error(`Aura ability template ${template.id} has invalid range or stacking.`);
   }
   if (
     new Set(template.conditions.map((condition) => condition.kind)).size !==
@@ -1475,7 +1565,11 @@ function validateAbilityTemplate(template: AbilityTemplate): void {
     ) {
       throw new Error(`Ability template ${template.id} has an invalid attribute modifier.`);
     }
-    if (template.targetRule === "own-group" && effect.attribute === "protection-bps") {
+    if (
+      template.kind === "passive" &&
+      template.targetRule === "own-group" &&
+      effect.attribute === "protection-bps"
+    ) {
       throw new Error(
         `Ability template ${template.id} cannot apply group protection without aura rules.`,
       );
@@ -1870,6 +1964,10 @@ function hashAbilityTemplate(hasher: StateHasher, template: AbilityTemplate): vo
   addSortedStrings(hasher, template.tags);
   hasher.addString(template.kind);
   hasher.addString(template.targetRule);
+  if (template.kind === "aura") {
+    hasher.addNumber(template.rangeCells);
+    hasher.addString(template.stacking);
+  }
   for (const condition of [...template.conditions].sort((a, b) =>
     compareStrings(a.kind, b.kind),
   )) {

@@ -467,6 +467,34 @@ test("passive ability scenario exposes observer-safe ability explanations", asyn
   expect(errors).toEqual([]);
 });
 
+test("aura scenario exposes active sources without leaking enemy details", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=aura-ability&seed=e2e-aura-ability",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getGroupIds().includes("ember-command-1") &&
+      window.__battleTest?.getGroupIds().includes("azure-command-1"),
+  );
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-command-1"));
+  const auras = page.getByTestId("active-auras");
+  await expect(auras).toContainText("集结号令");
+  await expect(auras).toContainText("压制抗性 +15%");
+  await expect(auras).toContainText("来源 ember-command-1");
+  await expect(auras).toContainText("tick 0");
+  await expect(auras).toContainText("可叠加");
+
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  await page.evaluate(() => window.__battleTest?.selectGroup("azure-command-1"));
+  await expect(page.getByTestId("active-auras")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("air recon scenario renders flight height and exposes hover inspection", async ({
   page,
 }, testInfo) => {

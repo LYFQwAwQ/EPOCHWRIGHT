@@ -24,6 +24,7 @@ import type { BattleSetup, CoverSlot, GridCoord, GroupId } from "./types";
 import { createTransportRuntimeCollections } from "./transport";
 import { derivePlatformCapabilities } from "./vehicle";
 import { isAirMovementType } from "./air";
+import { resolveActiveAuras } from "./ability";
 
 export function createRuntimeState(
   setup: BattleSetup,
@@ -127,6 +128,7 @@ export function createRuntimeState(
     objective: objectives[0],
     reinforcementWaves,
     projectiles: [],
+    activeAuras: [...resolveActiveAuras(setup.content, groups, 0)],
     tick: 0,
     eventSequence: 0,
     intelSequence: 0,

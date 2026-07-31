@@ -494,7 +494,10 @@ export interface PlatformTemplate {
   readonly capturePowerBps: number;
 }
 
-export type AbilityTargetRule = "self" | "own-group";
+export type PassiveAbilityTargetRule = "self" | "own-group";
+export type AuraAbilityTargetRule = "own-group" | "nearby-friendly-groups";
+export type AbilityTargetRule = PassiveAbilityTargetRule | AuraAbilityTargetRule;
+export type AuraStackingRule = "stack" | "strongest";
 export type AbilityAttribute =
   | "protection-bps"
   | "suppression-resistance-bps"
@@ -518,15 +521,27 @@ export interface AttributeModifierAbilityEffect {
 
 export type AbilityEffectDefinition = AttributeModifierAbilityEffect;
 
-export interface AbilityTemplate {
+interface AbilityTemplateBase {
   readonly id: TemplateId;
   readonly displayName: string;
   readonly tags: readonly string[];
-  readonly kind: "passive";
-  readonly targetRule: AbilityTargetRule;
   readonly conditions: readonly AbilityCondition[];
   readonly effects: readonly AbilityEffectDefinition[];
 }
+
+export interface PassiveAbilityTemplate extends AbilityTemplateBase {
+  readonly kind: "passive";
+  readonly targetRule: PassiveAbilityTargetRule;
+}
+
+export interface AuraAbilityTemplate extends AbilityTemplateBase {
+  readonly kind: "aura";
+  readonly targetRule: AuraAbilityTargetRule;
+  readonly rangeCells: number;
+  readonly stacking: AuraStackingRule;
+}
+
+export type AbilityTemplate = PassiveAbilityTemplate | AuraAbilityTemplate;
 
 export interface StatusTemplate {
   readonly id: TemplateId;
@@ -538,7 +553,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-7";
+  readonly contentVersion: "content-8";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -550,6 +565,14 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreAuraAbilityBattleContentBundle = Omit<
+  BattleContentBundle,
+  "contentVersion" | "abilityTemplates"
+> & {
+  readonly contentVersion: "content-7";
+  readonly abilityTemplates: Readonly<Record<TemplateId, PassiveAbilityTemplate>>;
+};
 
 export type PrePassiveAbilityMemberTemplate = Omit<MemberTemplate, "abilityTemplateIds">;
 
@@ -802,6 +825,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
     | PreAirCombatBattleContentBundle
@@ -1012,6 +1036,7 @@ export interface GroupInspection {
   readonly suppressionResistanceBps?: number;
   readonly capturePower?: number;
   readonly passiveAbilities?: readonly PassiveAbilityInspection[];
+  readonly activeAuras?: readonly AuraApplicationInspection[];
   readonly modeEffective?: boolean;
   readonly activeMembers: number;
   readonly woundedMembers: number;
@@ -1217,9 +1242,25 @@ export interface PassiveAbilityInspection {
   readonly sourceMemberId: MemberId;
   readonly abilityTemplateId: TemplateId;
   readonly displayName: string;
-  readonly targetRule: AbilityTargetRule;
+  readonly targetRule: PassiveAbilityTargetRule;
   readonly active: boolean;
   readonly unmetCondition?: AbilityCondition["kind"];
+  readonly effects: readonly AbilityEffectDefinition[];
+}
+
+export interface AuraApplicationInspection {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly sourceMemberId: MemberId;
+  readonly sourceGroupId: GroupId;
+  readonly abilityTemplateId: TemplateId;
+  readonly displayName: string;
+  readonly targetGroupId: GroupId;
+  readonly targetRule: AuraAbilityTargetRule;
+  readonly rangeCells: number;
+  readonly distanceSquared: number;
+  readonly stacking: AuraStackingRule;
+  readonly appliedAt: Tick;
   readonly effects: readonly AbilityEffectDefinition[];
 }
 

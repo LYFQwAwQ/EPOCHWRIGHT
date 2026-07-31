@@ -10,6 +10,8 @@ import {
   DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
   DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
   DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+  DEFAULT_AURA_GROUP_TEMPLATE_ID,
+  DEFAULT_AURA_MEMBER_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
   DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
@@ -60,6 +62,7 @@ export interface DemoBattleSetupOptions {
   readonly airGroupsPerFaction?: number;
   readonly airGroupTypes?: readonly DemoAirGroupType[];
   readonly passiveAbilityGroupsPerFaction?: number;
+  readonly auraAbilityGroupsPerFaction?: number;
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -101,6 +104,7 @@ export function createDemoBattleSetup(
   const artilleryGroupsPerFaction = options.artilleryGroupsPerFaction ?? 0;
   const airGroupsPerFaction = options.airGroupsPerFaction ?? 0;
   const passiveAbilityGroupsPerFaction = options.passiveAbilityGroupsPerFaction ?? 0;
+  const auraAbilityGroupsPerFaction = options.auraAbilityGroupsPerFaction ?? 0;
   const airGroupTypes = options.airGroupTypes ?? Array.from(
     { length: airGroupsPerFaction },
     () => "recon-helicopter" as const,
@@ -165,6 +169,17 @@ export function createDemoBattleSetup(
     throw new Error("passiveAbilityGroupsPerFaction must fit within infantry groups.");
   }
   if (
+    !Number.isInteger(auraAbilityGroupsPerFaction) ||
+    auraAbilityGroupsPerFaction < 0 ||
+    auraAbilityGroupsPerFaction >
+      groupsPerFaction - artilleryGroupsPerFaction - airGroupsPerFaction - vehicleGroupsPerFaction -
+        passiveAbilityGroupsPerFaction
+  ) {
+    throw new Error(
+      "passiveAbilityGroupsPerFaction and auraAbilityGroupsPerFaction must fit within infantry groups.",
+    );
+  }
+  if (
     !Number.isInteger(transportPairsPerFaction) ||
     transportPairsPerFaction < 0 ||
     transportPairsPerFaction > vehicleGroupsPerFaction ||
@@ -198,6 +213,7 @@ export function createDemoBattleSetup(
     airGroupsPerFaction,
     airGroupTypes,
     passiveAbilityGroupsPerFaction,
+    auraAbilityGroupsPerFaction,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -382,6 +398,7 @@ function createGroupSpawns(
   airGroupsPerFaction: number,
   airGroupTypes: readonly DemoAirGroupType[],
   passiveAbilityGroupsPerFaction: number,
+  auraAbilityGroupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -498,15 +515,22 @@ function createGroupSpawns(
       const infantryIndex =
         groupIndex - artilleryGroupsPerFaction - airGroupsPerFaction - vehicleGroupsPerFaction;
       const usesPassiveAbility = infantryIndex < passiveAbilityGroupsPerFaction;
+      const usesAuraAbility =
+        !usesPassiveAbility &&
+        infantryIndex < passiveAbilityGroupsPerFaction + auraAbilityGroupsPerFaction;
       const groupId = usesPassiveAbility
         ? `${faction.id}-disciplined-${infantryIndex + 1}`
-        : `${faction.id}-squad-${groupIndex + 1}`;
+        : usesAuraAbility
+          ? `${faction.id}-command-${infantryIndex + 1}`
+          : `${faction.id}-squad-${groupIndex + 1}`;
       groups.push({
         id: groupId,
         factionId: faction.id,
         groupTemplateId: usesPassiveAbility
           ? DEFAULT_PASSIVE_GROUP_TEMPLATE_ID
-          : DEFAULT_GROUP_TEMPLATE_ID,
+          : usesAuraAbility
+            ? DEFAULT_AURA_GROUP_TEMPLATE_ID
+            : DEFAULT_GROUP_TEMPLATE_ID,
         spawn,
         evacuation: { ...spawn },
         members: Array.from({ length: 8 }, (_, memberIndex) => ({
@@ -514,7 +538,9 @@ function createGroupSpawns(
           memberTemplateId:
             usesPassiveAbility && memberIndex === 0
               ? DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID
-              : DEFAULT_MEMBER_TEMPLATE_ID,
+              : usesAuraAbility && memberIndex === 0
+                ? DEFAULT_AURA_MEMBER_TEMPLATE_ID
+                : DEFAULT_MEMBER_TEMPLATE_ID,
         })),
         platforms: [],
       });

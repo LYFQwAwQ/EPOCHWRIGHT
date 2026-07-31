@@ -225,7 +225,7 @@ describe("single-platform vehicle slice", () => {
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
     expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
-    expect(migrated.content.contentVersion).toBe("content-7");
+    expect(migrated.content.contentVersion).toBe("content-8");
     expect(migrated.transportAssignments).toEqual([]);
     expect(migrated.groups.every((group) => group.platforms.length === 0)).toBe(true);
     expect(() => validateBattleSetup(migrated)).not.toThrow();

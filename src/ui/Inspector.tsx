@@ -173,6 +173,7 @@ const weaponTemplateLabels: Readonly<Record<string, string>> = {
 const abilityTargetLabels: Readonly<Record<string, string>> = {
   self: "自身",
   "own-group": "所属编组",
+  "nearby-friendly-groups": "邻近友军编组",
 };
 
 const abilityAttributeLabels: Readonly<Record<string, string>> = {
@@ -611,6 +612,39 @@ export function Inspector({
                           .join(" / ")
                       : abilityConditionLabels[ability.unmetCondition ?? ""] ?? "条件未满足"}
                   </strong>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {inspection.activeAuras && inspection.activeAuras.length > 0 && (
+            <section className="inspector-section" data-testid="active-auras">
+              <div className="section-title">
+                <Sparkles size={15} />
+                <span>持续光环</span>
+                <b>{inspection.activeAuras.length}</b>
+              </div>
+              {inspection.activeAuras.map((aura) => (
+                <div key={aura.id}>
+                  <div className="contact-row">
+                    <Sparkles size={14} />
+                    <span>{aura.displayName}</span>
+                    <strong>
+                      {aura.effects
+                        .map((effect) => {
+                          const sign = effect.modifierBps >= 0 ? "+" : "";
+                          return `${abilityAttributeLabels[effect.attribute] ?? effect.attribute} ${sign}${Math.round(effect.modifierBps / 100)}%`;
+                        })
+                        .join(" / ")}
+                    </strong>
+                  </div>
+                  <p>
+                    来源 {aura.sourceGroupId} · tick {aura.appliedAt} ·{" "}
+                    {aura.targetRule === "nearby-friendly-groups"
+                      ? `${Math.round(Math.sqrt(aura.distanceSquared))}/${aura.rangeCells} 格`
+                      : "所属编组"}
+                    {aura.stacking === "strongest" ? " · 取最强" : " · 可叠加"}
+                  </p>
                 </div>
               ))}
             </section>

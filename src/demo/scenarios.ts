@@ -19,6 +19,7 @@ export type DemoScenarioId =
   | "alliance-conflict"
   | "duel-conflict"
   | "passive-ability"
+  | "aura-ability"
   | "artillery-observation"
   | "air-recon"
   | "air-operations"
@@ -54,6 +55,7 @@ export const DEMO_SCENARIOS: readonly DemoScenarioDefinition[] = [
   { id: "alliance-conflict", label: "三方同盟冲突", mode: "conflict" },
   { id: "duel-conflict", label: "双边正面冲突", mode: "conflict" },
   { id: "passive-ability", label: "被动能力对抗", mode: "conflict" },
+  { id: "aura-ability", label: "持续光环对抗", mode: "conflict" },
   { id: "artillery-observation", label: "自行火炮观察", mode: "conflict" },
   { id: "air-recon", label: "低空侦察", mode: "conflict" },
   { id: "air-operations", label: "空中行动", mode: "conflict" },
@@ -122,6 +124,25 @@ export function createDemoScenarioOptions(
         height: 30,
         groupsPerFaction: 3,
         passiveAbilityGroupsPerFaction: 1,
+        factions: TWO_FACTIONS,
+        mountainDensity: 0,
+        roughness: 0,
+        waterCoverage: 0,
+        wetlandCoverage: 0,
+        treeCoverage: 0,
+        rockCoverage: 0,
+        wallCoverage: 0,
+        maximumDurationSeconds: 100,
+        stalemateSeconds: 60,
+        mode: "conflict",
+      };
+    case "aura-ability":
+      return {
+        ...shared,
+        width: 44,
+        height: 30,
+        groupsPerFaction: 3,
+        auraAbilityGroupsPerFaction: 1,
         factions: TWO_FACTIONS,
         mountainDensity: 0,
         roughness: 0,

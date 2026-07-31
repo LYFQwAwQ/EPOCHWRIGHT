@@ -97,7 +97,7 @@ interface BattleContentBundle {
 
 - `contentVersion` 使用独立的 `content-1` 版本；`BattleSetup` schema 在实现接入时从 `stage-2.1` 升为 `stage-2.2`，`rulesVersion` 保持 `stage-2.5`。模板替换当前等价常量时不改变规则语义。
 - `BattleContentBundle.eraId` 标识本场已选择的时代，`eraTemplates` 保存时代元数据和允许的模板 ID。时代选择发生在外部内容解析层；模拟不根据 `eraId`、`displayName` 或时代标签分支。
-- `CONTENT-001` 首个切片要求 `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 为必需集合，`sensorTemplates` 至少包含每个成员引用的传感器；当时平台、能力和状态模板只保留接口。当前平台已由 spawn 引用，`content-7` 还允许成员模板按 `abilityTemplateIds` 引用通过 §9.3 验证的被动能力。
+- `CONTENT-001` 首个切片要求 `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 为必需集合，`sensorTemplates` 至少包含每个成员引用的传感器；当时平台、能力和状态模板只保留接口。当前平台已由 spawn 引用，`content-8` 还允许成员模板按 `abilityTemplateIds` 引用通过 §9.3 验证的被动或持续光环能力。
 - 不引入模板继承、运行时脚本或任意字段覆盖。模板之间使用显式 ID 引用；成员 spawn 只允许引用模板并提供健康、持久化 ID 等边界字段。这样可以避免继承环、字符串特判和不可复现的内容脚本。
 - 每个模板的数值在初始化时一次性验证，随后运行时只使用不可变的解析结果。模板引用缺失、时代白名单不匹配、槽位数量不匹配或不支持的移动/目标域必须在初始化阶段拒绝。
 
@@ -654,12 +654,26 @@ interface LogicalProjectileState {
 ### 9.3 能力模板
 
 ```ts
-interface AbilityTemplate {
+type AbilityTemplate = PassiveAbilityTemplate | AuraAbilityTemplate;
+
+interface PassiveAbilityTemplate {
   readonly id: TemplateId;
   readonly displayName: string;
   readonly tags: readonly string[];
   readonly kind: "passive";
   readonly targetRule: "self" | "own-group";
+  readonly conditions: readonly AbilityCondition[];
+  readonly effects: readonly AbilityEffectDefinition[];
+}
+
+interface AuraAbilityTemplate {
+  readonly id: TemplateId;
+  readonly displayName: string;
+  readonly tags: readonly string[];
+  readonly kind: "aura";
+  readonly targetRule: "own-group" | "nearby-friendly-groups";
+  readonly rangeCells: number;
+  readonly stacking: "stack" | "strongest";
   readonly conditions: readonly AbilityCondition[];
   readonly effects: readonly AbilityEffectDefinition[];
 }
@@ -680,11 +694,15 @@ interface AttributeModifierAbilityEffect {
 type AbilityEffectDefinition = AttributeModifierAbilityEffect;
 ```
 
-`content-7` 的首个能力切片只允许成员模板通过唯一 `abilityTemplateIds` 引用被动能力。条件全部检查能力来源成员，按 `health`、`presence` 固定顺序求交；没有条件表示始终满足。修正值是 `-10_000..10_000` 的整数，多个来源按稳定成员 ID 和能力 ID 累加；成员属性和编组压制抗性最终钳制到 `0..10_000`，编组占领力聚合在应用编组倍率前钳制为非负整数。
+成员模板通过唯一 `abilityTemplateIds` 引用能力。条件全部检查能力来源成员，按 `health`、`presence` 固定顺序求交；没有条件表示始终满足。修正值是 `-10_000..10_000` 的整数，成员属性和编组压制抗性最终钳制到 `0..10_000`，编组占领力聚合在应用编组倍率前钳制为非负整数。
 
-`self` 可以修正来源成员的防护、压制抗性或占领力。`own-group` 只允许修正编组聚合的压制抗性或占领力：前者在有效成员基础值取平均后相加，后者在成员占领力求和后相加，再应用编组倍率。它不按空间范围把效果复制到其他成员，也不建立光环来源状态；范围、叠加来源和离场移除属于后续光环切片。
+`passive` 的 `self` 可以修正来源成员的防护、压制抗性或占领力。`own-group` 只允许修正编组聚合的压制抗性或占领力：前者在有效成员基础值取平均后相加，后者在成员占领力求和后相加，再应用编组倍率。多个被动来源按稳定成员 ID 和能力 ID 累加；它不建立空间来源状态。
 
-本方或全知 inspection 返回来源成员、能力名、目标规则、条件是否满足和修正明细；敌方已知接触不返回能力字段。被动能力没有冷却、次数、层数或持续时间，因此当前不新增运行时能力状态和 `BattleResult` 字段；内容哈希、成员现有健康/在场状态和最终成员结果已经覆盖复现与持久化边界。
+`content-8` 的 `aura` 建立权威的活动来源快照。来源 ID 固定为长度前缀格式 `aura:<memberIdLength>:<sourceMemberId>:<abilityIdLength>:<abilityTemplateId>`，应用 ID 再以相同方式追加目标编组 ID，避免合法 ID 中的分隔符产生碰撞；初始化时生成一次，此后每个 tick 在移动完成后、武器结算前刷新。来源成员必须健康或受伤、仍为 `deployed`，并额外满足模板条件；因此本 tick 武器结算中失能或死亡、以及随后撤离的来源会在下一 tick 的同一刷新阶段移除，结算中途不改变已冻结的光环集合。
+
+`own-group` 不做距离检查；`nearby-friendly-groups` 只选择与来源同势力、与来源编组欧氏网格距离平方不大于 `rangeCells ** 2` 的已部署编组，并包含来源所属编组。`rangeCells` 是 `0..64` 的整数。目标为编组：防护修正应用到该编组每名成员，压制抗性与占领力应用到编组聚合值。`stack` 保留每个唯一来源；`strongest` 以目标编组、能力模板和属性为组，只保留绝对修正最大的一项，绝对值同分时按来源 ID 升序选择。最终活动应用始终按应用 ID 排序，不能依赖对象或 Map 遍历顺序。
+
+本方或全知 inspection 返回被动能力条件，以及当前命中目标编组的光环应用 ID、来源、距离、开始 tick、叠加策略和修正明细；敌方已知接触不返回能力或光环字段。本切片没有冷却、次数、事件或持续时间，`BattleResult` 不持久化结束瞬间的临时光环集合；内容、活动光环状态哈希和最终成员结果已经覆盖复现与外部持久化边界。
 
 后续标准效果继续使用判别联合，例如伤害、治疗、状态、区域和情报效果。任意脚本文本始终禁止；未来 `handlerId` 也只能引用构建时注册且具有确定性测试的代码。
 
@@ -717,7 +735,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-7` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机、可组合的防空武器模板，以及带一名队列纪律来源成员的被动能力步兵编组；直接/间接逻辑弹丸、平台展开、三个悬停高度带、`ground|air` 目标域和首个属性修正能力均由模板表达。`stage-4.2` 规则保持不变；功能门禁必须由规则版本、内容版本和验证器明确执行。
+当前 `content-8` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机、可组合的防空武器模板，以及分别演示队列纪律被动与邻近友军持续光环的步兵编组；直接/间接逻辑弹丸、平台展开、三个悬停高度带、`ground|air` 目标域和属性修正能力均由模板表达。`stage-4.2` 规则保持不变；功能门禁必须由规则版本、内容版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -1092,7 +1110,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-7`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4`、`stage-4.2/content-5` 及 `content-6` 输入显式升级；`content-2` 武器会转换为单一直接 mode，`content-6` 成员会补入空能力引用并丢弃当时不可引用的占位能力模板。新的当前输入必须显式提供 `content-7`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-8`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4`、`stage-4.2/content-5`、`content-6` 及 `content-7` 输入显式升级；`content-2` 武器会转换为单一直接 mode，`content-6` 成员会补入空能力引用并丢弃当时不可引用的占位能力模板。新的当前输入必须显式提供 `content-8`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1127,6 +1145,8 @@ interface PlatformResult {
 `AIR-004` 保持 setup schema 和 `stage-4.2` 规则不变，只把默认内容升级到 `content-6`：新增武装直升机与侦察无人机模板、编组和演示 spawn，武装平台复用既有空地/空空武器部件。`content-5` 快照迁移时只升级版本并深拷贝调用方内容，不静默注入新模板；新的默认 `content-6` 才包含这些空军编组。
 
 `ABILITY-001` 同样保持 setup schema 和 `stage-4.2` 规则不变，把默认内容升级到 `content-7`：成员模板新增能力 ID 引用，能力模板启用 §9.3 的被动条件和属性修正，inspection 增加本方/全知解释。`content-6` 快照迁移为空引用且不注入新模板；普通场景未引用新增能力成员时只因规范内容哈希升级而改变 setup/state 黄金哈希，不改变 tick 行为。
+
+`ABILITY-002` 保持 setup schema 和 `stage-4.2` 规则不变，把默认内容升级到 `content-8`：能力模板增加持续光环分支，运行时保存按稳定 ID 排序的活动应用，并在移动后、武器结算前刷新。`content-7` 快照保留原被动模板与成员引用，不注入默认光环；未引用光环的旧场景仍只因规范内容哈希升级而改变黄金哈希。临时光环不增加 `BattleResult` 字段。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

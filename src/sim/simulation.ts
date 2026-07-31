@@ -22,11 +22,14 @@ import {
   type FlightAltitudeCandidateInput,
 } from "./air";
 import {
+  auraApplicationInspections,
+  auraModifierBps,
   clampBasisPoints,
   memberAbilityAttributeBps,
   memberAbilityAttributes,
   ownGroupAbilityModifierBps,
   passiveAbilityInspections,
+  resolveActiveAuras,
 } from "./ability";
 import {
   cellIndex,
@@ -620,7 +623,11 @@ class StageOneBattleSimulation implements BattleSimulation {
       health: member.health,
       presence: member.presence,
       placement: { ...member.placement },
-      attributes: memberAbilityAttributes(this.setup.content, member),
+      attributes: memberAbilityAttributes(
+        this.setup.content,
+        member,
+        auraModifierBps(this.state.activeAuras, member.groupId, "protection-bps"),
+      ),
       passiveAbilities: passiveAbilityInspections(this.setup.content, [member]),
       magazineRounds: member.magazineRounds,
       reloadTicksRemaining: member.reloadTicksRemaining,
@@ -1047,6 +1054,22 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addString(groupId);
     }
 
+    for (const aura of this.state.activeAuras) {
+      hasher.addString(aura.id);
+      hasher.addString(aura.sourceId);
+      hasher.addString(aura.sourceMemberId);
+      hasher.addString(aura.sourceGroupId);
+      hasher.addString(aura.abilityTemplateId);
+      hasher.addString(aura.targetGroupId);
+      hasher.addNumber(aura.distanceSquared);
+      hasher.addNumber(aura.appliedAt);
+      for (const effect of aura.effects) {
+        hasher.addString(effect.kind);
+        hasher.addString(effect.attribute);
+        hasher.addNumber(effect.modifierBps);
+      }
+    }
+
     for (const [groupId, cell] of [...this.state.airspaceReservations].sort(([a], [b]) =>
       compareStrings(a, b),
     )) {
@@ -1134,6 +1157,7 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private stepOnce(): void {
     if (this.state.settlement) {
+      this.updateActiveAuras();
       const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), false);
       this.updateMorale(impacts, true);
       this.state.tick += 1;
@@ -1158,6 +1182,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.updateArtilleryMissions();
     this.updatePlatformDeployments();
     this.advanceMovement();
+    this.updateActiveAuras();
     const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), true);
     this.updateMorale(impacts);
     this.updateEvacuation();
@@ -1168,6 +1193,22 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private initializePaths(): void {
     this.updateDecisions(true);
+  }
+
+  private updateActiveAuras(): void {
+    this.state.activeAuras = [
+      ...resolveActiveAuras(
+        this.setup.content,
+        this.state.groups.map((group) => ({
+          id: group.id,
+          factionId: group.factionId,
+          cell: group.cell,
+          members: group.members,
+        })),
+        this.state.tick,
+        this.state.activeAuras,
+      ),
+    ];
   }
 
   private assignDefenseSlots(): void {
@@ -6278,7 +6319,10 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
     const damageScale = applyBasisPointReduction(
       Math.max(0, Math.min(20_000, hit.damageBps)),
-      memberAbilityAttributeBps(this.setup.content, member, "protection-bps"),
+      clampBasisPoints(
+        memberAbilityAttributeBps(this.setup.content, member, "protection-bps") +
+          auraModifierBps(this.state.activeAuras, targetGroup.id, "protection-bps"),
+      ),
     );
     if (damageScale === 0) {
       return;
@@ -7231,6 +7275,11 @@ class StageOneBattleSimulation implements BattleSimulation {
       suppressionResistanceBps: this.groupSuppressionResistanceBps(group),
       capturePower: this.groupCapturePower(group),
       passiveAbilities: passiveAbilityInspections(this.setup.content, group.members),
+      activeAuras: auraApplicationInspections(
+        this.setup.content,
+        this.state.activeAuras,
+        group.id,
+      ),
       modeEffective: this.isGroupModeEffective(group),
       activeMembers: activeMemberCount(group),
       woundedMembers: group.members.filter((member) => member.health === "wounded").length,
@@ -7691,6 +7740,11 @@ class StageOneBattleSimulation implements BattleSimulation {
           this.setup.content,
           group.members,
           "suppression-resistance-bps",
+        ) +
+        auraModifierBps(
+          this.state.activeAuras,
+          group.id,
+          "suppression-resistance-bps",
         ),
     );
   }
@@ -7708,11 +7762,13 @@ class StageOneBattleSimulation implements BattleSimulation {
           sum + memberAbilityAttributeBps(this.setup.content, member, "capture-power-bps"),
         0,
       );
-    const groupAbilityPowerBps = ownGroupAbilityModifierBps(
-      this.setup.content,
-      group.members,
-      "capture-power-bps",
-    );
+    const groupAbilityPowerBps =
+      ownGroupAbilityModifierBps(
+        this.setup.content,
+        group.members,
+        "capture-power-bps",
+      ) +
+      auraModifierBps(this.state.activeAuras, group.id, "capture-power-bps");
     const groupScaleBps = getGroupTemplate(
       this.setup.content!,
       group.groupTemplateId,

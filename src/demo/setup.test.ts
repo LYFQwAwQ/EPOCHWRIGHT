@@ -74,6 +74,12 @@ describe("demo battle setup boundary", () => {
       vehicleGroupsPerFaction: 1,
       passiveAbilityGroupsPerFaction: 1,
     })).toThrow(/passiveAbilityGroupsPerFaction/);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-ability-group-mix",
+      groupsPerFaction: 1,
+      passiveAbilityGroupsPerFaction: 1,
+      auraAbilityGroupsPerFaction: 1,
+    })).toThrow(/auraAbilityGroupsPerFaction/);
   });
 
   it("keeps air group counts backward-compatible unless explicit types are supplied", () => {

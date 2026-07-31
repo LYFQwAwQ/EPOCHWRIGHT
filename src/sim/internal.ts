@@ -46,6 +46,7 @@ import type {
   FireMissionIntelSource,
   FlightAltitudeEvaluationInspection,
 } from "./types";
+import type { ActiveAuraApplication } from "./ability";
 
 export interface MemberState {
   readonly id: MemberId;
@@ -353,6 +354,7 @@ export interface RuntimeState {
   readonly objectives: ObjectiveRuntimeState[];
   readonly reinforcementWaves: ReinforcementRuntimeState[];
   readonly projectiles: LogicalProjectileState[];
+  activeAuras: ActiveAuraApplication[];
   /** Compatibility alias for the first objective in a defense setup. */
   readonly objective?: ObjectiveRuntimeState;
   tick: Tick;
