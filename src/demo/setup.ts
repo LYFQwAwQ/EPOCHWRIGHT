@@ -1,6 +1,9 @@
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
+  DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+  DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
   DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
   DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
@@ -8,6 +11,7 @@ import {
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
+  DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
   DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
   DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
   DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
@@ -46,6 +50,7 @@ export interface DemoBattleSetupOptions {
   readonly groupsPerFaction?: number;
   readonly vehicleGroupsPerFaction?: number;
   readonly artilleryGroupsPerFaction?: number;
+  readonly airGroupsPerFaction?: number;
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -80,6 +85,7 @@ export function createDemoBattleSetup(
   const groupsPerFaction = options.groupsPerFaction ?? 3;
   const vehicleGroupsPerFaction = options.vehicleGroupsPerFaction ?? 0;
   const artilleryGroupsPerFaction = options.artilleryGroupsPerFaction ?? 0;
+  const airGroupsPerFaction = options.airGroupsPerFaction ?? 0;
   const transportPairsPerFaction = options.transportPairsPerFaction ?? 0;
 
   const factions = (options.factions ?? DEFAULT_FACTIONS).map((faction) => ({ ...faction }));
@@ -104,12 +110,20 @@ export function createDemoBattleSetup(
     throw new Error("artilleryGroupsPerFaction must be an integer within groupsPerFaction.");
   }
   if (
+    !Number.isInteger(airGroupsPerFaction) ||
+    airGroupsPerFaction < 0 ||
+    airGroupsPerFaction > groupsPerFaction - artilleryGroupsPerFaction
+  ) {
+    throw new Error("airGroupsPerFaction must fit within groupsPerFaction.");
+  }
+  if (
     !Number.isInteger(vehicleGroupsPerFaction) ||
     vehicleGroupsPerFaction < 0 ||
-    vehicleGroupsPerFaction > groupsPerFaction - artilleryGroupsPerFaction
+    vehicleGroupsPerFaction >
+      groupsPerFaction - artilleryGroupsPerFaction - airGroupsPerFaction
   ) {
     throw new Error(
-      "vehicleGroupsPerFaction and artilleryGroupsPerFaction must fit within groupsPerFaction.",
+      "vehicleGroupsPerFaction, artilleryGroupsPerFaction, and airGroupsPerFaction must fit within groupsPerFaction.",
     );
   }
   if (
@@ -118,6 +132,7 @@ export function createDemoBattleSetup(
     transportPairsPerFaction > vehicleGroupsPerFaction ||
     transportPairsPerFaction >
       groupsPerFaction - vehicleGroupsPerFaction - artilleryGroupsPerFaction
+        - airGroupsPerFaction
   ) {
     throw new Error(
       "transportPairsPerFaction requires one vehicle and one passenger group per pair.",
@@ -142,6 +157,7 @@ export function createDemoBattleSetup(
     groupsPerFaction,
     vehicleGroupsPerFaction,
     artilleryGroupsPerFaction,
+    airGroupsPerFaction,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -213,7 +229,8 @@ function createTransportPairs(
       (group) =>
         group.factionId === faction.id &&
         group.platforms.length > 0 &&
-        group.groupTemplateId !== DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
+        group.groupTemplateId !== DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID &&
+        group.groupTemplateId !== DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
     );
     const passengers = groups.filter(
       (group) => group.factionId === faction.id && group.platforms.length === 0,
@@ -320,6 +337,7 @@ function createGroupSpawns(
   groupsPerFaction: number,
   vehicleGroupsPerFaction: number,
   artilleryGroupsPerFaction: number,
+  airGroupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -375,9 +393,42 @@ function createGroupSpawns(
         });
         continue;
       }
-      if (groupIndex < artilleryGroupsPerFaction + vehicleGroupsPerFaction) {
+      if (groupIndex < artilleryGroupsPerFaction + airGroupsPerFaction) {
+        const airIndex = groupIndex - artilleryGroupsPerFaction;
+        const groupId = `${faction.id}-air-recon-${airIndex + 1}`;
+        const pilotId = `${groupId}-pilot`;
+        const observerId = `${groupId}-observer`;
+        groups.push({
+          id: groupId,
+          factionId: faction.id,
+          groupTemplateId: DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+          spawn,
+          evacuation: { ...spawn },
+          members: [
+            { id: pilotId, memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID },
+            { id: observerId, memberTemplateId: DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID },
+          ],
+          platforms: [
+            {
+              id: `${groupId}-platform`,
+              platformTemplateId: DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
+              initialFacing: side === 0 ? 2 : side === 1 ? 6 : 0,
+              initialAltitudeBand: "low",
+              crewAssignments: [
+                { stationId: "pilot", memberId: pilotId },
+                { stationId: "observer", memberId: observerId },
+              ],
+            },
+          ],
+        });
+        continue;
+      }
+      if (
+        groupIndex <
+        artilleryGroupsPerFaction + airGroupsPerFaction + vehicleGroupsPerFaction
+      ) {
         const tracked = side % 2 === 1;
-        const vehicleIndex = groupIndex - artilleryGroupsPerFaction;
+        const vehicleIndex = groupIndex - artilleryGroupsPerFaction - airGroupsPerFaction;
         const groupId = `${faction.id}-${tracked ? "tracked" : "wheeled"}-${vehicleIndex + 1}`;
         const driverId = `${groupId}-driver`;
         const gunnerId = `${groupId}-gunner`;

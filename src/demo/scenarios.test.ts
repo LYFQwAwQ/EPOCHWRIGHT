@@ -63,6 +63,33 @@ describe("manual demo scenarios", () => {
     expect(setup.transportAssignments).toEqual([]);
   });
 
+  it("exposes one unarmed low-altitude recon platform per faction", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("air-recon", "scenario-air"),
+    );
+    const airGroups = setup.groups.filter((group) =>
+      group.platforms.some(
+        (platform) =>
+          setup.content.platformTemplates[platform.platformTemplateId]?.movementType === "hover",
+      ),
+    );
+
+    expect(airGroups.map((group) => group.id)).toEqual([
+      "ember-air-recon-1",
+      "azure-air-recon-1",
+    ]);
+    expect(
+      airGroups.every((group) => group.platforms[0]?.initialAltitudeBand === "low"),
+    ).toBe(true);
+    expect(
+      airGroups.every((group) => {
+        const template = setup.content.platformTemplates[group.platforms[0]!.platformTemplateId]!;
+        return template.componentRules.every((component) => component.kind !== "weapon");
+      }),
+    ).toBe(true);
+    expect(setup.transportAssignments).toEqual([]);
+  });
+
   it("drives the artillery observation scenario through a natural indirect mission", () => {
     const setup = createDemoBattleSetup(
       createDemoScenarioOptions("artillery-observation", "scenario-artillery-mission"),

@@ -23,6 +23,7 @@ import {
 import type { BattleSetup, CoverSlot, GridCoord, GroupId } from "./types";
 import { createTransportRuntimeCollections } from "./transport";
 import { derivePlatformCapabilities } from "./vehicle";
+import { isAirMovementType } from "./air";
 
 export function createRuntimeState(
   setup: BattleSetup,
@@ -113,10 +114,12 @@ export function createRuntimeState(
       groups
         .filter(
           (group) =>
-            transport.byPassengerGroupId.get(group.id)?.status !== "embarked",
+            transport.byPassengerGroupId.get(group.id)?.status !== "embarked" &&
+            !isAirMovementType(group.movementType),
         )
         .map((group) => [cellIndex(setup.map, group.cell), group.id]),
     ),
+    airspaceReservations: new Map(),
     staticPlatformOccupancy: new Map(),
     reservations: new Map(),
     coverOccupancy,
@@ -147,6 +150,14 @@ export function createGroupState(
       persistentPlatformId: platform.persistentId,
       movementType: template.movementType,
       visualTypeId: template.visualTypeId,
+      flight:
+        template.movementType === "hover" && platform.initialAltitudeBand
+          ? {
+              altitudeBand: platform.initialAltitudeBand,
+              clearanceMm:
+                template.flightRule?.clearanceMmByBand[platform.initialAltitudeBand] ?? 0,
+            }
+          : undefined,
       cell: { ...cell },
       facing: platform.initialFacing,
       mobility: "immobilized",

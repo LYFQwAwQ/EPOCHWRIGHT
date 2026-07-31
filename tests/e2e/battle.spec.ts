@@ -215,6 +215,21 @@ async function countObjectiveBoundaryPixels(page: Page): Promise<number> {
   return count;
 }
 
+async function countSelectedPlatformPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    if (red > 225 && green > 170 && green < 235 && blue > 65 && blue < 180) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 test("desktop battle renders, pauses, and exposes squad inspection", async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -384,6 +399,88 @@ test("vehicle scenario renders platforms and exposes crewed platform inspection"
     path: testInfo.outputPath("vehicle-skirmish.png"),
     fullPage: true,
   });
+});
+
+test("air recon scenario renders flight height and exposes hover inspection", async ({
+  page,
+}, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=air-recon&seed=e2e-air-recon",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      (window.__battleTest?.getPlatformIds().length ?? 0) === 2,
+  );
+
+  const platforms = await page.evaluate(() => window.__battleTest?.getPlatforms() ?? []);
+  expect(platforms.map((platform) => platform.id).sort()).toEqual([
+    "azure-air-recon-1-platform",
+    "ember-air-recon-1-platform",
+  ]);
+  expect(
+    platforms.every(
+      (platform) =>
+        platform.worldY >= 12 &&
+        platform.flight?.altitudeBand === "low" &&
+        platform.flight.clearanceMm === 12_000,
+    ),
+  ).toBe(true);
+
+  const unselectedPixels = await countSelectedPlatformPixels(page);
+  await page.evaluate(() =>
+    window.__battleTest?.selectPlatform(
+      "ember-air-recon-1-platform",
+      "ember-air-recon-1",
+    ),
+  );
+  await expect(page.getByTestId("platform-inspection")).toContainText("悬停");
+  await expect(page.getByTestId("flight-status")).toContainText("低空");
+  await expect(page.getByTestId("flight-status")).toContainText("离地 12m");
+  await expect
+    .poll(() => countSelectedPlatformPixels(page))
+    .toBeGreaterThan(unselectedPixels + 10);
+
+  let previousPlatform = platforms.find(
+    (platform) => platform.id === "ember-air-recon-1-platform",
+  )!;
+  let observedAlignedMovement = false;
+  for (let attempt = 0; attempt < 20 && !observedAlignedMovement; attempt += 1) {
+    await stepPausedBattle(page, 4);
+    const currentPlatform = await page.evaluate(() =>
+      window.__battleTest
+        ?.getPlatforms()
+        .find((platform) => platform.id === "ember-air-recon-1-platform"),
+    );
+    expect(currentPlatform).toBeDefined();
+    const dx = currentPlatform!.worldX - previousPlatform.worldX;
+    const dz = currentPlatform!.worldZ - previousPlatform.worldZ;
+    if (Math.hypot(dx, dz) > 0.01) {
+      const forwardX = Math.sin(currentPlatform!.headingRadians);
+      const forwardZ = Math.cos(currentPlatform!.headingRadians);
+      expect(dx * forwardX + dz * forwardZ).toBeGreaterThan(0);
+      observedAlignedMovement = true;
+    }
+    previousPlatform = currentPlatform!;
+  }
+  expect(observedAlignedMovement).toBe(true);
+
+  const desktopMetrics = await readCanvasMetrics(page);
+  expect(desktopMetrics.opaqueRatio).toBeGreaterThan(0.98);
+  expect(desktopMetrics.luminanceRange).toBeGreaterThan(70);
+  expect(desktopMetrics.quantizedColors).toBeGreaterThan(24);
+  await page.screenshot({ path: testInfo.outputPath("air-recon-desktop.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("canvas")).toBeVisible();
+  const mobileMetrics = await readCanvasMetrics(page);
+  expect(mobileMetrics.width).toBeGreaterThan(300);
+  expect(mobileMetrics.height).toBeGreaterThan(300);
+  expect(mobileMetrics.luminanceRange).toBeGreaterThan(60);
+  await page.screenshot({ path: testInfo.outputPath("air-recon-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
 });
 
 test("artillery scenario projects missions, moving shells, impacts, and observer-safe events", async ({

@@ -7,6 +7,11 @@ import { createPathfinder } from "./pathfinder";
 import { areHostile, defaultRelation, relationKey, sortRelations } from "./relations";
 import { StateHasher } from "./rng";
 import {
+  hasAirspaceConflict,
+  isAirMovementType,
+  type AirspaceOccupant,
+} from "./air";
+import {
   BATTLE_CONTENT_VERSION,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
@@ -14,11 +19,14 @@ import {
   getPlatformTemplate,
   hashBattleContent,
   migrateBattleContent,
+  PRE_AIR_BATTLE_CONTENT_VERSION,
   validateBattleContent,
 } from "./content";
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_AIR_BATTLE_RULES_VERSION,
+  PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   LEGACY_BATTLE_RULES_VERSION,
   LEGACY_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_INDIRECT_BATTLE_RULES_VERSION,
@@ -66,34 +74,37 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     candidate.rulesVersion === PRE_PLATFORM_BATTLE_RULES_VERSION;
   const isPreCrew =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_CREW_BATTLE_RULES_VERSION;
   const isPreDamage =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_DAMAGE_BATTLE_RULES_VERSION;
   const isPreTransport =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_TRANSPORT_BATTLE_RULES_VERSION;
   const isPreCombinedArms =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_COMBINED_ARMS_BATTLE_RULES_VERSION;
   const isPreStableVehicleMovement =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION;
   const isPreArtillery =
     (candidate.schemaVersion === PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION ||
-      candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION) &&
+      candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION) &&
     candidate.rulesVersion === PRE_ARTILLERY_BATTLE_RULES_VERSION;
   const isPreProjectile =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_PROJECTILE_BATTLE_RULES_VERSION;
   const isPreIndirect =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_INDIRECT_BATTLE_RULES_VERSION;
+  const isPreAir =
+    candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === PRE_AIR_BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
@@ -101,10 +112,10 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     candidate.rulesVersion === BATTLE_RULES_VERSION;
   if (isCurrent) {
     if (candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION) {
-      throw new Error("stage-3.1 battle setup requires a content-3 content bundle.");
+      throw new Error("stage-4 battle setup requires a content-4 content bundle.");
     }
     if (candidate.transportAssignments === undefined) {
-      throw new Error("stage-3.1 battle setup requires transportAssignments.");
+      throw new Error("stage-4 battle setup requires transportAssignments.");
     }
     if (
       candidate.groups.some((group) => group.platforms === undefined) ||
@@ -112,7 +123,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
         wave.groups.some((group) => group.platforms === undefined),
       )
     ) {
-      throw new Error("stage-3.1 group spawns require explicit platforms.");
+      throw new Error("stage-4 group spawns require explicit platforms.");
     }
   }
   if (
@@ -123,10 +134,12 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreStableVehicleMovement ||
     isPreArtillery ||
     isPreProjectile ||
-    isPreIndirect
+    isPreIndirect ||
+    isPreAir
   ) {
     if (
       candidate.content?.contentVersion !== "content-2" &&
+      candidate.content?.contentVersion !== PRE_AIR_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error("stage-3 battle setup requires a content-2 or content-3 content bundle.");
@@ -168,7 +181,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreStableVehicleMovement ||
     isPreArtillery ||
     isPreProjectile ||
-    isPreIndirect
+    isPreIndirect ||
+    isPreAir
   ) {
     return {
       ...inputSetup,
@@ -185,7 +199,8 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
           isPreStableVehicleMovement ||
           isPreArtillery ||
           isPreProjectile ||
-          isPreIndirect
+          isPreIndirect ||
+          isPreAir
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
           : [],
       reinforcementEntrances: (inputSetup.reinforcementEntrances ?? []).map(cloneEntrance),
@@ -248,6 +263,7 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
   validateReinforcements(setup, factionIds, entityIds);
   const initialPassengerGroupIds = validateTransportAssignments(setup);
   const occupiedSpawnCells = new Set<number>();
+  const initialAirspaceOccupants: AirspaceOccupant[] = [];
   const factionGroupCounts = new Map(setup.factions.map((faction) => [faction.id, 0]));
   if (setup.mode.kind === "defense") {
     const objectives = defenseObjectives(setup.mode);
@@ -335,7 +351,19 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
       throw new Error(`Group ${group.id} has an illegal spawn cell.`);
     }
     const spawnIndex = group.spawn.z * setup.map.width + group.spawn.x;
-    if (!initialPassengerGroupIds.has(group.id)) {
+    const airspaceOccupant = airspaceOccupantForGroup(setup, group, group.spawn);
+    if (airspaceOccupant) {
+      if (
+        hasAirspaceConflict(
+          setup.map.cellSizeMm,
+          airspaceOccupant,
+          initialAirspaceOccupants,
+        )
+      ) {
+        throw new Error(`Air platform ${airspaceOccupant.id} violates initial safety separation.`);
+      }
+      initialAirspaceOccupants.push(airspaceOccupant);
+    } else if (!initialPassengerGroupIds.has(group.id)) {
       if (occupiedSpawnCells.has(spawnIndex)) {
         throw new Error(`Multiple groups cannot share initial cell ${spawnIndex}.`);
       }
@@ -886,9 +914,11 @@ function validateGroupRoster(
       stationIds.add(station.id);
       assignedMemberIds.add(member.id);
     }
-    const driver = template.crewStationRules.find((station) => station.kind === "driver");
+    const requiredOperator = template.crewStationRules.find(
+      (station) => station.kind === (template.movementType === "hover" ? "pilot" : "driver"),
+    );
     const driverAssignment = platform.crewAssignments.find(
-      (assignment) => assignment.stationId === driver?.id,
+      (assignment) => assignment.stationId === requiredOperator?.id,
     );
     const driverMember = group.members.find(
       (member) => member.id === driverAssignment?.memberId,
@@ -899,7 +929,26 @@ function validateGroupRoster(
       driverMember.initialHealth === "incapacitated" ||
       driverMember.initialHealth === "dead"
     ) {
-      throw new Error(`Platform ${platform.id} requires an active assigned driver.`);
+      throw new Error(
+        `Platform ${platform.id} requires an active assigned ${
+          template.movementType === "hover" ? "pilot" : "driver"
+        }.`,
+      );
+    }
+    if (template.movementType === "hover") {
+      const band = platform.initialAltitudeBand;
+      const clearanceMm = band ? template.flightRule?.clearanceMmByBand[band] : undefined;
+      if (
+        !band ||
+        clearanceMm === undefined ||
+        clearanceMm % setup.map.heightUnitMm !== 0
+      ) {
+        throw new Error(
+          `Air platform ${platform.id} requires a supported quantized initial altitude band.`,
+        );
+      }
+    } else if (platform.initialAltitudeBand !== undefined) {
+      throw new Error(`Ground platform ${platform.id} cannot define an initial altitude band.`);
     }
     actualPlatforms.set(template.id, (actualPlatforms.get(template.id) ?? 0) + 1);
   }
@@ -920,6 +969,32 @@ export function movementTypeForGroup(
   return platform
     ? getPlatformTemplate(setup.content, platform.platformTemplateId).movementType
     : "foot";
+}
+
+function airspaceOccupantForGroup(
+  setup: Pick<BattleSetup, "content" | "map">,
+  group: Pick<BattleSetup["groups"][number], "platforms">,
+  cell: GridCoord,
+): AirspaceOccupant | undefined {
+  const platform = group.platforms[0];
+  if (!platform) {
+    return undefined;
+  }
+  const template = getPlatformTemplate(setup.content, platform.platformTemplateId);
+  if (!isAirMovementType(template.movementType)) {
+    return undefined;
+  }
+  const altitudeBand = platform.initialAltitudeBand;
+  const safetyRadiusMm = template.flightRule?.safetyRadiusMm;
+  if (!altitudeBand || safetyRadiusMm === undefined) {
+    return undefined;
+  }
+  return {
+    id: platform.id,
+    cell: { ...cell },
+    altitudeBand,
+    safetyRadiusMm,
+  };
 }
 
 function compareStrings(a: string, b: string): number {
@@ -1141,6 +1216,7 @@ function hashPlatformSpawns(
     hasher.addString(platform.id);
     hasher.addString(platform.platformTemplateId);
     hasher.addNumber(platform.initialFacing);
+    hasher.addString(platform.initialAltitudeBand ?? "");
     hasher.addString(platform.persistentId ?? "");
     for (const assignment of platform.crewAssignments) {
       hasher.addString(assignment.stationId);

@@ -1,5 +1,11 @@
-import { Activity, Radio, Route, ShieldAlert, ShieldCheck, Target, Truck } from "lucide-react";
-import type { GroupInspection, PlatformInspection, RenderFrame } from "../sim/types";
+import { Activity, Plane, Radio, Route, ShieldAlert, ShieldCheck, Target, Truck } from "lucide-react";
+import type {
+  GroupInspection,
+  PlatformFlightInspection,
+  PlatformMovementType,
+  PlatformInspection,
+  RenderFrame,
+} from "../sim/types";
 
 interface InspectorProps {
   readonly inspection?: GroupInspection | PlatformInspection;
@@ -124,6 +130,19 @@ const missionReasonLabels: Readonly<Record<string, string>> = {
   ARTILLERY_HOLD_NO_COMPATIBLE_TARGET: "没有武器适配的合法目标",
 };
 
+const altitudeBandLabels: Readonly<Record<PlatformFlightInspection["altitudeBand"], string>> = {
+  low: "低空",
+  medium: "中空",
+  high: "高空",
+};
+
+function movementTypeLabel(movementType: PlatformMovementType): string {
+  if (movementType === "hover") {
+    return "悬停";
+  }
+  return movementType === "tracked" ? "履带" : "轮式";
+}
+
 function currentCoverLabel(inspection: GroupInspection): string {
   const cover = inspection.currentCover;
   if (!cover) {
@@ -221,9 +240,9 @@ function PlatformInspector({
 
       <section className="inspector-section" data-testid="platform-inspection">
         <div className="section-title">
-          <Truck size={15} />
+          {inspection.flight ? <Plane size={15} /> : <Truck size={15} />}
           <span>平台能力</span>
-          <b>{inspection.movementType === "tracked" ? "履带" : "轮式"}</b>
+          <b>{movementTypeLabel(inspection.movementType)}</b>
         </div>
         <strong className="action-label">
           {inspection.disposition === "destroyed"
@@ -240,6 +259,20 @@ function PlatformInspector({
           {damagedComponents.length > 0 ? ` · ${damagedComponents.length} 个受损部件` : ""}
         </p>
       </section>
+
+      {inspection.flight && (
+        <section className="inspector-section" data-testid="flight-status">
+          <div className="section-title">
+            <Plane size={15} />
+            <span>飞行状态</span>
+            <b>{altitudeBandLabels[inspection.flight.altitudeBand]}</b>
+          </div>
+          <strong className="action-label">
+            离地 {Math.round(inspection.flight.clearanceMm / 1_000)}m
+          </strong>
+          <p>当前高度层固定</p>
+        </section>
+      )}
 
       {artillery && (
         <section className="inspector-section" data-testid="artillery-status">
@@ -422,10 +455,10 @@ export function Inspector({
               </div>
               {inspection.platforms.map((platform) => (
                 <div className="contact-row" key={platform.id}>
-                  <Truck size={14} />
+                  {platform.flight ? <Plane size={14} /> : <Truck size={14} />}
                   <span>{platform.id}</span>
                   <strong>
-                    {platform.movementType === "tracked" ? "履带" : "轮式"}
+                    {movementTypeLabel(platform.movementType)}
                     {platform.disposition === "destroyed"
                       ? "已摧毁"
                       : platform.disposition === "abandoned"
@@ -438,6 +471,9 @@ export function Inspector({
                       ? ` · ${platform.passengerGroupIds.length} 乘客组`
                       : ""}
                     {platform.damaged && platform.disposition === "crewed" ? " · 受损" : ""}
+                    {platform.flight
+                      ? ` · ${altitudeBandLabels[platform.flight.altitudeBand]} ${Math.round(platform.flight.clearanceMm / 1_000)}m`
+                      : ""}
                   </strong>
                 </div>
               ))}

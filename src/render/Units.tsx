@@ -1,9 +1,10 @@
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, type RefObject } from "react";
 import { Group, InstancedMesh, Object3D, Quaternion, Vector3 } from "three";
 import type { RenderFrame, RenderGroup, RenderMember, RenderPlatform } from "../sim/types";
 import { visualWorldY } from "./elevation";
 import {
+  AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS,
   ARTILLERY_BARREL_CENTER_Z,
   ARTILLERY_BARREL_LENGTH,
   ARTILLERY_DEPLOYED_ELEVATION_RADIANS,
@@ -99,6 +100,71 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
   );
 }
 
+function AirPlatformVisual({
+  color,
+  rotorRef,
+}: {
+  readonly color: string;
+  readonly rotorRef: RefObject<Group | null>;
+}) {
+  return (
+    <group rotation={[0, AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS, 0]}>
+      <mesh scale={[1.05, 0.72, 1.6]} castShadow>
+        <sphereGeometry args={[1, 16, 10]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.16, -1.05]} scale={[0.82, 0.58, 0.72]} castShadow>
+        <sphereGeometry args={[1, 14, 8]} />
+        <meshBasicMaterial color="#28383a" toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.1, 2.25]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <coneGeometry args={[0.38, 3.2, 8]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.62, 3.35]} castShadow>
+        <boxGeometry args={[0.12, 1.18, 0.72]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+      <group ref={rotorRef} position={[0, 1.02, 0]}>
+        <mesh>
+          <boxGeometry args={[7.4, 0.08, 0.16]} />
+          <meshBasicMaterial color="#e0e6df" toneMapped={false} />
+        </mesh>
+        <mesh>
+          <boxGeometry args={[0.16, 0.08, 7.4]} />
+          <meshBasicMaterial color="#e0e6df" toneMapped={false} />
+        </mesh>
+      </group>
+      <group position={[0, 0.62, 3.52]}>
+        <mesh rotation={[0, 0, Math.PI / 4]}>
+          <boxGeometry args={[0.12, 1.5, 0.1]} />
+          <meshBasicMaterial color="#e0e6df" toneMapped={false} />
+        </mesh>
+        <mesh rotation={[0, 0, -Math.PI / 4]}>
+          <boxGeometry args={[0.12, 1.5, 0.1]} />
+          <meshBasicMaterial color="#e0e6df" toneMapped={false} />
+        </mesh>
+      </group>
+      {[-0.72, 0.72].map((side) => (
+        <group key={side} position={[side, -0.7, 0.15]}>
+          <mesh>
+            <boxGeometry args={[0.1, 0.12, 3.25]} />
+            <meshBasicMaterial color="#252a2a" toneMapped={false} />
+          </mesh>
+          <mesh position={[0, 0.32, -0.92]} rotation={[0, 0, side * 0.48]}>
+            <boxGeometry args={[0.1, 0.72, 0.1]} />
+            <meshBasicMaterial color="#303536" toneMapped={false} />
+          </mesh>
+          <mesh position={[0, 0.32, 0.92]} rotation={[0, 0, side * 0.48]}>
+            <boxGeometry args={[0.1, 0.72, 0.1]} />
+            <meshBasicMaterial color="#303536" toneMapped={false} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function PlatformMesh({
   platform,
   color,
@@ -111,7 +177,9 @@ function PlatformMesh({
   readonly onSelectPlatform: (platformId: string, groupId: string) => void;
 }) {
   const groupRef = useRef<Group>(null);
+  const rotorRef = useRef<Group>(null);
   const currentPosition = useRef<Vector3 | undefined>(undefined);
+  const airborne = platform.flight !== undefined;
   const artillery = platform.visualTypeId.includes("artillery");
   const tracked = artillery || platform.visualTypeId.includes("tracked");
   const deployed = platform.deployment === "deployed" || platform.deployment === "deploying";
@@ -135,6 +203,9 @@ function PlatformMesh({
     currentPosition.current.lerp(target, positionSmoothingAlpha(delta));
     group.position.copy(currentPosition.current);
     group.rotation.y = platform.headingRadians;
+    if (rotorRef.current) {
+      rotorRef.current.rotation.y = (rotorRef.current.rotation.y + delta * 10) % (Math.PI * 2);
+    }
   });
 
   return (
@@ -146,74 +217,83 @@ function PlatformMesh({
         onSelectPlatform(platform.id, platform.groupId);
       }}
     >
-      <mesh castShadow>
-        <boxGeometry args={[1.9, 0.78, 3.25]} />
-        <meshBasicMaterial color={selected ? "#f3c969" : platformColor} toneMapped={false} />
-      </mesh>
-      <mesh position={[0, 0.58, artillery ? 0.18 : -0.15]} castShadow>
-        <boxGeometry args={[artillery ? 1.62 : 1.45, 0.5, artillery ? 1.9 : 1.65]} />
-        <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
-      </mesh>
-      {artillery && (
+      {airborne ? (
+        <AirPlatformVisual
+          color={selected ? "#f3c969" : platformColor}
+          rotorRef={rotorRef}
+        />
+      ) : (
         <>
-          <group
-            position={[0, deployed ? 1.08 : 0.92, ARTILLERY_BARREL_CENTER_Z]}
-            rotation={[
-              Math.PI / 2 -
-                (deployed
-                  ? ARTILLERY_DEPLOYED_ELEVATION_RADIANS
-                  : ARTILLERY_PACKED_ELEVATION_RADIANS),
-              0,
-              0,
-            ]}
-          >
-            <mesh castShadow>
-              <cylinderGeometry args={[0.13, 0.19, ARTILLERY_BARREL_LENGTH, 10]} />
-              <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
-            </mesh>
-            <mesh position={[0, ARTILLERY_BARREL_LENGTH / 2 + 0.08, 0]} castShadow>
-              <cylinderGeometry args={[0.24, 0.24, 0.3, 10]} />
-              <meshBasicMaterial color="#303536" toneMapped={false} />
-            </mesh>
-          </group>
-          {deployed && (
+          <mesh castShadow>
+            <boxGeometry args={[1.9, 0.78, 3.25]} />
+            <meshBasicMaterial color={selected ? "#f3c969" : platformColor} toneMapped={false} />
+          </mesh>
+          <mesh position={[0, 0.58, artillery ? 0.18 : -0.15]} castShadow>
+            <boxGeometry args={[artillery ? 1.62 : 1.45, 0.5, artillery ? 1.9 : 1.65]} />
+            <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
+          </mesh>
+          {artillery && (
             <>
-              <mesh position={[-0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
-                <boxGeometry args={[0.22, 0.58, 1.05]} />
-                <meshBasicMaterial color="#303536" toneMapped={false} />
-              </mesh>
-              <mesh position={[0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
-                <boxGeometry args={[0.22, 0.58, 1.05]} />
-                <meshBasicMaterial color="#303536" toneMapped={false} />
-              </mesh>
+              <group
+                position={[0, deployed ? 1.08 : 0.92, ARTILLERY_BARREL_CENTER_Z]}
+                rotation={[
+                  Math.PI / 2 -
+                    (deployed
+                      ? ARTILLERY_DEPLOYED_ELEVATION_RADIANS
+                      : ARTILLERY_PACKED_ELEVATION_RADIANS),
+                  0,
+                  0,
+                ]}
+              >
+                <mesh castShadow>
+                  <cylinderGeometry args={[0.13, 0.19, ARTILLERY_BARREL_LENGTH, 10]} />
+                  <meshBasicMaterial color={selected ? "#ffe09b" : platformColor} toneMapped={false} />
+                </mesh>
+                <mesh position={[0, ARTILLERY_BARREL_LENGTH / 2 + 0.08, 0]} castShadow>
+                  <cylinderGeometry args={[0.24, 0.24, 0.3, 10]} />
+                  <meshBasicMaterial color="#303536" toneMapped={false} />
+                </mesh>
+              </group>
+              {deployed && (
+                <>
+                  <mesh position={[-0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
+                    <boxGeometry args={[0.22, 0.58, 1.05]} />
+                    <meshBasicMaterial color="#303536" toneMapped={false} />
+                  </mesh>
+                  <mesh position={[0.82, -0.31, ARTILLERY_SPADE_CENTER_Z]} rotation={[-0.18, 0, 0]}>
+                    <boxGeometry args={[0.22, 0.58, 1.05]} />
+                    <meshBasicMaterial color="#303536" toneMapped={false} />
+                  </mesh>
+                </>
+              )}
             </>
           )}
+          {tracked ? (
+            <>
+              <mesh position={[-1.04, -0.23, 0]}>
+                <boxGeometry args={[0.28, 0.46, 3.35]} />
+                <meshBasicMaterial color="#252a2a" toneMapped={false} />
+              </mesh>
+              <mesh position={[1.04, -0.23, 0]}>
+                <boxGeometry args={[0.28, 0.46, 3.35]} />
+                <meshBasicMaterial color="#252a2a" toneMapped={false} />
+              </mesh>
+            </>
+          ) : (
+            [-1, 1].flatMap((side) =>
+              [-1.08, 1.08].map((z) => (
+                <mesh
+                  key={`${side}:${z}`}
+                  position={[side * 1.02, -0.25, z]}
+                  rotation={[0, 0, Math.PI / 2]}
+                >
+                  <cylinderGeometry args={[0.39, 0.39, 0.28, 12]} />
+                  <meshBasicMaterial color="#252a2a" toneMapped={false} />
+                </mesh>
+              )),
+            )
+          )}
         </>
-      )}
-      {tracked ? (
-        <>
-          <mesh position={[-1.04, -0.23, 0]}>
-            <boxGeometry args={[0.28, 0.46, 3.35]} />
-            <meshBasicMaterial color="#252a2a" toneMapped={false} />
-          </mesh>
-          <mesh position={[1.04, -0.23, 0]}>
-            <boxGeometry args={[0.28, 0.46, 3.35]} />
-            <meshBasicMaterial color="#252a2a" toneMapped={false} />
-          </mesh>
-        </>
-      ) : (
-        [-1, 1].flatMap((side) =>
-          [-1.08, 1.08].map((z) => (
-            <mesh
-              key={`${side}:${z}`}
-              position={[side * 1.02, -0.25, z]}
-              rotation={[0, 0, Math.PI / 2]}
-            >
-              <cylinderGeometry args={[0.39, 0.39, 0.28, 12]} />
-              <meshBasicMaterial color="#252a2a" toneMapped={false} />
-            </mesh>
-          )),
-        )
       )}
     </group>
   );

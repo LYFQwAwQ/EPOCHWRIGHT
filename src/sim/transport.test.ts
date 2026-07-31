@@ -3,6 +3,7 @@ import { createDemoBattleSetup } from "../demo/setup";
 import {
   BATTLE_RULES_VERSION,
   DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+  PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_COMBINED_ARMS_BATTLE_RULES_VERSION,
   PRE_TRANSPORT_BATTLE_RULES_VERSION,
   createSimulation,
@@ -27,6 +28,7 @@ describe("explicit transport assignments", () => {
     const setup = createTransportSetup();
     const migrated = migrateBattleSetup({
       ...setup,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_TRANSPORT_BATTLE_RULES_VERSION,
     });
 
@@ -38,6 +40,7 @@ describe("explicit transport assignments", () => {
     const setup = createTransportSetup();
     const migrated = migrateBattleSetup({
       ...setup,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_COMBINED_ARMS_BATTLE_RULES_VERSION,
     });
 

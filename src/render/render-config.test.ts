@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Color } from "three";
+import { Color, Vector3 } from "three";
 import {
   DEFAULT_RENDER_QUALITY,
   getRenderQualitySettings,
@@ -7,6 +7,7 @@ import {
 } from "./quality";
 import { VISUAL_HEIGHT_SCALE, visualMapHeightMeters, visualWorldY } from "./elevation";
 import {
+  AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS,
   ARTILLERY_BARREL_CENTER_Z,
   ARTILLERY_SPADE_CENTER_Z,
   artilleryMuzzleWorldPosition,
@@ -66,6 +67,16 @@ describe("render configuration", () => {
     } as never);
     expect(facingNorth.z).toBeGreaterThan(0);
     expect(facingEast.x).toBeGreaterThan(0);
+  });
+
+  it("aligns the helicopter model nose with the simulation forward axis", () => {
+    const modelNose = new Vector3(0, 0, -1).applyAxisAngle(
+      new Vector3(0, 1, 0),
+      AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS,
+    );
+
+    expect(modelNose.x).toBeCloseTo(0);
+    expect(modelNose.z).toBeCloseTo(1);
   });
 
   it("preserves faction hue when a platform is damaged or destroyed", () => {

@@ -293,6 +293,7 @@ interface PlatformSpawn {
   readonly id: PlatformId;
   readonly platformTemplateId: TemplateId;
   readonly initialFacing: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  readonly initialAltitudeBand?: "low" | "medium" | "high";
   readonly crewAssignments: readonly CrewAssignment[];
   readonly persistentId?: string;
 }
@@ -312,13 +313,15 @@ interface TransportAssignment {
 
 固定编制由 `GroupTemplate` 和具体 spawn 成员/平台共同验证。英雄既可以是单成员编组，也可以占普通编组中的特殊成员槽位。成员 ID、平台 ID 和编组 ID 在整场战斗内共享全局唯一性约束。
 
-阶段 3 初始化额外验证：
+阶段 3/4 初始化额外验证：
 
 1. 每个平台匹配一个 `platformSlotRule`，其移动类型有成本矩阵且出生、任务和撤离路线合法。
 2. 每名初始乘员属于平台所在编组、只分配到一个有效岗位，并满足岗位资格或明确允许的替代规则。
 3. 每个乘客编组最多绑定一个运输平台；双方属于同一势力，平台总容量覆盖全部已部署成员的运输占用值。
 4. 初始搭载的乘客编组与平台所属编组使用相同出生锚点，并从初始地面占用中排除；非初始搭载编组必须各自具有合法出生占用。
 5. 首个实现切片要求每个车辆编组恰好一个平台；多平台槽位可以存在于目标 schema，但引用超过一个平台的输入在对应运行时实现完成前明确拒绝。
+6. `hover` 平台必须显式提供模板支持的 `initialAltitudeBand`，对应离地高度必须是当前地图 `heightUnitMm` 的整数倍；地面平台必须省略该字段。
+7. 初始与增援部署分别验证同高度带平台的安全半径；空中平台不参与地面出生格唯一性，但空中安全冲突必须在创建运行时状态前拒绝。
 
 `TransportAssignment` 只授权编组与平台之间的自动上下车，不转移成员所有权。增援中的平台、乘员与运输关系使用同一结构和验证规则；跨波次关系必须等双方均已部署后才可执行，不能通过引用未到达实体提前生成占用或情报。
 
@@ -394,16 +397,18 @@ interface WeaponSlotRule {
 ### 9.1.2 平台、部件与岗位
 
 ```ts
-type PlatformMovementType = "wheeled" | "tracked";
+type PlatformMovementType = "wheeled" | "tracked" | "hover";
+type AirAltitudeBand = "low" | "medium" | "high";
 type ArmorFace = "front" | "side" | "rear" | "top";
 type PlatformComponentKind =
   | "structure"
   | "powertrain"
   | "running-gear"
+  | "lift"
   | "weapon"
   | "loader"
   | "sensor";
-type CrewStationKind = "driver" | "gunner" | "commander" | "loader" | "auxiliary";
+type CrewStationKind = "driver" | "pilot" | "gunner" | "commander" | "loader" | "auxiliary";
 
 interface PlatformTemplate {
   readonly id: TemplateId;
@@ -411,6 +416,7 @@ interface PlatformTemplate {
   readonly eraTags: readonly string[];
   readonly techTags: readonly string[];
   readonly movementType: PlatformMovementType;
+  readonly flightRule?: HoverFlightRule;
   readonly visualTypeId: string;
   readonly occupancyUnits: number;
   readonly turnTicksPer45Degrees: Tick;
@@ -422,6 +428,12 @@ interface PlatformTemplate {
   readonly embarkTicks: Tick;
   readonly disembarkTicks: Tick;
   readonly capturePowerBps: BasisPoints;
+}
+
+interface HoverFlightRule {
+  readonly kind: "hover";
+  readonly safetyRadiusMm: number;
+  readonly clearanceMmByBand: Partial<Readonly<Record<AirAltitudeBand, number>>>;
 }
 
 interface PlatformDeploymentRule {
@@ -450,7 +462,9 @@ interface CrewStationRule {
 }
 ```
 
-每个平台必须恰好有一个 `structure` 部件；轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。`deploymentRule` 是通用平台动作能力，不表示平台一定是火炮；其中引用的岗位和部件必须属于同一模板。
+每个平台必须恰好有一个 `structure` 部件。轮式/履带平台至少有一个 `powertrain`、一个 `running-gear` 和一个 `driver` 岗位；`hover` 平台至少有一个 `powertrain`、一个 `lift` 和一个 `pilot` 岗位，并必须携带 `flightRule`。地面平台不得携带 `flightRule`。武器部件引用标准 `WeaponTemplate`，并通过 `requiredStationIds` 声明炮手、装填手等必要岗位。`requiredRoleTags` 全部满足时为合格乘员；不满足时只有 `substituteEfficiencyBps > 0` 才允许替代。`deploymentRule` 是通用平台动作能力，不表示平台一定是火炮；其中引用的岗位和部件必须属于同一模板。
+
+`flightRule.clearanceMmByBand` 至少定义一个高度带；每个高度必须为正整数，并在具体 setup 验证时对齐地图高度量化。`AIR-001` 中高度在战斗内固定，运行时保存 `{ band, clearanceMm }`，后续高度切换沿用同一状态而不改写 spawn 含义。安全半径必须为正整数，空中移动和部署均使用 `02 §5` 的成对距离规则。
 
 运行时部件完整度使用 `0..10000` 整数：`10000` 为正常，低于该值为受损，不高于 `disabledAtBps` 为失效，`0` 为摧毁。平台的机动、作战和存续状态只从部件、岗位与乘员状态派生。`capturePowerBps` 可以为零或低值，但乘员和乘客在车内时不额外叠加成员占领力。
 
@@ -683,7 +697,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-3` 提供步兵、车辆、自行火炮展开和直接逻辑弹丸能力；`indirect` 配置在 `ARTILLERY-004` 规则落地前即使出现在未引用模板中，也不能被运行时 setup 引用。功能门禁必须由规则版本和验证器明确执行。
+当前 `content-4` 提供步兵、车辆、自行火炮和无武装悬停侦察平台；直接/间接逻辑弹丸、平台展开、固定高度带和 `ground|air` 目标域均由模板显式表达。当前默认武器只支持 `ground`，因此不会攻击空中目标；空地/空空武器与高度切换仍由后续规则版本启用。功能门禁必须由规则版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -833,6 +847,7 @@ interface RenderPlatform {
   readonly disposition: "crewed" | "abandoned" | "destroyed";
   readonly damaged: boolean;
   readonly visualTypeId: string;
+  readonly flight?: PlatformFlightInspection;
   readonly deployment?: PlatformDeploymentState;
 }
 
@@ -848,7 +863,7 @@ interface RenderProjectile {
 
 表现层在前后两个逻辑帧之间插值。Worker 可以把这些逻辑数组编码为 TypedArray，但编码层不得丢失稳定实体 ID、观察时间或状态轴。死亡、爆炸、射击等短事件通过事件批次驱动，不通过猜测位置变化生成。
 
-乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观和粗状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客或实时朝向。
+乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观、粗状态和可选飞行状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客、实时高度或实时朝向。
 
 逻辑弹丸使用紧凑的 `RenderProjectile` 投影，位置从权威发射/命中 tick 和固定点轨迹派生；渲染端只插值。全知视角投影全部弹丸；势力视角投影本方弹丸以及位于该势力当前可见格的其他弹丸，不公开任务快照、目标 ID、预定弹着格或尚未发生的爆炸结果。
 
@@ -894,6 +909,7 @@ interface FireMissionEvaluationInspection {
 
 interface PlatformInspection {
   // Existing platform fields remain unchanged.
+  readonly flight?: PlatformFlightInspection;
   readonly artillery?: ArtilleryPlatformInspection;
 }
 ```
@@ -919,7 +935,7 @@ type BattleEvent =
 
 阶段 3 的平台事实使用独立事件：`platform-state-changed`、`platform-component-changed`、`crew-station-changed` 和 `embarkation-changed`。平台命中但未改变权威状态时不强制发状态事件；爆炸、火花和履带动画仍是表现抽样。运输平台损毁时，平台状态、成员伤情与强制下车事件按稳定实体 ID 和事件序号输出。
 
-当前已实现五类平台事实事件：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和动作阶段；`embarkation-changed` 携带运输关系、动作、阶段和可选原因；`platform-deployment-changed` 携带展开状态 `from/to`、`started|completed|cancelled` 阶段和可选取消原因。五者都携带稳定实体关系，观察端只消费事实而不反推状态。`stage-3.7` 另已实现 `projectile-impacted`，`artillery-mission-changed` 留待间射任务闭环。
+当前已实现五类平台事实事件：`platform-state-changed` 携带机动、作战和存续三轴的 `from/to` 快照；`platform-component-changed` 携带装甲面、是否穿透以及部件完整度/状态的 `from/to`；`crew-station-changed` 携带成员、来源/目标岗位和动作阶段；`embarkation-changed` 携带运输关系、动作、阶段和可选原因；`platform-deployment-changed` 携带展开状态 `from/to`、`started|completed|cancelled` 阶段和可选取消原因。五者都携带稳定实体关系，观察端只消费事实而不反推状态。`stage-3.7` 另实现 `projectile-impacted`，`stage-3.8` 实现 `artillery-mission-changed`。
 
 炮兵实现增加三类事实事件，并继续为实际开火产生通用 `weapon-fired`：
 
@@ -989,6 +1005,7 @@ interface PlatformResult {
   readonly finalCrewAssignments: readonly CrewAssignment[];
   readonly finalCrewReassignments: readonly CrewReassignment[];
   readonly weaponStates: readonly PlatformWeaponInspection[];
+  readonly finalFlight?: PlatformFlightInspection;
   readonly artillery?: {
     readonly finalDeploymentState: PlatformDeploymentState;
     readonly directRoundsFired: number;
@@ -1026,7 +1043,7 @@ interface PlatformResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-3.1`，规则为 `stage-3.7`，内容为 `content-3`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.6` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-3.1` 输入必须显式提供 `content-3`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.0`，内容为 `content-4`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8` 规则输入显式升级；`content-2` 武器会转换为单一直接 mode。新的 `stage-4` 输入必须显式提供 `content-4`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1051,6 +1068,8 @@ interface PlatformResult {
 - `content-3` 从开始就包含展开、直接/间接 mode 和逻辑弹丸的完整字段结构，避免后续再移动字段。`ARTILLERY-002` 规则只启用展开状态，并明确拒绝 setup 引用尚未落地的逻辑弹丸/间射 mode。
 - `ARTILLERY-003` 在相同 schema/content 上把规则升到 `stage-3.7`，启用逻辑弹丸、直接火炮、范围结算和在途弹丸终止边界。
 - `ARTILLERY-004` 把规则升到 `stage-3.8`，启用间接任务、情报来源/接收 tick、确定性误差和炮兵 AI；`ARTILLERY-005` 只完成公开投影、客户端和验收时不升级 schema/rules，除非实现发现本文尚未定义的规则变化。
+
+`AIR-001` 把 setup schema 升到 `stage-4`、规则升到 `stage-4.0`、内容升到 `content-4`。`stage-3.1/stage-3.8/content-3` 输入通过一次显式迁移升级版本，既有地面模板、spawn 和行为字段保持不变；新增字段均为未引用地面内容的可选飞行结构。新的悬停 spawn 必须显式选择模板支持的高度带，运行时高度、空域预约和真实目标域进入状态哈希，inspection/render/result 使用同一飞行事实。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

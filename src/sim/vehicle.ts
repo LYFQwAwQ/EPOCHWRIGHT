@@ -296,7 +296,7 @@ export function selectCrewReassignment(
 }
 
 export function derivePlatformCapabilities(
-  template: Pick<PlatformTemplate, "componentRules" | "crewStationRules">,
+  template: Pick<PlatformTemplate, "componentRules" | "crewStationRules" | "movementType">,
   components: readonly ComponentStateInput[],
   assignments: readonly CrewAssignment[],
   members: readonly CrewCapabilityMember[],
@@ -336,10 +336,12 @@ export function derivePlatformCapabilities(
   );
   const powertrain = forKind("powertrain");
   const runningGear = forKind("running-gear");
-  const mobilityParts = [...powertrain, ...runningGear];
+  const lift = forKind("lift");
+  const secondaryMobility = template.movementType === "hover" ? lift : runningGear;
+  const mobilityParts = [...powertrain, ...secondaryMobility];
   const mobilityEfficiencyBps = Math.min(
     maximumCapabilityEfficiency(powertrain),
-    maximumCapabilityEfficiency(runningGear),
+    maximumCapabilityEfficiency(secondaryMobility),
   );
   const sensors = forKind("sensor");
   const weapons = forKind("weapon");

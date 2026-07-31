@@ -19,6 +19,7 @@ export type DemoScenarioId =
   | "alliance-conflict"
   | "duel-conflict"
   | "artillery-observation"
+  | "air-recon"
   | "vehicle-skirmish"
   | "vehicle-defense"
   | "single-defense"
@@ -51,6 +52,7 @@ export const DEMO_SCENARIOS: readonly DemoScenarioDefinition[] = [
   { id: "alliance-conflict", label: "三方同盟冲突", mode: "conflict" },
   { id: "duel-conflict", label: "双边正面冲突", mode: "conflict" },
   { id: "artillery-observation", label: "自行火炮观察", mode: "conflict" },
+  { id: "air-recon", label: "低空侦察", mode: "conflict" },
   { id: "vehicle-skirmish", label: "车辆遭遇战", mode: "conflict" },
   { id: "vehicle-defense", label: "合成兵种防守", mode: "defense" },
   { id: "single-defense", label: "单目标防守", mode: "defense" },
@@ -125,6 +127,25 @@ export function createDemoScenarioOptions(
         rockCoverage: 0,
         wallCoverage: 0,
         maximumDurationSeconds: 100,
+        stalemateSeconds: 70,
+        mode: "conflict",
+      };
+    case "air-recon":
+      return {
+        ...shared,
+        width: 52,
+        height: 36,
+        groupsPerFaction: 4,
+        airGroupsPerFaction: 1,
+        factions: TWO_FACTIONS,
+        mountainDensity: 0.2,
+        roughness: 0.52,
+        waterCoverage: 0.08,
+        wetlandCoverage: 0.04,
+        treeCoverage: 0.02,
+        rockCoverage: 0.005,
+        wallCoverage: 0,
+        maximumDurationSeconds: 120,
         stalemateSeconds: 70,
         mode: "conflict",
       };

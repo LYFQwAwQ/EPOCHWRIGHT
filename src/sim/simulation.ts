@@ -7,6 +7,12 @@ import {
   projectilePositionAtElapsed,
 } from "./artillery";
 import {
+  flightHeightUnits,
+  hasAirspaceConflict,
+  isAirMovementType,
+  type AirspaceOccupant,
+} from "./air";
+import {
   cellIndex,
   hasLineOfSight,
   heightAt,
@@ -157,6 +163,7 @@ import type {
   VehicleEngagementReason,
   WeaponFireModeDefinition,
   WeaponTemplate,
+  WeaponTargetDomain,
 } from "./types";
 
 const MOVE_POINTS_PER_TICK = 52;
@@ -283,7 +290,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
     this.state = createRuntimeState(this.setup, this.coverSlotsByCell);
     this.pathfinder = createPathfinder(this.setup.map, "foot");
-    const movementTypes: readonly MovementType[] = ["foot", "wheeled", "tracked"];
+    const movementTypes: readonly MovementType[] = ["foot", "wheeled", "tracked", "hover"];
     this.pathfinders = new Map(
       movementTypes.map((movementType) => [
         movementType,
@@ -352,7 +359,9 @@ class StageOneBattleSimulation implements BattleSimulation {
         ? {
             x: contact.lastKnown.x,
             z: contact.lastKnown.z,
-            height: heightAt(this.setup.map, contact.lastKnown),
+            height: contact.targetFlight
+              ? flightHeightUnits(this.setup.map, contact.lastKnown, contact.targetFlight)
+              : heightAt(this.setup.map, contact.lastKnown),
           }
         : transportOwner &&
             (transportState?.status === "embarked" ||
@@ -409,6 +418,13 @@ class StageOneBattleSimulation implements BattleSimulation {
           disposition: platform.disposition,
           damaged: platform.components.some((component) => component.integrityBps < 10_000),
           visualTypeId: platform.visualTypeId,
+          flight: contact
+            ? contact.targetFlight
+              ? { ...contact.targetFlight }
+              : undefined
+            : platform.flight
+              ? { ...platform.flight }
+              : undefined,
           ...(!contact && platform.deployment
             ? { deployment: platform.deployment.state }
             : {}),
@@ -790,6 +806,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       for (const candidate of group.targetEvaluation?.candidates ?? []) {
         hasher.addString(candidate.targetGroupId);
         hasher.addString(candidate.targetProfile);
+        hasher.addString(candidate.targetDomain ?? "ground");
         hasher.addNumber(candidate.lastKnown.x);
         hasher.addNumber(candidate.lastKnown.z);
         hasher.addNumber(candidate.observedAt);
@@ -839,6 +856,8 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(platform.mobility);
         hasher.addString(platform.combat);
         hasher.addString(platform.disposition);
+        hasher.addString(platform.flight?.altitudeBand ?? "");
+        hasher.addNumber(platform.flight?.clearanceMm ?? 0);
         hasher.addString(platform.deployment?.state ?? "");
         hasher.addNumber(platform.deployment?.ticksRemaining ?? 0);
         hasher.addNumber(platform.deployment?.startedAt ?? -1);
@@ -855,6 +874,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addString(mission?.snapshot.targetGroupId ?? "");
         hasher.addString(mission?.snapshot.targetFactionId ?? "");
         hasher.addString(mission?.snapshot.targetProfile ?? "");
+        hasher.addString(mission?.snapshot.targetDomain ?? "");
         hasher.addNumber(mission?.snapshot.lastKnown.x ?? -1);
         hasher.addNumber(mission?.snapshot.lastKnown.z ?? -1);
         hasher.addNumber(mission?.snapshot.observedAt ?? -1);
@@ -977,6 +997,14 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addString(groupId);
     }
 
+    for (const [groupId, cell] of [...this.state.airspaceReservations].sort(([a], [b]) =>
+      compareStrings(a, b),
+    )) {
+      hasher.addString(groupId);
+      hasher.addNumber(cell.x);
+      hasher.addNumber(cell.z);
+    }
+
     for (const faction of [...this.state.factionKnowledge.values()].sort(compareByFactionId)) {
       hasher.addString(faction.factionId);
       for (const contact of sortedContacts(faction.contacts)) {
@@ -990,6 +1018,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       hasher.addString(message.targetGroupId);
       hasher.addString(message.targetFactionId);
       hasher.addString(message.targetProfile);
+      hasher.addString(message.targetDomain ?? "ground");
+      hasher.addString(message.targetFlight?.altitudeBand ?? "");
+      hasher.addNumber(message.targetFlight?.clearanceMm ?? 0);
       hasher.addNumber(message.observedAt);
       hasher.addNumber(message.deliveryAt);
       hasher.addNumber(message.lastKnown.x);
@@ -1248,7 +1279,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           this.openEntranceCells(
             entrance,
             movementTypeForGroup(this.setup, group),
-          ).length > 0,
+          ).some((cell) => this.canDeployAirSpawn(group, cell, [])),
       );
     });
     if (!selected) {
@@ -1302,11 +1333,18 @@ class StageOneBattleSimulation implements BattleSimulation {
       const openCell = this.openEntranceCells(
         selected,
         movementTypeForGroup(this.setup, anchorSpawn),
-      ).find((cell) => !usedCells.has(cellIndex(this.setup.map, cell)));
+      ).find(
+        (cell) =>
+          (isAirMovementType(movementTypeForGroup(this.setup, anchorSpawn)) ||
+            !usedCells.has(cellIndex(this.setup.map, cell))) &&
+          this.canDeployAirSpawn(anchorSpawn, cell, deployedGroups),
+      );
       if (!openCell) {
         continue;
       }
-      usedCells.add(cellIndex(this.setup.map, openCell));
+      if (!isAirMovementType(movementTypeForGroup(this.setup, anchorSpawn))) {
+        usedCells.add(cellIndex(this.setup.map, openCell));
+      }
       deploymentSlotsUsed += 1;
       const groups = bundle.map((candidate) =>
         createGroupState(candidate, openCell, this.setup.content),
@@ -1334,6 +1372,9 @@ class StageOneBattleSimulation implements BattleSimulation {
       for (const group of groups) {
         const transportState = this.state.transportByPassengerGroupId.get(group.id);
         if (transportState?.status === "embarked") {
+          continue;
+        }
+        if (isAirMovementType(group.movementType)) {
           continue;
         }
         this.state.occupancy.set(cellIndex(this.setup.map, group.cell), group.id);
@@ -1410,6 +1451,9 @@ class StageOneBattleSimulation implements BattleSimulation {
     return entrance.cells
       .filter((cell) => {
         const index = cellIndex(this.setup.map, cell);
+        if (isAirMovementType(movementType)) {
+          return isWalkable(this.setup.map, cell, movementType);
+        }
         return (
           isWalkable(this.setup.map, cell, movementType) &&
           !this.state.occupancy.has(index) &&
@@ -1418,6 +1462,36 @@ class StageOneBattleSimulation implements BattleSimulation {
         );
       })
       .sort((a, b) => cellIndex(this.setup.map, a) - cellIndex(this.setup.map, b));
+  }
+
+  private canDeployAirSpawn(
+    spawn: BattleSetup["groups"][number],
+    cell: GridCoord,
+    pendingGroups: readonly GroupState[],
+  ): boolean {
+    if (!isAirMovementType(movementTypeForGroup(this.setup, spawn))) {
+      return true;
+    }
+    const platform = spawn.platforms[0];
+    const template = platform
+      ? getPlatformTemplate(this.setup.content, platform.platformTemplateId)
+      : undefined;
+    const altitudeBand = platform?.initialAltitudeBand;
+    const safetyRadiusMm = template?.flightRule?.safetyRadiusMm;
+    if (!platform || !altitudeBand || safetyRadiusMm === undefined) {
+      return false;
+    }
+    const candidate: AirspaceOccupant = {
+      id: spawn.id,
+      cell: { ...cell },
+      altitudeBand,
+      safetyRadiusMm,
+    };
+    const occupants = [...this.state.groups, ...pendingGroups].flatMap((group) => {
+      const occupant = this.airspaceOccupantForGroup(group, group.cell);
+      return occupant ? [occupant] : [];
+    });
+    return !hasAirspaceConflict(this.setup.map.cellSizeMm, candidate, occupants);
   }
 
   private isEnemyControlledEntrance(
@@ -1752,6 +1826,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         const effectivenessBps = weaponTargetEffectivenessBps(
           weapon,
           contact.targetProfile,
+          contact.targetDomain,
         );
         const weaponCompatible = effectivenessBps > 0;
         const uncertainty = calculateArtilleryUncertainty(
@@ -1799,6 +1874,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         const baseScore = scoreTargetCandidates([{
           targetGroupId: contact.targetGroupId,
           targetProfile: contact.targetProfile,
+          targetDomain: contact.targetDomain,
           lastKnown: { ...contact.lastKnown },
           observedAt: contact.observedAt,
           confidenceBps: contact.confidenceBps,
@@ -1984,7 +2060,11 @@ class StageOneBattleSimulation implements BattleSimulation {
         ) {
           return false;
         }
-        const rangeBand = this.groupTargetRangeBand(group, contact.targetProfile);
+        const rangeBand = this.groupTargetRangeBand(
+          group,
+          contact.targetProfile,
+          contact.targetDomain,
+        );
         if (!rangeBand) {
           return false;
         }
@@ -2011,6 +2091,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         targetGroupId: option.contact.targetGroupId,
         targetFactionId: option.contact.targetFactionId,
         targetProfile: option.contact.targetProfile,
+        targetDomain: option.contact.targetDomain,
         lastKnown: { ...option.contact.lastKnown },
         observedAt: option.contact.observedAt,
         deliveredAt: option.contact.deliveredAt,
@@ -2935,6 +3016,8 @@ class StageOneBattleSimulation implements BattleSimulation {
           targetGroupId: message.targetGroupId,
           targetFactionId: message.targetFactionId,
           targetProfile: message.targetProfile,
+          targetDomain: message.targetDomain,
+          targetFlight: message.targetFlight ? { ...message.targetFlight } : undefined,
           lastKnown: { ...message.lastKnown },
           observedAt: message.observedAt,
           deliveredAt: message.deliveryAt,
@@ -2977,6 +3060,8 @@ class StageOneBattleSimulation implements BattleSimulation {
           distanceSquared <= sightRangeSquared &&
           hasLineOfSight(this.setup.map, observer.cell, target.cell, {
             ignoredStaticObjectCells: this.activeCoverObjectCells(observerCover, cover),
+            observerHeightUnits: this.groupSightHeightUnits(observer),
+            targetHeightUnits: this.groupSightHeightUnits(target, target.cell, 3),
           });
         const detection = observer.localDetections.get(target.id) ?? {
           progressBps: 0,
@@ -3017,6 +3102,8 @@ class StageOneBattleSimulation implements BattleSimulation {
               targetGroupId: target.id,
               targetFactionId: target.factionId,
               targetProfile: this.targetProfileForGroup(target),
+              targetDomain: this.targetDomainForGroup(target),
+              targetFlight: this.flightForGroup(target),
               lastKnown: { ...target.cell },
               observedAt: this.state.tick,
               deliveredAt: this.state.tick,
@@ -3108,6 +3195,8 @@ class StageOneBattleSimulation implements BattleSimulation {
         targetGroupId: target.id,
         targetFactionId: target.factionId,
         targetProfile: this.targetProfileForGroup(target),
+        targetDomain: this.targetDomainForGroup(target),
+        targetFlight: this.flightForGroup(target),
         observedAt: this.state.tick,
         deliveryAt: this.state.tick + recipient.deliveryDelayTicks,
         lastKnown: { ...target.cell },
@@ -3169,7 +3258,8 @@ class StageOneBattleSimulation implements BattleSimulation {
     }
     if (
       crewedPlatform?.combat === "ineffective" &&
-      crewedPlatform.crewReassignments.length === 0
+      crewedPlatform.crewReassignments.length === 0 &&
+      !this.isUnarmedObservationPlatform(crewedPlatform)
     ) {
       if (crewedPlatform.mobility === "immobilized") {
         this.abandonPlatform(crewedPlatform);
@@ -3544,6 +3634,8 @@ class StageOneBattleSimulation implements BattleSimulation {
         ...contact,
         targetFactionId: contact.targetFactionId ?? target.factionId,
         targetProfile: contact.targetProfile ?? this.targetProfileForGroup(target),
+        targetDomain: contact.targetDomain ?? this.targetDomainForGroup(target),
+        targetFlight: contact.targetFlight ?? this.flightForGroup(target),
         lastKnown: { ...target.cell },
       };
       targetsById.set(target.id, target);
@@ -3593,12 +3685,17 @@ class StageOneBattleSimulation implements BattleSimulation {
     return {
       targetGroupId: contact.targetGroupId,
       targetProfile: contact.targetProfile,
+      targetDomain: contact.targetDomain,
       lastKnown: { ...contact.lastKnown },
       observedAt: contact.observedAt,
       confidenceBps: contact.confidenceBps,
       source,
       distanceSquared: squaredGridDistance(group.cell, contact.lastKnown),
-      effectivenessBps: this.groupTargetEffectivenessBps(group, contact.targetProfile),
+      effectivenessBps: this.groupTargetEffectivenessBps(
+        group,
+        contact.targetProfile,
+        contact.targetDomain,
+      ),
       taskRelevanceBps: this.targetTaskRelevanceBps(group, contact.lastKnown),
       retained: group.currentTargetId === contact.targetGroupId,
     };
@@ -3621,6 +3718,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private groupTargetEffectivenessBps(
     group: GroupState,
     targetProfile: TargetProfile,
+    targetDomain: WeaponTargetDomain,
   ): number {
     let effectivenessBps = 0;
     for (const member of group.members) {
@@ -3630,6 +3728,7 @@ class StageOneBattleSimulation implements BattleSimulation {
       effectivenessBps += weaponTargetEffectivenessBps(
         this.weaponForMember(member),
         targetProfile,
+        targetDomain,
       );
     }
     for (const platform of group.platforms) {
@@ -3647,6 +3746,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         effectivenessBps += weaponTargetEffectivenessBps(
           getWeaponTemplate(this.setup.content, weaponState.weaponTemplateId),
           targetProfile,
+          targetDomain,
         );
       }
     }
@@ -3690,6 +3790,34 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private targetProfileForGroup(group: GroupState): TargetProfile {
     return this.activeTargetPlatform(group) ? "platform" : "personnel";
+  }
+
+  private isUnarmedObservationPlatform(platform: PlatformState): boolean {
+    return (
+      isAirMovementType(platform.movementType) &&
+      platform.weaponStates.length === 0 &&
+      this.platformCapabilities(platform).observation.available
+    );
+  }
+
+  private targetDomainForGroup(group: GroupState): WeaponTargetDomain {
+    return isAirMovementType(group.movementType) ? "air" : "ground";
+  }
+
+  private flightForGroup(group: GroupState) {
+    const flight = group.platforms.find((platform) => platform.flight)?.flight;
+    return flight ? { ...flight } : undefined;
+  }
+
+  private groupSightHeightUnits(
+    group: GroupState,
+    cell: GridCoord = group.cell,
+    groundOffset = 4,
+  ): number {
+    const flight = this.flightForGroup(group);
+    return flight
+      ? flightHeightUnits(this.setup.map, cell, flight)
+      : heightAt(this.setup.map, cell) + groundOffset;
   }
 
   private decideVehicleEngagement(group: GroupState, target: GroupState): boolean {
@@ -3770,7 +3898,8 @@ class StageOneBattleSimulation implements BattleSimulation {
       return false;
     }
     const targetProfile = this.targetProfileForGroup(target);
-    const directRange = this.groupTargetRangeBand(group, targetProfile);
+    const targetDomain = this.targetDomainForGroup(target);
+    const directRange = this.groupTargetRangeBand(group, targetProfile, targetDomain);
     const distanceSquared = squaredGridDistance(group.cell, target.cell);
     if (
       directRange &&
@@ -3783,7 +3912,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     return this.indirectWeaponConfigurations(platform).some(
       ({ weapon, fireMode, available }) =>
         available &&
-        weaponTargetEffectivenessBps(weapon, targetProfile) > 0 &&
+        weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) > 0 &&
         distanceSquaredMm >= fireMode.minimumRangeMm ** 2 &&
         distanceSquaredMm <= fireMode.maximumRangeMm ** 2,
     );
@@ -3813,7 +3942,8 @@ class StageOneBattleSimulation implements BattleSimulation {
     platform: PlatformState,
   ): VehicleEngagementOption | undefined {
     const targetProfile = this.targetProfileForGroup(target);
-    const rangeBand = this.groupTargetRangeBand(group, targetProfile);
+    const targetDomain = this.targetDomainForGroup(target);
+    const rangeBand = this.groupTargetRangeBand(group, targetProfile, targetDomain);
     if (!rangeBand) {
       return undefined;
     }
@@ -3968,6 +4098,7 @@ class StageOneBattleSimulation implements BattleSimulation {
   private groupTargetRangeBand(
     group: GroupState,
     targetProfile: TargetProfile,
+    targetDomain: WeaponTargetDomain,
   ): { readonly minimum: number; readonly preferred: number; readonly maximum: number } | undefined {
     const weapons: ReturnType<typeof getWeaponTemplate>[] = [];
     for (const member of group.members) {
@@ -3975,7 +4106,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         continue;
       }
       const weapon = this.weaponForMember(member);
-      if (weaponTargetEffectivenessBps(weapon, targetProfile) > 0) {
+      if (weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) > 0) {
         weapons.push(weapon);
       }
     }
@@ -3992,7 +4123,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         if (
           available &&
           this.platformWeaponOperator(platform, weaponState.componentId) &&
-          weaponTargetEffectivenessBps(weapon, targetProfile) > 0
+          weaponTargetEffectivenessBps(weapon, targetProfile, targetDomain) > 0
         ) {
           weapons.push(weapon);
         }
@@ -4222,6 +4353,9 @@ class StageOneBattleSimulation implements BattleSimulation {
   private getStationaryFriendlyBlockedCellIndices(
     group: GroupState,
   ): ReadonlySet<number> {
+    if (isAirMovementType(group.movementType)) {
+      return new Set();
+    }
     const blocked = new Set<number>();
     for (const [index, groupId] of this.state.occupancy) {
       if (this.isStationaryFriendlyBlocker(group, groupId)) {
@@ -4436,9 +4570,14 @@ class StageOneBattleSimulation implements BattleSimulation {
       }
       const oldIndex = cellIndex(this.setup.map, group.cell);
       const destinationIndex = cellIndex(this.setup.map, group.movingTo);
-      this.releaseCover(group);
-      this.state.occupancy.delete(oldIndex);
-      this.state.reservations.delete(destinationIndex);
+      const airborne = isAirMovementType(group.movementType);
+      if (airborne) {
+        this.state.airspaceReservations.delete(group.id);
+      } else {
+        this.releaseCover(group);
+        this.state.occupancy.delete(oldIndex);
+        this.state.reservations.delete(destinationIndex);
+      }
       if (!movementPlatform) {
         group.headingRadians = Math.atan2(
           group.movingTo.x - group.cell.x,
@@ -4460,8 +4599,10 @@ class StageOneBattleSimulation implements BattleSimulation {
       group.movingTo = undefined;
       group.moveProgress = 0;
       group.moveCost = 0;
-      this.state.occupancy.set(destinationIndex, group.id);
-      this.claimCover(group);
+      if (!airborne) {
+        this.state.occupancy.set(destinationIndex, group.id);
+        this.claimCover(group);
+      }
       if (group.path.length > 0 && sameCoord(group.path[0] ?? group.cell, group.cell)) {
         group.path.shift();
       }
@@ -4507,6 +4648,17 @@ class StageOneBattleSimulation implements BattleSimulation {
     );
     for (const proposal of proposals) {
       const destinationIndex = cellIndex(this.setup.map, proposal.destination);
+      if (isAirMovementType(proposal.group.movementType)) {
+        if (!this.canReserveAirspace(proposal.group, proposal.destination)) {
+          proposal.group.waitAge += 1;
+          continue;
+        }
+        this.startMovementProposal(proposal);
+        this.state.airspaceReservations.set(proposal.group.id, {
+          ...proposal.destination,
+        });
+        continue;
+      }
       const occupyingGroupId = this.state.occupancy.get(destinationIndex);
       const reservingGroupId = this.state.reservations.get(destinationIndex);
       const occupyingPlatformId = this.state.staticPlatformOccupancy.get(destinationIndex);
@@ -4521,32 +4673,36 @@ class StageOneBattleSimulation implements BattleSimulation {
         }
         continue;
       }
-      proposal.group.movingTo = { ...proposal.destination };
-      proposal.group.moveProgress = 0;
-      proposal.group.moveCost = movementStepCost(
-        this.setup.map,
-        proposal.group.cell,
-        proposal.destination,
-        proposal.group.movementType,
-      );
-      const platform = this.activeTargetPlatform(proposal.group);
-      if (platform) {
-        const desiredFacing = facingForStep(proposal.group.cell, proposal.destination);
-        const turnSteps = shortestFacingSteps(platform.facing, desiredFacing);
-        const template = getPlatformTemplate(
-          this.setup.content,
-          platform.platformTemplateId,
-        );
-        proposal.group.turnTicksRemaining = turnSteps * template.turnTicksPer45Degrees;
-        proposal.group.turnGoalFacing = desiredFacing;
-        if (proposal.group.turnTicksRemaining === 0) {
-          this.applyMovementFacing(proposal.group, proposal.destination);
-          proposal.group.turnGoalFacing = undefined;
-        }
-      }
-      proposal.group.waitAge = 0;
+      this.startMovementProposal(proposal);
       this.state.reservations.set(destinationIndex, proposal.group.id);
     }
+  }
+
+  private startMovementProposal(proposal: MovementProposal): void {
+    proposal.group.movingTo = { ...proposal.destination };
+    proposal.group.moveProgress = 0;
+    proposal.group.moveCost = movementStepCost(
+      this.setup.map,
+      proposal.group.cell,
+      proposal.destination,
+      proposal.group.movementType,
+    );
+    const platform = this.activeTargetPlatform(proposal.group);
+    if (platform) {
+      const desiredFacing = facingForStep(proposal.group.cell, proposal.destination);
+      const turnSteps = shortestFacingSteps(platform.facing, desiredFacing);
+      const template = getPlatformTemplate(
+        this.setup.content,
+        platform.platformTemplateId,
+      );
+      proposal.group.turnTicksRemaining = turnSteps * template.turnTicksPer45Degrees;
+      proposal.group.turnGoalFacing = desiredFacing;
+      if (proposal.group.turnTicksRemaining === 0) {
+        this.applyMovementFacing(proposal.group, proposal.destination);
+        proposal.group.turnGoalFacing = undefined;
+      }
+    }
+    proposal.group.waitAge = 0;
   }
 
   private createLogicalProjectile(
@@ -6023,6 +6179,7 @@ class StageOneBattleSimulation implements BattleSimulation {
             ...action,
           })),
           weaponStates: this.platformWeaponInspections(platform),
+          finalFlight: platform.flight ? { ...platform.flight } : undefined,
           artillery: platform.deployment
             ? {
                 finalDeploymentState: platform.deployment.state,
@@ -6296,7 +6453,11 @@ class StageOneBattleSimulation implements BattleSimulation {
 
   private cancelMovement(group: GroupState): void {
     if (group.movingTo) {
-      this.state.reservations.delete(cellIndex(this.setup.map, group.movingTo));
+      if (isAirMovementType(group.movementType)) {
+        this.state.airspaceReservations.delete(group.id);
+      } else {
+        this.state.reservations.delete(cellIndex(this.setup.map, group.movingTo));
+      }
     }
     group.movingTo = undefined;
     group.moveProgress = 0;
@@ -6306,6 +6467,48 @@ class StageOneBattleSimulation implements BattleSimulation {
     group.waitAge = 0;
     group.path = [];
     group.pathGoal = undefined;
+  }
+
+  private airspaceOccupantForGroup(
+    group: GroupState,
+    cell: GridCoord,
+  ): AirspaceOccupant | undefined {
+    const platform = group.platforms.find((candidate) => candidate.flight);
+    if (!platform?.flight || platform.disposition !== "crewed") {
+      return undefined;
+    }
+    const template = getPlatformTemplate(this.setup.content, platform.platformTemplateId);
+    const safetyRadiusMm = template.flightRule?.safetyRadiusMm;
+    if (safetyRadiusMm === undefined) {
+      return undefined;
+    }
+    return {
+      id: group.id,
+      cell: { ...cell },
+      altitudeBand: platform.flight.altitudeBand,
+      safetyRadiusMm,
+    };
+  }
+
+  private canReserveAirspace(group: GroupState, destination: GridCoord): boolean {
+    const candidate = this.airspaceOccupantForGroup(group, destination);
+    if (!candidate) {
+      return false;
+    }
+    const occupants = this.state.groups.flatMap((other) => {
+      if (!isGroupSpatiallyActive(other) || !isAirMovementType(other.movementType)) {
+        return [];
+      }
+      const current = this.airspaceOccupantForGroup(other, other.cell);
+      const reservedCell = this.state.airspaceReservations.get(other.id);
+      const reserved = reservedCell
+        ? this.airspaceOccupantForGroup(other, reservedCell)
+        : undefined;
+      return [current, reserved].filter(
+        (occupant): occupant is AirspaceOccupant => occupant !== undefined,
+      );
+    });
+    return !hasAirspaceConflict(this.setup.map.cellSizeMm, candidate, occupants);
   }
 
   private hasFriendlyBlocker(shooter: GroupState, target: GroupState): boolean {
@@ -6384,6 +6587,8 @@ class StageOneBattleSimulation implements BattleSimulation {
           targetGroupId: contact.targetGroupId,
           targetFactionId: contact.targetFactionId,
           targetProfile: contact.targetProfile,
+          targetDomain: contact.targetDomain,
+          targetFlight: contact.targetFlight ? { ...contact.targetFlight } : undefined,
           lastKnown: { ...contact.lastKnown },
           observedAt: contact.observedAt,
           confidenceBps: confidenceAtAge(
@@ -6487,6 +6692,7 @@ class StageOneBattleSimulation implements BattleSimulation {
         return member ? this.isActiveCrewMember(member, platform) : false;
       }).length,
       passengerGroupIds: [...platform.passengerGroupIds].sort(compareStrings),
+      flight: platform.flight ? { ...platform.flight } : undefined,
     };
   }
 
@@ -6812,6 +7018,9 @@ class StageOneBattleSimulation implements BattleSimulation {
   }
 
   private groupCapturePower(group: GroupState): number {
+    if (isAirMovementType(group.movementType)) {
+      return 0;
+    }
     const memberPowerBps = group.members
       .filter(
         (member) => canMemberFight(member) && member.placement.kind === "dismounted",
@@ -7011,6 +7220,9 @@ function addContactToHash(hasher: StateHasher, contact: ContactState): void {
   hasher.addString(contact.targetGroupId);
   hasher.addString(contact.targetFactionId);
   hasher.addString(contact.targetProfile);
+  hasher.addString(contact.targetDomain ?? "ground");
+  hasher.addString(contact.targetFlight?.altitudeBand ?? "");
+  hasher.addNumber(contact.targetFlight?.clearanceMm ?? 0);
   hasher.addNumber(contact.lastKnown.x);
   hasher.addNumber(contact.lastKnown.z);
   hasher.addNumber(contact.observedAt);
@@ -7049,8 +7261,14 @@ function getGroupRenderPosition(
   group: GroupState,
   map: BattleSetup["map"],
 ): { x: number; z: number; height: number } {
+  const flight = group.platforms.find((platform) => platform.flight)?.flight;
+  const clearanceHeightUnits = flight ? flight.clearanceMm / map.heightUnitMm : 0;
   if (!group.movingTo || group.moveCost <= 0) {
-    return { x: group.cell.x, z: group.cell.z, height: heightAt(map, group.cell) };
+    return {
+      x: group.cell.x,
+      z: group.cell.z,
+      height: heightAt(map, group.cell) + clearanceHeightUnits,
+    };
   }
   const progress = Math.min(1, group.moveProgress / group.moveCost);
   return {
@@ -7058,7 +7276,8 @@ function getGroupRenderPosition(
     z: group.cell.z + (group.movingTo.z - group.cell.z) * progress,
     height:
       heightAt(map, group.cell) +
-      (heightAt(map, group.movingTo) - heightAt(map, group.cell)) * progress,
+      (heightAt(map, group.movingTo) - heightAt(map, group.cell)) * progress +
+      clearanceHeightUnits,
   };
 }
 

@@ -16,6 +16,7 @@ import {
   DEFAULT_WEAPON_TEMPLATE_ID,
   DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
   DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
+  PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
   PRE_DAMAGE_BATTLE_RULES_VERSION,
   PRE_CREW_BATTLE_RULES_VERSION,
@@ -168,6 +169,7 @@ describe("single-platform vehicle slice", () => {
     const current = createVehicleSetup("tracked");
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_DAMAGE_BATTLE_RULES_VERSION,
     });
 
@@ -184,6 +186,7 @@ describe("single-platform vehicle slice", () => {
     });
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_CREW_BATTLE_RULES_VERSION,
     } satisfies BattleSetupInput);
 
@@ -198,6 +201,7 @@ describe("single-platform vehicle slice", () => {
     );
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_STABLE_VEHICLE_MOVEMENT_BATTLE_RULES_VERSION,
     } satisfies BattleSetupInput);
 
@@ -221,7 +225,7 @@ describe("single-platform vehicle slice", () => {
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
     expect(migrated.rulesVersion).toBe(BATTLE_RULES_VERSION);
-    expect(migrated.content.contentVersion).toBe("content-3");
+    expect(migrated.content.contentVersion).toBe("content-4");
     expect(migrated.transportAssignments).toEqual([]);
     expect(migrated.groups.every((group) => group.platforms.length === 0)).toBe(true);
     expect(() => validateBattleSetup(migrated)).not.toThrow();

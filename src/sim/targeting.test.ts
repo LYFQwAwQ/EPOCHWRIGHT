@@ -20,6 +20,8 @@ describe("combined-arms target utility", () => {
     expect(weaponTargetEffectivenessBps(rifle, "platform")).toBe(0);
     expect(weaponTargetEffectivenessBps(platformWeapon, "personnel")).toBeGreaterThan(0);
     expect(weaponTargetEffectivenessBps(platformWeapon, "platform")).toBeGreaterThan(0);
+    expect(weaponTargetEffectivenessBps(rifle, "personnel", "air")).toBe(0);
+    expect(weaponTargetEffectivenessBps(platformWeapon, "platform", "air")).toBe(0);
     expect(
       weaponTargetEffectivenessBps(
         { ...platformWeapon, targetDomains: ["air"] },
@@ -65,6 +67,7 @@ function candidate(targetGroupId: string): TargetCandidateScoreInput {
   return {
     targetGroupId,
     targetProfile: "personnel",
+    targetDomain: "ground",
     lastKnown: { x: 8, z: 8 },
     observedAt: 20,
     confidenceBps: 10_000,

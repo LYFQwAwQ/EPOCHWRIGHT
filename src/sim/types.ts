@@ -1,7 +1,10 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
-export const BATTLE_RULES_VERSION = "stage-3.8" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-4" as const;
+export const BATTLE_RULES_VERSION = "stage-4.0" as const;
+/** The final ground combined-arms contract before authoritative hover flight. */
+export const PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION = "stage-3.1" as const;
+export const PRE_AIR_BATTLE_RULES_VERSION = "stage-3.8" as const;
 /** The authoritative projectile contract before indirect fire missions. */
 export const PRE_INDIRECT_BATTLE_RULES_VERSION = "stage-3.7" as const;
 /** The deployment-capable artillery rules before authoritative logical projectiles. */
@@ -99,7 +102,7 @@ export interface GridCoord {
 
 export type SurfaceTypeId = (typeof SURFACE_TYPE_IDS)[keyof typeof SURFACE_TYPE_IDS];
 export type WaterDepthUnits = (typeof WATER_DEPTH_UNITS)[keyof typeof WATER_DEPTH_UNITS];
-export type MovementType = "foot" | "wheeled" | "tracked";
+export type MovementType = "foot" | "wheeled" | "tracked" | "hover";
 export type StaticObjectKind = keyof typeof STATIC_OBJECT_DEFINITIONS;
 export type StaticObjectFacing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export type CoverSlotId = string;
@@ -183,6 +186,7 @@ export interface TargetScoreComponentsInspection {
 export interface TargetCandidateInspection {
   readonly targetGroupId: GroupId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
   readonly lastKnown: GridCoord;
   readonly observedAt: Tick;
   readonly confidenceBps: number;
@@ -414,16 +418,24 @@ export interface EraTemplate {
   readonly allowedSensorTemplateIds: readonly TemplateId[];
 }
 
-export type PlatformMovementType = Extract<MovementType, "wheeled" | "tracked">;
+export type PlatformMovementType = Extract<MovementType, "wheeled" | "tracked" | "hover">;
+export type AirAltitudeBand = "low" | "medium" | "high";
 export type ArmorFace = "front" | "side" | "rear" | "top";
 export type PlatformComponentKind =
   | "structure"
   | "powertrain"
   | "running-gear"
+  | "lift"
   | "weapon"
   | "loader"
   | "sensor";
-export type CrewStationKind = "driver" | "gunner" | "commander" | "loader" | "auxiliary";
+export type CrewStationKind =
+  | "driver"
+  | "pilot"
+  | "gunner"
+  | "commander"
+  | "loader"
+  | "auxiliary";
 
 export interface PlatformComponentRule {
   readonly id: string;
@@ -450,12 +462,19 @@ export interface PlatformDeploymentRule {
   readonly requiredComponentIds: readonly string[];
 }
 
+export interface HoverFlightRule {
+  readonly kind: "hover";
+  readonly safetyRadiusMm: number;
+  readonly clearanceMmByBand: Partial<Readonly<Record<AirAltitudeBand, number>>>;
+}
+
 export interface PlatformTemplate {
   readonly id: TemplateId;
   readonly tags: readonly string[];
   readonly eraTags: readonly string[];
   readonly techTags: readonly string[];
   readonly movementType: PlatformMovementType;
+  readonly flightRule?: HoverFlightRule;
   readonly visualTypeId: string;
   readonly occupancyUnits: number;
   readonly turnTicksPer45Degrees: Tick;
@@ -484,7 +503,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-3";
+  readonly contentVersion: "content-4";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -496,6 +515,10 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreAirBattleContentBundle = Omit<BattleContentBundle, "contentVersion"> & {
+  readonly contentVersion: "content-3";
+};
 
 export interface PreArtilleryWeaponTemplate {
   readonly id: TemplateId;
@@ -574,6 +597,7 @@ export interface PlatformSpawn {
   readonly id: PlatformId;
   readonly platformTemplateId: TemplateId;
   readonly initialFacing: StaticObjectFacing;
+  readonly initialAltitudeBand?: AirAltitudeBand;
   readonly crewAssignments: readonly CrewAssignment[];
   readonly persistentId?: string;
 }
@@ -710,6 +734,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle
     | LegacyBattleContentBundle;
   readonly relations?: readonly RelationSetup[];
@@ -842,6 +867,7 @@ export interface RenderPlatform {
   readonly disposition: PlatformDisposition;
   readonly damaged: boolean;
   readonly visualTypeId: string;
+  readonly flight?: PlatformFlightInspection;
   readonly deployment?: PlatformDeploymentState;
 }
 
@@ -891,6 +917,8 @@ export interface ContactInspection {
   readonly targetGroupId: GroupId;
   readonly targetFactionId: FactionId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
+  readonly targetFlight?: PlatformFlightInspection;
   readonly lastKnown: GridCoord;
   readonly observedAt: Tick;
   readonly confidenceBps: number;
@@ -939,6 +967,12 @@ export interface PlatformSummaryInspection {
   readonly damaged: boolean;
   readonly crewCount: number;
   readonly passengerGroupIds: readonly GroupId[];
+  readonly flight?: PlatformFlightInspection;
+}
+
+export interface PlatformFlightInspection {
+  readonly altitudeBand: AirAltitudeBand;
+  readonly clearanceMm: number;
 }
 
 export interface PlatformComponentInspection {
@@ -1283,6 +1317,7 @@ export interface PlatformResult {
   readonly finalCrewAssignments: readonly CrewAssignment[];
   readonly finalCrewReassignments: readonly CrewReassignment[];
   readonly weaponStates: readonly PlatformWeaponInspection[];
+  readonly finalFlight?: PlatformFlightInspection;
   readonly artillery?: {
     readonly finalDeploymentState: PlatformDeploymentState;
     readonly directRoundsFired: number;

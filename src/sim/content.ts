@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreAirBattleContentBundle,
   PreArtilleryBattleContentBundle,
   PreArtilleryWeaponTemplate,
   SensorTemplate,
@@ -21,7 +22,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-3" as const;
+export const BATTLE_CONTENT_VERSION = "content-4" as const;
+export const PRE_AIR_BATTLE_CONTENT_VERSION = "content-3" as const;
 export const DEFAULT_ERA_ID = "era-default-v1" as const;
 export const DEFAULT_GROUP_TEMPLATE_ID = "infantry-rifle-squad-v1" as const;
 export const DEFAULT_MEMBER_TEMPLATE_ID = "infantry-rifleman-v1" as const;
@@ -38,6 +40,10 @@ export const DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID = "artillery-self-propelled-gro
 export const DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID = "vehicle-wheeled-scout-v1" as const;
 export const DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID = "vehicle-tracked-scout-v1" as const;
 export const DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID = "artillery-self-propelled-v1" as const;
+export const DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID = "air-recon-helicopter-group-v1" as const;
+export const DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID = "air-recon-helicopter-v1" as const;
+export const DEFAULT_PILOT_MEMBER_TEMPLATE_ID = "air-pilot-v1" as const;
+export const DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID = "air-observer-v1" as const;
 
 const DEFAULT_CELL_SIZE_MM = 4_000;
 
@@ -64,17 +70,21 @@ export function createDefaultBattleContent(
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
+      DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
     ],
     allowedMemberTemplateIds: [
       DEFAULT_MEMBER_TEMPLATE_ID,
       DEFAULT_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+      DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
+      DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
     ],
     allowedPlatformTemplateIds: [
       DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
       DEFAULT_TRACKED_PLATFORM_TEMPLATE_ID,
       DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+      DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
     ],
     allowedWeaponTemplateIds: [
       DEFAULT_WEAPON_TEMPLATE_ID,
@@ -143,6 +153,20 @@ export function createDefaultBattleContent(
     tags: ["crew", "relief"],
     roleTags: ["driver", "gunner"],
   };
+  const pilotMember: MemberTemplate = {
+    ...crewMember,
+    id: DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
+    tags: ["aircrew", "pilot"],
+    roleTags: ["pilot"],
+    silhouetteId: "aircrew",
+  };
+  const airObserverMember: MemberTemplate = {
+    ...crewMember,
+    id: DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
+    tags: ["aircrew", "observer"],
+    roleTags: ["observer"],
+    silhouetteId: "aircrew",
+  };
   const wheeledPlatform = createDefaultPlatformTemplate(
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
     "wheeled",
@@ -171,6 +195,7 @@ export function createDefaultBattleContent(
       },
     },
   );
+  const airReconPlatform = createDefaultAirReconPlatformTemplate();
   const wheeledGroup = createDefaultVehicleGroupTemplate(
     DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
     DEFAULT_WHEELED_PLATFORM_TEMPLATE_ID,
@@ -184,6 +209,7 @@ export function createDefaultBattleContent(
     DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
     ["vehicle", "artillery"],
   );
+  const airReconGroup = createDefaultAirReconGroupTemplate();
   const sensor: SensorTemplate = {
     id: DEFAULT_SENSOR_TEMPLATE_ID,
     rangeMm: (options.sightRangeCells ?? 13) * cellSizeMm,
@@ -300,17 +326,21 @@ export function createDefaultBattleContent(
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
+      [airReconGroup.id]: airReconGroup,
     },
     memberTemplates: {
       [member.id]: member,
       [crewMember.id]: crewMember,
       [gunnerMember.id]: gunnerMember,
       [reliefCrewMember.id]: reliefCrewMember,
+      [pilotMember.id]: pilotMember,
+      [airObserverMember.id]: airObserverMember,
     },
     platformTemplates: {
       [wheeledPlatform.id]: wheeledPlatform,
       [trackedPlatform.id]: trackedPlatform,
       [artilleryPlatform.id]: artilleryPlatform,
+      [airReconPlatform.id]: airReconPlatform,
     },
     weaponTemplates: {
       [weapon.id]: weapon,
@@ -360,6 +390,117 @@ function createDefaultVehicleGroupTemplate(
     cohesionRadiusCells: 0,
     capturePowerScaleBps: 10_000,
     behaviorProfileId: "vehicle-basic",
+  };
+}
+
+function createDefaultAirReconGroupTemplate(): GroupTemplate {
+  return {
+    id: DEFAULT_AIR_RECON_GROUP_TEMPLATE_ID,
+    tags: ["air", "recon", "helicopter"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    memberSlotRules: [
+      {
+        slotId: "pilot",
+        memberTemplateId: DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "observer",
+        memberTemplateId: DEFAULT_AIR_OBSERVER_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    platformSlotRules: [
+      {
+        slotId: "aircraft",
+        platformTemplateId: DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+    ],
+    cohesionRadiusCells: 0,
+    capturePowerScaleBps: 0,
+    behaviorProfileId: "air-recon",
+  };
+}
+
+function createDefaultAirReconPlatformTemplate(): PlatformTemplate {
+  return {
+    id: DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
+    tags: ["air", "recon", "helicopter", "hover"],
+    eraTags: [DEFAULT_ERA_ID],
+    techTags: ["basic-aviation"],
+    movementType: "hover",
+    flightRule: {
+      kind: "hover",
+      safetyRadiusMm: 2_000,
+      clearanceMmByBand: {
+        low: 12_000,
+        medium: 40_000,
+        high: 80_000,
+      },
+    },
+    visualTypeId: "air-recon-helicopter",
+    occupancyUnits: 1,
+    turnTicksPer45Degrees: 1,
+    armorRatingByFace: { front: 20, side: 15, rear: 10, top: 10 },
+    componentRules: [
+      {
+        id: "structure",
+        kind: "structure",
+        hitWeight: 4,
+        external: false,
+        disabledAtBps: 0,
+        requiredStationIds: [],
+      },
+      {
+        id: "powertrain",
+        kind: "powertrain",
+        hitWeight: 2,
+        external: false,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["pilot"],
+      },
+      {
+        id: "lift",
+        kind: "lift",
+        hitWeight: 3,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["pilot"],
+      },
+      {
+        id: "sensor",
+        kind: "sensor",
+        hitWeight: 1,
+        external: true,
+        disabledAtBps: 2_500,
+        requiredStationIds: ["observer"],
+      },
+    ],
+    crewStationRules: [
+      {
+        id: "pilot",
+        kind: "pilot",
+        requiredRoleTags: ["pilot"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+      {
+        id: "observer",
+        kind: "auxiliary",
+        requiredRoleTags: ["observer"],
+        replacementTicks: 20,
+        substituteEfficiencyBps: 0,
+      },
+    ],
+    transportCapacityUnits: 0,
+    embarkTicks: 0,
+    disembarkTicks: 0,
+    capturePowerBps: 0,
   };
 }
 
@@ -470,11 +611,27 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreAirBattleContentBundle
     | PreArtilleryBattleContentBundle
     | LegacyBattleContentBundle,
 ): BattleContentBundle {
   if (content.contentVersion === BATTLE_CONTENT_VERSION) {
     return cloneBattleContent(content);
+  }
+  if (content.contentVersion === PRE_AIR_BATTLE_CONTENT_VERSION) {
+    return {
+      ...content,
+      contentVersion: BATTLE_CONTENT_VERSION,
+      eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
+      groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
+      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
+      weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
+      sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
+      abilityTemplates: cloneRecord(content.abilityTemplates, cloneSimpleTemplate),
+      statusTemplates: cloneRecord(content.statusTemplates, cloneSimpleTemplate),
+      terrainCatalog: { ...content.terrainCatalog },
+    };
   }
   if (content.contentVersion === "content-2") {
     return {
@@ -635,14 +792,21 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-3.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-4.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
     if (!era.allowedGroupTemplateIds.includes(group.id)) {
       continue;
     }
-    const expectedBehavior = group.platformSlotRules.length > 0 ? "vehicle-basic" : "infantry-basic";
+    const hoverPlatform = group.platformSlotRules.some(
+      (slot) => content.platformTemplates[slot.platformTemplateId]?.movementType === "hover",
+    );
+    const expectedBehavior = hoverPlatform
+      ? "air-recon"
+      : group.platformSlotRules.length > 0
+        ? "vehicle-basic"
+        : "infantry-basic";
     if (group.behaviorProfileId !== expectedBehavior) {
       throw new Error(`Group template ${group.id} uses an unsupported behavior profile.`);
     }
@@ -662,7 +826,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-2 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-4 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -970,7 +1134,7 @@ function validateSensorTemplate(template: SensorTemplate): void {
 function validatePlatformTemplate(template: PlatformTemplate): void {
   validateTags(template.id, template.tags, template.eraTags, template.techTags);
   if (
-    (template.movementType !== "wheeled" && template.movementType !== "tracked") ||
+    !(["wheeled", "tracked", "hover"] as const).includes(template.movementType) ||
     !template.visualTypeId ||
     !Number.isInteger(template.occupancyUnits) ||
     template.occupancyUnits < 1 ||
@@ -998,7 +1162,7 @@ function validatePlatformTemplate(template: PlatformTemplate): void {
     template.crewStationRules.some(
       (station) =>
         !station.id ||
-        !["driver", "gunner", "commander", "loader", "auxiliary"].includes(station.kind) ||
+        !["driver", "pilot", "gunner", "commander", "loader", "auxiliary"].includes(station.kind) ||
         new Set(station.requiredRoleTags).size !== station.requiredRoleTags.length ||
         station.requiredRoleTags.some((tag) => !tag) ||
         !Number.isInteger(station.replacementTicks) ||
@@ -1011,19 +1175,25 @@ function validatePlatformTemplate(template: PlatformTemplate): void {
     throw new Error(`Platform template ${template.id} has invalid crew stations.`);
   }
   const componentIds = new Set(template.componentRules.map((component) => component.id));
+  const hover = template.movementType === "hover";
   if (
     componentIds.size !== template.componentRules.length ||
     template.componentRules.filter((component) => component.kind === "structure").length !== 1 ||
     !template.componentRules.some((component) => component.kind === "powertrain") ||
-    !template.componentRules.some((component) => component.kind === "running-gear") ||
-    !template.crewStationRules.some((station) => station.kind === "driver")
+    !(hover
+      ? template.componentRules.some((component) => component.kind === "lift") &&
+        template.crewStationRules.some((station) => station.kind === "pilot")
+      : template.componentRules.some((component) => component.kind === "running-gear") &&
+        template.crewStationRules.some((station) => station.kind === "driver"))
   ) {
-    throw new Error(`Platform template ${template.id} requires unique core components and a driver.`);
+    throw new Error(
+      `Platform template ${template.id} requires unique core mobility components and an operator.`,
+    );
   }
   for (const component of template.componentRules) {
     if (
       !component.id ||
-      !["structure", "powertrain", "running-gear", "weapon", "loader", "sensor"].includes(
+      !["structure", "powertrain", "running-gear", "lift", "weapon", "loader", "sensor"].includes(
         component.kind,
       ) ||
       typeof component.external !== "boolean" ||
@@ -1037,6 +1207,28 @@ function validatePlatformTemplate(template: PlatformTemplate): void {
       (component.kind === "weapon") !== (component.weaponTemplateId !== undefined)
     ) {
       throw new Error(`Platform template ${template.id} has an invalid component.`);
+    }
+  }
+  if (hover !== (template.flightRule !== undefined)) {
+    throw new Error(`Platform template ${template.id} has an invalid flight rule.`);
+  }
+  if (template.flightRule) {
+    const clearances = Object.entries(template.flightRule.clearanceMmByBand);
+    if (
+      template.flightRule.kind !== "hover" ||
+      !Number.isInteger(template.flightRule.safetyRadiusMm) ||
+      template.flightRule.safetyRadiusMm <= 0 ||
+      clearances.length === 0 ||
+      clearances.some(
+        ([band, clearanceMm]) =>
+          !(["low", "medium", "high"] as const).includes(
+            band as "low" | "medium" | "high",
+          ) ||
+          !Number.isInteger(clearanceMm) ||
+          clearanceMm <= 0,
+      )
+    ) {
+      throw new Error(`Platform template ${template.id} has an invalid flight rule.`);
     }
   }
   if (template.deploymentRule) {
@@ -1172,6 +1364,14 @@ function hashPlatformTemplate(hasher: StateHasher, template: PlatformTemplate): 
   addSortedStrings(hasher, template.eraTags);
   addSortedStrings(hasher, template.techTags);
   hasher.addString(template.movementType);
+  hasher.addNumber(template.flightRule ? 1 : 0);
+  if (template.flightRule) {
+    hasher.addString(template.flightRule.kind);
+    hasher.addNumber(template.flightRule.safetyRadiusMm);
+    for (const band of ["low", "medium", "high"] as const) {
+      hasher.addNumber(template.flightRule.clearanceMmByBand[band] ?? -1);
+    }
+  }
   hasher.addString(template.visualTypeId);
   hasher.addNumber(template.occupancyUnits);
   hasher.addNumber(template.turnTicksPer45Degrees);
@@ -1321,6 +1521,12 @@ function clonePlatformTemplate(template: PlatformTemplate): PlatformTemplate {
     eraTags: [...template.eraTags],
     techTags: [...template.techTags],
     armorRatingByFace: { ...template.armorRatingByFace },
+    flightRule: template.flightRule
+      ? {
+          ...template.flightRule,
+          clearanceMmByBand: { ...template.flightRule.clearanceMmByBand },
+        }
+      : undefined,
     componentRules: template.componentRules.map((component) => ({
       ...component,
       requiredStationIds: [...component.requiredStationIds],

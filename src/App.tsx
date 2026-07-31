@@ -487,6 +487,7 @@ export function App() {
       getFactionIds: () => state.setup?.factions.map((faction) => faction.id) ?? [],
       getGroupIds: () => displayFrame?.groups.map((group) => group.id) ?? [],
       getPlatformIds: () => displayFrame?.platforms.map((platform) => platform.id) ?? [],
+      getPlatforms: () => displayFrame?.platforms ?? [],
       getProjectiles: () => displayFrame?.projectiles ?? [],
       getEventTypes: () => visibleEvents.map((event) => event.type),
       getEventSummaries: () => visibleEvents.map((event) => ({

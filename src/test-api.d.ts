@@ -38,6 +38,18 @@ interface BattleTestApi {
   getFactionIds(): readonly string[];
   getGroupIds(): readonly string[];
   getPlatformIds(): readonly string[];
+  getPlatforms(): readonly {
+    id: string;
+    groupId: string;
+    worldX: number;
+    worldY: number;
+    worldZ: number;
+    headingRadians: number;
+    flight?: {
+      altitudeBand: "low" | "medium" | "high";
+      clearanceMm: number;
+    };
+  }[];
   getProjectiles(): readonly {
     id: string;
     sourceFactionId: string;

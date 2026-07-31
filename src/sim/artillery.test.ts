@@ -12,6 +12,7 @@ import {
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
+  PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_INDIRECT_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_RULES_VERSION,
   PRE_ARTILLERY_BATTLE_SETUP_SCHEMA_VERSION,
@@ -165,6 +166,7 @@ describe("artillery content contract", () => {
     const current = createArtillerySetup();
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_INDIRECT_BATTLE_RULES_VERSION,
     });
 

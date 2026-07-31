@@ -27,11 +27,13 @@ import type {
   PlatformId,
   PlatformDamageEffectDefinition,
   PlatformDeploymentState,
+  PlatformFlightInspection,
   PlatformMobilityState,
   PlatformMovementType,
   StaticObjectFacing,
   TargetEvaluationInspection,
   TargetProfile,
+  WeaponTargetDomain,
   TransportDismountEvaluationInspection,
   TransportStatus,
   VehicleEngagementInspection,
@@ -93,6 +95,7 @@ export interface FireMissionTargetSnapshot {
   readonly targetGroupId: GroupId;
   readonly targetFactionId: FactionId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
   readonly lastKnown: GridCoord;
   readonly observedAt: Tick;
   readonly deliveredAt: Tick;
@@ -122,6 +125,7 @@ export interface PlatformState {
   readonly persistentPlatformId?: string;
   readonly movementType: PlatformMovementType;
   readonly visualTypeId: string;
+  readonly flight?: PlatformFlightInspection;
   cell: GridCoord;
   facing: StaticObjectFacing;
   mobility: PlatformMobilityState;
@@ -197,6 +201,8 @@ export interface ContactState {
   readonly targetGroupId: GroupId;
   readonly targetFactionId: FactionId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
+  readonly targetFlight?: PlatformFlightInspection;
   lastKnown: GridCoord;
   observedAt: Tick;
   deliveredAt: Tick;
@@ -267,6 +273,8 @@ export interface IntelMessage {
   readonly targetGroupId: GroupId;
   readonly targetFactionId: FactionId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
+  readonly targetFlight?: PlatformFlightInspection;
   readonly observedAt: Tick;
   readonly deliveryAt: Tick;
   readonly lastKnown: GridCoord;
@@ -317,6 +325,7 @@ export interface RuntimeState {
   readonly intelQueue: IntelMessage[];
   readonly events: BattleEvent[];
   readonly occupancy: Map<number, GroupId>;
+  readonly airspaceReservations: Map<GroupId, GridCoord>;
   readonly staticPlatformOccupancy: Map<number, PlatformId>;
   readonly reservations: Map<number, GroupId>;
   readonly coverOccupancy: Map<CoverSlotId, GroupId>;

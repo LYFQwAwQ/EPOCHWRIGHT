@@ -416,6 +416,7 @@ describe("standard terrain layers", () => {
     for (const movementType of ["foot", "wheeled", "tracked"] as const) {
       expect(movementCostAt(map, { x: 4, z: 0 }, movementType)).toBe(0);
     }
+    expect(movementCostAt(map, { x: 4, z: 0 }, "hover")).toBeGreaterThan(0);
   });
 
   it("applies vehicle slope limits consistently to steps and A*", () => {
@@ -426,11 +427,14 @@ describe("standard terrain layers", () => {
       foot: Number.POSITIVE_INFINITY,
       wheeled: 2,
       tracked: 4,
+      hover: Number.POSITIVE_INFINITY,
     });
     expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "foot")).toBe(true);
     expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "wheeled"))
       .toBe(false);
     expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "tracked"))
+      .toBe(true);
+    expect(canTraverseStep(slopeMap, { x: 0, z: 0 }, { x: 1, z: 0 }, "hover"))
       .toBe(true);
     expect(createPathfinder(slopeMap, "wheeled").findPath(
       { x: 0, z: 0 },

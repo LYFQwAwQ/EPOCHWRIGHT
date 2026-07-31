@@ -6,6 +6,7 @@ import type {
   TargetProfile,
   Tick,
   WeaponTemplate,
+  WeaponTargetDomain,
 } from "./types";
 
 const MAX_EFFECTIVENESS_BPS = 40_000;
@@ -13,6 +14,7 @@ const MAX_EFFECTIVENESS_BPS = 40_000;
 export interface TargetCandidateScoreInput {
   readonly targetGroupId: GroupId;
   readonly targetProfile: TargetProfile;
+  readonly targetDomain: WeaponTargetDomain;
   readonly lastKnown: GridCoord;
   readonly observedAt: Tick;
   readonly confidenceBps: number;
@@ -26,8 +28,9 @@ export interface TargetCandidateScoreInput {
 export function weaponTargetEffectivenessBps(
   weapon: Pick<WeaponTemplate, "targetDomains" | "damageEffects" | "suppressionBps">,
   targetProfile: TargetProfile,
+  targetDomain: WeaponTargetDomain = "ground",
 ): number {
-  if (!weapon.targetDomains.includes("ground")) {
+  if (!weapon.targetDomains.includes(targetDomain)) {
     return 0;
   }
   if (targetProfile === "platform") {
@@ -74,6 +77,7 @@ export function scoreTargetCandidates(
       return {
         targetGroupId: candidate.targetGroupId,
         targetProfile: candidate.targetProfile,
+        targetDomain: candidate.targetDomain,
         lastKnown: { ...candidate.lastKnown },
         observedAt: candidate.observedAt,
         confidenceBps: candidate.confidenceBps,

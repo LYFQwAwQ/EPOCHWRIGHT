@@ -92,17 +92,28 @@ export const TRACKED_MOVEMENT_COST_MATRIX = [
   [8, 14, 0],
 ] as const;
 
+export const HOVER_MOVEMENT_COST_MATRIX = [
+  // Hover movement ignores ground composition while remaining grid-bounded.
+  [10, 10, 10],
+  [10, 10, 10],
+  [10, 10, 10],
+  [10, 10, 10],
+  [10, 10, 10],
+] as const;
+
 export const MOVEMENT_SLOPE_LIMIT_HEIGHT_UNITS = {
   // Foot keeps the stage-2 behavior; vehicle limits apply per adjacent step.
   foot: Number.POSITIVE_INFINITY,
   wheeled: 2,
   tracked: 4,
+  hover: Number.POSITIVE_INFINITY,
 } as const satisfies Readonly<Record<MovementType, number>>;
 
 const MOVEMENT_COST_MATRICES = {
   foot: FOOT_MOVEMENT_COST_MATRIX,
   wheeled: WHEELED_MOVEMENT_COST_MATRIX,
   tracked: TRACKED_MOVEMENT_COST_MATRIX,
+  hover: HOVER_MOVEMENT_COST_MATRIX,
 } as const satisfies Readonly<Record<MovementType, readonly (readonly number[])[]>>;
 
 export function cellIndex(map: Pick<BattleMap, "width">, coord: GridCoord): number {
@@ -152,8 +163,9 @@ export function movementCostAtIndex(
   const staticObjectDefinition =
     STATIC_OBJECT_DEFINITIONS_BY_TYPE_ID[map.layers.staticOccupancy[index] ?? 0];
   if (
-    ((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0 ||
-    staticObjectDefinition?.blocksMovement
+    movementType !== "hover" &&
+    (((map.layers.cellFlags[index] ?? 0) & MAP_CELL_FLAGS.groundBlocked) !== 0 ||
+      staticObjectDefinition?.blocksMovement)
   ) {
     return 0;
   }
@@ -536,7 +548,11 @@ export function hasLineOfSight(
   map: BattleMap,
   from: GridCoord,
   to: GridCoord,
-  options: { readonly ignoredStaticObjectCells?: readonly GridCoord[] } = {},
+  options: {
+    readonly ignoredStaticObjectCells?: readonly GridCoord[];
+    readonly observerHeightUnits?: number;
+    readonly targetHeightUnits?: number;
+  } = {},
 ): boolean {
   if (!isInsideMap(map, from) || !isInsideMap(map, to)) {
     return false;
@@ -549,8 +565,8 @@ export function hasLineOfSight(
     return true;
   }
 
-  const observerHeight = heightAt(map, from) + 4;
-  const targetHeight = heightAt(map, to) + 3;
+  const observerHeight = options.observerHeightUnits ?? heightAt(map, from) + 4;
+  const targetHeight = options.targetHeightUnits ?? heightAt(map, to) + 3;
   const ignoredStaticObjectIndices = (options.ignoredStaticObjectCells ?? [])
     .filter((coord) => isInsideMap(map, coord))
     .map((coord) => cellIndex(map, coord));

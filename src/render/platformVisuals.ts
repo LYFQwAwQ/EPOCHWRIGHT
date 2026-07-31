@@ -7,6 +7,7 @@ export const ARTILLERY_BARREL_LENGTH = 3.65;
 export const ARTILLERY_SPADE_CENTER_Z = -1.82;
 export const ARTILLERY_DEPLOYED_ELEVATION_RADIANS = 0.28;
 export const ARTILLERY_PACKED_ELEVATION_RADIANS = 0.08;
+export const AIR_PLATFORM_MODEL_YAW_OFFSET_RADIANS = Math.PI;
 
 export function platformStateColor(
   factionColor: string,
