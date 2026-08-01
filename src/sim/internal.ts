@@ -46,7 +46,7 @@ import type {
   FireMissionIntelSource,
   FlightAltitudeEvaluationInspection,
 } from "./types";
-import type { ActiveAuraApplication } from "./ability";
+import type { ActiveAbilityRuntimeState, ActiveAuraApplication } from "./ability";
 
 export interface MemberState {
   readonly id: MemberId;
@@ -60,6 +60,7 @@ export interface MemberState {
   reloadTicksRemaining: Tick;
   shotCooldownTicks: Tick;
   placement: MemberPlacement;
+  readonly activeAbilities: ActiveAbilityRuntimeState[];
 }
 
 export interface PlatformComponentStateValue {

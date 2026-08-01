@@ -1,4 +1,4 @@
-import { Crosshair, Flag, PlaneLanding, Radio, ShieldAlert, Skull, Swords } from "lucide-react";
+import { Crosshair, Flag, PlaneLanding, Radio, ShieldAlert, Skull, Sparkles, Swords } from "lucide-react";
 import type { BattleEvent } from "../sim/types";
 
 interface EventFeedProps {
@@ -9,6 +9,8 @@ function describeEvent(event: BattleEvent): string | undefined {
   switch (event.type) {
     case "contact-spotted":
       return `${event.observerGroupId} 发现 ${event.targetGroupId}`;
+    case "ability-used":
+      return `${event.sourceGroupId} 使用主动能力，恢复 ${Math.round(event.suppressionRecoveredBps / 100)}% 压制`;
     case "member-health-changed":
       if (event.to === "incapacitated") {
         return `${event.groupId} 有成员失去战斗能力`;
@@ -136,6 +138,7 @@ function EventIcon({ event }: { readonly event: BattleEvent }) {
   if (event.type === "member-health-changed" && event.to === "dead") return <Skull size={14} />;
   if (event.type === "morale-changed") return <ShieldAlert size={14} />;
   if (event.type === "objective-state-changed") return <Flag size={14} />;
+  if (event.type === "ability-used") return <Sparkles size={14} />;
   return <Swords size={14} />;
 }
 

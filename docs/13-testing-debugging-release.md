@@ -129,7 +129,7 @@ window.__battleTest?.step(200);
 
 `AIR-004` 在 `src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-5 -> content-6` 迁移、武装直升机/侦察无人机编制、标准空地/空空挂载、无武装无人机、自然开火、连续净空和逐 tick 双实例哈希。`air-operations` 的真实 Worker/WebGL E2E 同时检查三种悬停轮廓、无人机顶部特征像素、任务/武器/弹药 inspection、未发现敌方平台不投影且不能检查、非档位端点的连续世界 Y、质量档切换不改变哈希，以及桌面和 `390 x 844` 无溢出截图。
 
-`ABILITY-001/002` 在 `src/sim/ability.test.ts`、`src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-6 -> content-7 -> content-8` 迁移、成员能力引用、条件/目标/效果/范围/叠加负例、显示名不进哈希、效果值进入哈希、被动派生值、光环半径边界、`stack|strongest`、同分稳定来源、失能/死亡/撤离移除、逐 tick 双实例复演和敌方已知接触裁剪。`passive-ability` 与 `aura-ability` 的真实 Worker E2E 检查全知/本方中文解释、敌方 inspection 无能力或光环字段、观察切换哈希不变，以及桌面和 `390 x 844` 无溢出。
+`ABILITY-001/002/003` 在 `src/sim/ability.test.ts`、`src/sim/active-ability.test.ts`、`src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-6 -> content-7 -> content-8 -> content-9` 迁移、成员能力引用、条件/触发/目标/效果/范围/叠加/冷却/次数负例、显示名不进哈希、效果值进入哈希、被动派生值、光环半径边界、`stack|strongest`、主动友军效用、稳定事件顺序、隐藏敌情成对负例、终止冻结、结果摘要和逐 tick 双实例复演。`passive-ability`、`aura-ability` 与 `active-ability` 的真实 Worker E2E 检查全知/本方中文解释、主动使用事件、冷却/次数、敌方 inspection 裁剪、观察切换哈希不变，以及桌面和 `390 x 844` 无溢出。
 
 ### 批量 seed 重放
 

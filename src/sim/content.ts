@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreActiveAbilityBattleContentBundle,
   PreAuraAbilityBattleContentBundle,
   PrePassiveAbilityBattleContentBundle,
   PrePassiveAbilityMemberTemplate,
@@ -27,7 +28,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-8" as const;
+export const BATTLE_CONTENT_VERSION = "content-9" as const;
+export const PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-8" as const;
 export const PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION = "content-7" as const;
 export const PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-6" as const;
 export const PRE_AIR_UNITS_BATTLE_CONTENT_VERSION = "content-5" as const;
@@ -42,6 +44,9 @@ export const DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID = "formation-discipline-v1" as 
 export const DEFAULT_AURA_GROUP_TEMPLATE_ID = "infantry-command-squad-v1" as const;
 export const DEFAULT_AURA_MEMBER_TEMPLATE_ID = "infantry-command-leader-v1" as const;
 export const DEFAULT_AURA_ABILITY_TEMPLATE_ID = "rallying-presence-v1" as const;
+export const DEFAULT_ACTIVE_GROUP_TEMPLATE_ID = "infantry-rally-squad-v1" as const;
+export const DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID = "infantry-rally-leader-v1" as const;
+export const DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID = "steady-the-line-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
@@ -92,6 +97,7 @@ export function createDefaultBattleContent(
       DEFAULT_GROUP_TEMPLATE_ID,
       DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
       DEFAULT_AURA_GROUP_TEMPLATE_ID,
+      DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
@@ -103,6 +109,7 @@ export function createDefaultBattleContent(
       DEFAULT_MEMBER_TEMPLATE_ID,
       DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
       DEFAULT_AURA_MEMBER_TEMPLATE_ID,
+      DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
       DEFAULT_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
@@ -248,6 +255,52 @@ export function createDefaultBattleContent(
       {
         slotId: "commander",
         memberTemplateId: DEFAULT_AURA_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+      },
+      {
+        slotId: "riflemen",
+        memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+        count: 7,
+        required: true,
+      },
+    ],
+  };
+  const activeAbility: AbilityTemplate = {
+    id: DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID,
+    displayName: "稳住阵脚",
+    tags: ["command", "infantry", "active"],
+    kind: "active",
+    targetRule: "nearby-friendly-groups",
+    rangeCells: 8,
+    cooldownTicks: 40,
+    maxCharges: 2,
+    conditions: [
+      { kind: "health", states: ["healthy", "wounded"] },
+      { kind: "presence", states: ["deployed"] },
+    ],
+    triggerConditions: [
+      { kind: "target-suppression", minimumBps: 200 },
+    ],
+    effects: [
+      { kind: "suppression-recovery", amountBps: 2_500 },
+    ],
+  };
+  const activeMember: MemberTemplate = {
+    ...member,
+    id: DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+    tags: ["infantry", "rally-leader"],
+    roleTags: ["rifleman", "leader"],
+    abilityTemplateIds: [DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID],
+  };
+  const activeGroup: GroupTemplate = {
+    ...group,
+    id: DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+    tags: ["infantry", "squad", "rally"],
+    memberSlotRules: [
+      {
+        slotId: "rally-leader",
+        memberTemplateId: DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
         count: 1,
         required: true,
       },
@@ -562,6 +615,7 @@ export function createDefaultBattleContent(
       [group.id]: group,
       [passiveGroup.id]: passiveGroup,
       [auraGroup.id]: auraGroup,
+      [activeGroup.id]: activeGroup,
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
@@ -573,6 +627,7 @@ export function createDefaultBattleContent(
       [member.id]: member,
       [passiveMember.id]: passiveMember,
       [auraMember.id]: auraMember,
+      [activeMember.id]: activeMember,
       [crewMember.id]: crewMember,
       [gunnerMember.id]: gunnerMember,
       [reliefCrewMember.id]: reliefCrewMember,
@@ -600,6 +655,7 @@ export function createDefaultBattleContent(
     abilityTemplates: {
       [passiveAbility.id]: passiveAbility,
       [auraAbility.id]: auraAbility,
+      [activeAbility.id]: activeAbility,
     },
     statusTemplates: {},
     terrainCatalog: { version: "map-2" },
@@ -1090,6 +1146,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreActiveAbilityBattleContentBundle
     | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
@@ -1101,13 +1158,21 @@ export function migrateBattleContent(
   if (content.contentVersion === BATTLE_CONTENT_VERSION) {
     return cloneBattleContent(content);
   }
-  if (content.contentVersion === PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION) {
+  if (
+    content.contentVersion === PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION ||
+    content.contentVersion === PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION
+  ) {
     return {
       ...content,
       contentVersion: BATTLE_CONTENT_VERSION,
       eraTemplates: cloneRecord(content.eraTemplates, cloneEraTemplate),
       groupTemplates: cloneRecord(content.groupTemplates, cloneGroupTemplate),
-      memberTemplates: cloneRecord(content.memberTemplates, cloneMemberTemplate),
+      memberTemplates: cloneRecord(content.memberTemplates, (template) => ({
+        ...cloneMemberTemplate(template),
+        abilityTemplateIds: template.abilityTemplateIds.filter(
+          (abilityId) => Boolean(content.abilityTemplates[abilityId]),
+        ),
+      })),
       platformTemplates: cloneRecord(content.platformTemplates, clonePlatformTemplate),
       weaponTemplates: cloneRecord(content.weaponTemplates, cloneWeaponTemplate),
       sensorTemplates: cloneRecord(content.sensorTemplates, cloneSensorTemplate),
@@ -1299,7 +1364,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-8.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-9.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -1333,7 +1398,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-8 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-9 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -1492,14 +1557,19 @@ function validateMemberTemplate(template: MemberTemplate): void {
 
 function validateAbilityTemplate(template: AbilityTemplate): void {
   validateSimpleTemplate(template);
-  if (!template.displayName || (template.kind !== "passive" && template.kind !== "aura")) {
+  if (
+    !template.displayName ||
+    (template.kind !== "passive" &&
+      template.kind !== "aura" &&
+      template.kind !== "active")
+  ) {
     throw new Error(`Ability template ${template.id} requires a name and supported kind.`);
   }
   if (
     (template.kind === "passive" &&
       template.targetRule !== "self" &&
       template.targetRule !== "own-group") ||
-    (template.kind === "aura" &&
+    ((template.kind === "aura" || template.kind === "active") &&
       template.targetRule !== "own-group" &&
       template.targetRule !== "nearby-friendly-groups")
   ) {
@@ -1513,6 +1583,20 @@ function validateAbilityTemplate(template: AbilityTemplate): void {
       (template.stacking !== "stack" && template.stacking !== "strongest"))
   ) {
     throw new Error(`Aura ability template ${template.id} has invalid range or stacking.`);
+  }
+  if (
+    template.kind === "active" &&
+    (!Number.isInteger(template.rangeCells) ||
+      template.rangeCells < 0 ||
+      template.rangeCells > 64 ||
+      !Number.isInteger(template.cooldownTicks) ||
+      template.cooldownTicks < 0 ||
+      template.cooldownTicks > 72_000 ||
+      !Number.isInteger(template.maxCharges) ||
+      template.maxCharges < 1 ||
+      template.maxCharges > 999)
+  ) {
+    throw new Error(`Active ability template ${template.id} has invalid range, cooldown, or charges.`);
   }
   if (
     new Set(template.conditions.map((condition) => condition.kind)).size !==
@@ -1544,6 +1628,42 @@ function validateAbilityTemplate(template: AbilityTemplate): void {
     ) {
       throw new Error(`Ability template ${template.id} has an invalid presence condition.`);
     }
+  }
+  if (template.kind === "active") {
+    if (
+      template.triggerConditions.length === 0 ||
+      new Set(template.triggerConditions.map((condition) => condition.kind)).size !==
+        template.triggerConditions.length
+    ) {
+      throw new Error(`Active ability template ${template.id} requires unique trigger conditions.`);
+    }
+    for (const condition of template.triggerConditions) {
+      if (
+        condition.kind !== "target-suppression" ||
+        !Number.isInteger(condition.minimumBps) ||
+        condition.minimumBps < 1 ||
+        condition.minimumBps > 10_000
+      ) {
+        throw new Error(`Active ability template ${template.id} has an invalid trigger condition.`);
+      }
+    }
+    if (
+      template.effects.length === 0 ||
+      new Set(template.effects.map((effect) => effect.kind)).size !== template.effects.length
+    ) {
+      throw new Error(`Active ability template ${template.id} requires unique active effects.`);
+    }
+    for (const effect of template.effects) {
+      if (
+        effect.kind !== "suppression-recovery" ||
+        !Number.isInteger(effect.amountBps) ||
+        effect.amountBps < 1 ||
+        effect.amountBps > 10_000
+      ) {
+        throw new Error(`Active ability template ${template.id} has an invalid active effect.`);
+      }
+    }
+    return;
   }
   if (
     template.effects.length === 0 ||
@@ -1967,6 +2087,16 @@ function hashAbilityTemplate(hasher: StateHasher, template: AbilityTemplate): vo
   if (template.kind === "aura") {
     hasher.addNumber(template.rangeCells);
     hasher.addString(template.stacking);
+  } else if (template.kind === "active") {
+    hasher.addNumber(template.rangeCells);
+    hasher.addNumber(template.cooldownTicks);
+    hasher.addNumber(template.maxCharges);
+    for (const condition of [...template.triggerConditions].sort((a, b) =>
+      compareStrings(a.kind, b.kind),
+    )) {
+      hasher.addString(condition.kind);
+      hasher.addNumber(condition.minimumBps);
+    }
   }
   for (const condition of [...template.conditions].sort((a, b) =>
     compareStrings(a.kind, b.kind),
@@ -1974,12 +2104,21 @@ function hashAbilityTemplate(hasher: StateHasher, template: AbilityTemplate): vo
     hasher.addString(condition.kind);
     addSortedStrings(hasher, condition.states);
   }
-  for (const effect of [...template.effects].sort((a, b) =>
-    compareStrings(a.attribute, b.attribute),
-  )) {
-    hasher.addString(effect.kind);
-    hasher.addString(effect.attribute);
-    hasher.addNumber(effect.modifierBps);
+  if (template.kind === "active") {
+    for (const effect of [...template.effects].sort((a, b) =>
+      compareStrings(a.kind, b.kind),
+    )) {
+      hasher.addString(effect.kind);
+      hasher.addNumber(effect.amountBps);
+    }
+  } else {
+    for (const effect of [...template.effects].sort((a, b) =>
+      compareStrings(a.attribute, b.attribute),
+    )) {
+      hasher.addString(effect.kind);
+      hasher.addString(effect.attribute);
+      hasher.addNumber(effect.modifierBps);
+    }
   }
 }
 
@@ -2299,14 +2438,24 @@ function cloneSimpleTemplate<T extends { readonly id: string; readonly tags: rea
 }
 
 function cloneAbilityTemplate(template: AbilityTemplate): AbilityTemplate {
+  const conditions = template.conditions.map((condition) =>
+    condition.kind === "health"
+      ? { kind: "health" as const, states: [...condition.states] }
+      : { kind: "presence" as const, states: [...condition.states] },
+  );
+  if (template.kind === "active") {
+    return {
+      ...template,
+      tags: [...template.tags],
+      conditions,
+      triggerConditions: template.triggerConditions.map((condition) => ({ ...condition })),
+      effects: template.effects.map((effect) => ({ ...effect })),
+    };
+  }
   return {
     ...template,
     tags: [...template.tags],
-    conditions: template.conditions.map((condition) =>
-      condition.kind === "health"
-        ? { kind: "health", states: [...condition.states] }
-        : { kind: "presence", states: [...condition.states] },
-    ),
+    conditions,
     effects: template.effects.map((effect) => ({ ...effect })),
   };
 }

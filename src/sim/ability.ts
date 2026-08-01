@@ -2,8 +2,13 @@ import { squaredGridDistance } from "./map";
 import type {
   AbilityAttribute,
   AbilityCondition,
-  AbilityEffectDefinition,
+  AttributeModifierAbilityEffect,
   AbilityTemplate,
+  ActiveAbilityCandidateInspection,
+  ActiveAbilityEvaluationInspection,
+  ActiveAbilityEvaluationReason,
+  ActiveAbilityInspection,
+  ActiveAbilityTemplate,
   AuraAbilityTemplate,
   AuraApplicationInspection,
   BattleContentBundle,
@@ -43,7 +48,27 @@ export interface ActiveAuraApplication {
   readonly targetGroupId: GroupId;
   readonly distanceSquared: number;
   readonly appliedAt: Tick;
-  readonly effects: readonly AbilityEffectDefinition[];
+  readonly effects: readonly AttributeModifierAbilityEffect[];
+}
+
+export interface ActiveAbilityRuntimeState {
+  readonly id: string;
+  readonly sourceMemberId: MemberId;
+  readonly sourceGroupId: GroupId;
+  readonly abilityTemplateId: TemplateId;
+  chargesRemaining: number;
+  cooldownUntilTick: Tick;
+  useCount: number;
+  lastUsedAt?: Tick;
+  evaluation?: ActiveAbilityEvaluationInspection;
+}
+
+export interface ActiveAbilityGroupContext {
+  readonly id: GroupId;
+  readonly factionId: FactionId;
+  readonly cell: GridCoord;
+  readonly suppressionBps: number;
+  readonly members: readonly AbilityMemberContext[];
 }
 
 interface AuraCandidate extends Omit<ActiveAuraApplication, "appliedAt"> {
@@ -179,6 +204,154 @@ export function resolveActiveAuras(
   });
 }
 
+export function createActiveAbilityStates(
+  content: BattleContentBundle,
+  sourceMemberId: MemberId,
+  sourceGroupId: GroupId,
+  memberTemplateId: TemplateId,
+): readonly ActiveAbilityRuntimeState[] {
+  return abilityTemplatesForMember(content, memberTemplateId)
+    .filter((ability): ability is ActiveAbilityTemplate => ability.kind === "active")
+    .map((ability) => ({
+      id: activeAbilityId(sourceMemberId, ability.id),
+      sourceMemberId,
+      sourceGroupId,
+      abilityTemplateId: ability.id,
+      chargesRemaining: ability.maxCharges,
+      cooldownUntilTick: 0,
+      useCount: 0,
+    }));
+}
+
+export function evaluateActiveAbility(
+  content: BattleContentBundle,
+  state: ActiveAbilityRuntimeState,
+  sourceMember: AbilityMemberContext,
+  sourceGroup: ActiveAbilityGroupContext,
+  groups: readonly ActiveAbilityGroupContext[],
+  tick: Tick,
+): { readonly evaluation: ActiveAbilityEvaluationInspection; readonly selectedTarget?: GroupId } {
+  const ability = content.abilityTemplates[state.abilityTemplateId];
+  if (!ability || ability.kind !== "active") {
+    throw new Error(`Unknown active ability template: ${state.abilityTemplateId}.`);
+  }
+  const sourceCondition = evaluateAbilityConditions(ability, sourceMember);
+  if (!sourceCondition.active) {
+    return {
+      evaluation: activeEvaluation(tick, "source-condition-unmet", []),
+    };
+  }
+  if (state.chargesRemaining <= 0) {
+    return { evaluation: activeEvaluation(tick, "charges-depleted", []) };
+  }
+  if (tick < state.cooldownUntilTick) {
+    return { evaluation: activeEvaluation(tick, "cooldown-active", []) };
+  }
+
+  const candidates = [...groups]
+    .filter((group) => group.factionId === sourceGroup.factionId)
+    .filter((group) =>
+      ability.targetRule === "own-group" ? group.id === sourceGroup.id : true,
+    )
+    .sort((a, b) => compareStrings(a.id, b.id))
+    .map((group): ActiveAbilityCandidateInspection => {
+      const distanceSquared = squaredGridDistance(sourceGroup.cell, group.cell);
+      const isAvailable = group.members.some(isAuraTargetMemberActive);
+      const inRange =
+        ability.targetRule === "own-group" || distanceSquared <= ability.rangeCells ** 2;
+      const trigger = ability.triggerConditions.find(
+        (condition) => condition.kind === "target-suppression",
+      );
+      const recoverableSuppressionBps = Math.min(
+        group.suppressionBps,
+        activeAbilityRecoveryBps(ability),
+      );
+      const rejectionReason = !isAvailable
+        ? "target-unavailable"
+        : !inRange
+          ? "out-of-range"
+          : trigger && group.suppressionBps < trigger.minimumBps
+            ? "trigger-unmet"
+            : recoverableSuppressionBps <= 0
+              ? "no-effect"
+              : undefined;
+      return {
+        targetGroupId: group.id,
+        distanceSquared,
+        suppressionBps: group.suppressionBps,
+        recoverableSuppressionBps,
+        score: rejectionReason ? 0 : recoverableSuppressionBps,
+        rejectionReason,
+      };
+    });
+  const selected = candidates
+    .filter((candidate) => !candidate.rejectionReason)
+    .sort((a, b) => b.score - a.score || compareStrings(a.targetGroupId, b.targetGroupId))[0];
+  if (selected) {
+    return {
+      evaluation: activeEvaluation(tick, "ready", candidates, selected.targetGroupId),
+      selectedTarget: selected.targetGroupId,
+    };
+  }
+  const hasLegalTarget = candidates.some(
+    (candidate) =>
+      candidate.rejectionReason === "trigger-unmet" ||
+      candidate.rejectionReason === "no-effect",
+  );
+  return {
+    evaluation: activeEvaluation(
+      tick,
+      hasLegalTarget ? "trigger-unmet" : "no-legal-target",
+      candidates,
+    ),
+  };
+}
+
+export function activeAbilityInspections(
+  content: BattleContentBundle,
+  states: readonly ActiveAbilityRuntimeState[],
+): readonly ActiveAbilityInspection[] {
+  return [...states]
+    .sort((a, b) => compareStrings(a.id, b.id))
+    .map((state) => {
+      const ability = content.abilityTemplates[state.abilityTemplateId];
+      if (!ability || ability.kind !== "active") {
+        throw new Error(`Unknown active ability template: ${state.abilityTemplateId}.`);
+      }
+      return {
+        id: state.id,
+        sourceMemberId: state.sourceMemberId,
+        sourceGroupId: state.sourceGroupId,
+        abilityTemplateId: state.abilityTemplateId,
+        displayName: ability.displayName,
+        targetRule: ability.targetRule,
+        rangeCells: ability.rangeCells,
+        cooldownTicks: ability.cooldownTicks,
+        maxCharges: ability.maxCharges,
+        chargesRemaining: state.chargesRemaining,
+        cooldownUntilTick: state.cooldownUntilTick,
+        useCount: state.useCount,
+        lastUsedAt: state.lastUsedAt,
+        triggerConditions: ability.triggerConditions.map((condition) => ({ ...condition })),
+        effects: ability.effects.map((effect) => ({ ...effect })),
+        evaluation: state.evaluation
+          ? {
+              ...state.evaluation,
+              candidates: state.evaluation.candidates.map((candidate) => ({ ...candidate })),
+            }
+          : undefined,
+      } satisfies ActiveAbilityInspection;
+    });
+}
+
+export function activeAbilityRecoveryBps(ability: ActiveAbilityTemplate): number {
+  return ability.effects.reduce((sum, effect) => sum + effect.amountBps, 0);
+}
+
+export function activeAbilityId(memberId: MemberId, abilityTemplateId: TemplateId): string {
+  return `active:${memberId.length}:${memberId}:${abilityTemplateId.length}:${abilityTemplateId}`;
+}
+
 export function auraModifierBps(
   applications: readonly ActiveAuraApplication[],
   targetGroupId: GroupId,
@@ -257,7 +430,7 @@ function selectStackedAuraCandidates(
   const stacked = candidates.filter((candidate) => candidate.ability.stacking === "stack");
   const strongestEffects = new Map<
     string,
-    { readonly candidate: AuraCandidate; readonly effect: AbilityEffectDefinition }
+    { readonly candidate: AuraCandidate; readonly effect: AttributeModifierAbilityEffect }
   >();
 
   for (const candidate of candidates.filter(
@@ -306,6 +479,20 @@ function evaluateAbilityConditions(
     return { active: false, unmetCondition: "presence" };
   }
   return { active: true };
+}
+
+function activeEvaluation(
+  evaluatedAt: Tick,
+  reason: ActiveAbilityEvaluationReason,
+  candidates: readonly ActiveAbilityCandidateInspection[],
+  selectedTargetGroupId?: GroupId,
+): ActiveAbilityEvaluationInspection {
+  return {
+    evaluatedAt,
+    reason,
+    selectedTargetGroupId,
+    candidates: candidates.map((candidate) => ({ ...candidate })),
+  };
 }
 
 function isAuraSourceActive(member: AbilityMemberContext): boolean {
@@ -375,8 +562,8 @@ function attributeBaseValue(
 }
 
 function effectsEqual(
-  left: readonly AbilityEffectDefinition[],
-  right: readonly AbilityEffectDefinition[],
+  left: readonly AttributeModifierAbilityEffect[],
+  right: readonly AttributeModifierAbilityEffect[],
 ): boolean {
   return (
     left.length === right.length &&

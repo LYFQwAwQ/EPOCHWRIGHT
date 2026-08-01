@@ -22,14 +22,19 @@ import {
   type FlightAltitudeCandidateInput,
 } from "./air";
 import {
+  activeAbilityInspections,
+  activeAbilityRecoveryBps,
   auraApplicationInspections,
   auraModifierBps,
   clampBasisPoints,
+  createActiveAbilityStates,
+  evaluateActiveAbility,
   memberAbilityAttributeBps,
   memberAbilityAttributes,
   ownGroupAbilityModifierBps,
   passiveAbilityInspections,
   resolveActiveAuras,
+  type ActiveAbilityGroupContext,
 } from "./ability";
 import {
   cellIndex,
@@ -719,6 +724,8 @@ class StageOneBattleSimulation implements BattleSimulation {
           : undefined;
       case "intel-delivered":
         return event.factionId === observerFactionId ? event : undefined;
+      case "ability-used":
+        return this.isOwnGroup(observerFactionId, event.sourceGroupId) ? event : undefined;
       case "artillery-mission-changed":
       case "platform-deployment-changed":
       case "member-health-changed":
@@ -874,6 +881,29 @@ class StageOneBattleSimulation implements BattleSimulation {
         hasher.addNumber(member.magazineRounds);
         hasher.addNumber(member.reloadTicksRemaining);
         hasher.addNumber(member.shotCooldownTicks);
+        for (const ability of [...member.activeAbilities].sort((a, b) =>
+          compareStrings(a.id, b.id),
+        )) {
+          hasher.addString(ability.id);
+          hasher.addString(ability.sourceMemberId);
+          hasher.addString(ability.sourceGroupId);
+          hasher.addString(ability.abilityTemplateId);
+          hasher.addNumber(ability.chargesRemaining);
+          hasher.addNumber(ability.cooldownUntilTick);
+          hasher.addNumber(ability.useCount);
+          hasher.addNumber(ability.lastUsedAt ?? -1);
+          hasher.addNumber(ability.evaluation?.evaluatedAt ?? -1);
+          hasher.addString(ability.evaluation?.reason ?? "");
+          hasher.addString(ability.evaluation?.selectedTargetGroupId ?? "");
+          for (const candidate of ability.evaluation?.candidates ?? []) {
+            hasher.addString(candidate.targetGroupId);
+            hasher.addNumber(candidate.distanceSquared);
+            hasher.addNumber(candidate.suppressionBps);
+            hasher.addNumber(candidate.recoverableSuppressionBps);
+            hasher.addNumber(candidate.score);
+            hasher.addString(candidate.rejectionReason ?? "");
+          }
+        }
       }
       for (const platform of group.platforms) {
         hasher.addString(platform.id);
@@ -1183,6 +1213,7 @@ class StageOneBattleSimulation implements BattleSimulation {
     this.updatePlatformDeployments();
     this.advanceMovement();
     this.updateActiveAuras();
+    this.updateActiveAbilities();
     const impacts = this.updateWeapons(this.advanceLogicalProjectiles(), true);
     this.updateMorale(impacts);
     this.updateEvacuation();
@@ -1209,6 +1240,77 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.state.activeAuras,
       ),
     ];
+  }
+
+  private updateActiveAbilities(): void {
+    const groups = [...this.state.groups].sort(compareById);
+    for (const sourceGroup of groups) {
+      const sourceMembers = [...sourceGroup.members].sort(compareById);
+      for (const sourceMember of sourceMembers) {
+        const abilities = [...sourceMember.activeAbilities].sort((a, b) =>
+          compareStrings(a.id, b.id),
+        );
+        for (const state of abilities) {
+          const sourceContext = this.activeAbilityGroupContext(sourceGroup);
+          const evaluation = evaluateActiveAbility(
+            this.setup.content,
+            state,
+            sourceMember,
+            sourceContext,
+            groups.map((group) => this.activeAbilityGroupContext(group)),
+            this.state.tick,
+          );
+          state.evaluation = evaluation.evaluation;
+          if (!evaluation.selectedTarget) {
+            continue;
+          }
+          const targetGroup = this.state.groupsById.get(evaluation.selectedTarget);
+          const ability = this.setup.content.abilityTemplates[state.abilityTemplateId];
+          if (!targetGroup || !ability || ability.kind !== "active") {
+            continue;
+          }
+          const recovered = Math.min(
+            targetGroup.suppressionBps,
+            activeAbilityRecoveryBps(ability),
+          );
+          if (recovered <= 0) {
+            continue;
+          }
+          targetGroup.suppressionBps = clampBasisPoints(targetGroup.suppressionBps - recovered);
+          state.chargesRemaining -= 1;
+          state.cooldownUntilTick = this.state.tick + ability.cooldownTicks;
+          state.useCount += 1;
+          state.lastUsedAt = this.state.tick;
+          state.evaluation = {
+            ...evaluation.evaluation,
+            reason: "used",
+            selectedTargetGroupId: targetGroup.id,
+          };
+          this.state.lastMeaningfulProgressTick = this.state.tick;
+          this.emit({
+            type: "ability-used",
+            abilityUseId: `${state.id}:use:${state.useCount}`,
+            sourceMemberId: state.sourceMemberId,
+            sourceGroupId: state.sourceGroupId,
+            abilityTemplateId: state.abilityTemplateId,
+            targetGroupId: targetGroup.id,
+            useSequence: state.useCount,
+            chargesRemaining: state.chargesRemaining,
+            suppressionRecoveredBps: recovered,
+          });
+        }
+      }
+    }
+  }
+
+  private activeAbilityGroupContext(group: GroupState): ActiveAbilityGroupContext {
+    return {
+      id: group.id,
+      factionId: group.factionId,
+      cell: group.cell,
+      suppressionBps: group.suppressionBps,
+      members: group.members,
+    };
   }
 
   private assignDefenseSlots(): void {
@@ -6754,6 +6856,17 @@ class StageOneBattleSimulation implements BattleSimulation {
       moraleState: group.moraleState,
       activeMembers: activeMemberCount(group),
       deployment: hasEvacuatedMembers(group) ? "evacuated" as const : "deployed" as const,
+      activeAbilities: group.members
+        .flatMap((member) => member.activeAbilities)
+        .map((ability) => ({
+          id: ability.id,
+          sourceMemberId: ability.sourceMemberId,
+          abilityTemplateId: ability.abilityTemplateId,
+          useCount: ability.useCount,
+          chargesRemaining: ability.chargesRemaining,
+          lastUsedAt: ability.lastUsedAt,
+        }))
+        .sort((a, b) => compareStrings(a.id, b.id)),
     }));
     const deployedIds = new Set(this.state.groups.map((group) => group.id));
     const undeployed = this.state.reinforcementWaves.flatMap((wave) =>
@@ -6766,6 +6879,24 @@ class StageOneBattleSimulation implements BattleSimulation {
           moraleState: "steady" as const,
           activeMembers: countSpawnActiveMembers(group),
           deployment: "undeployed" as const,
+          activeAbilities: group.members
+            .flatMap((member) =>
+              createActiveAbilityStates(
+                this.setup.content,
+                member.id,
+                group.id,
+                member.memberTemplateId,
+              ),
+            )
+            .map((ability) => ({
+              id: ability.id,
+              sourceMemberId: ability.sourceMemberId,
+              abilityTemplateId: ability.abilityTemplateId,
+              useCount: ability.useCount,
+              chargesRemaining: ability.chargesRemaining,
+              lastUsedAt: ability.lastUsedAt,
+            }))
+            .sort((a, b) => compareStrings(a.id, b.id)),
         })),
     );
     return [...deployed, ...undeployed].sort((a, b) => compareStrings(a.id, b.id));
@@ -7279,6 +7410,10 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.setup.content,
         this.state.activeAuras,
         group.id,
+      ),
+      activeAbilities: activeAbilityInspections(
+        this.setup.content,
+        group.members.flatMap((member) => member.activeAbilities),
       ),
       modeEffective: this.isGroupModeEffective(group),
       activeMembers: activeMemberCount(group),

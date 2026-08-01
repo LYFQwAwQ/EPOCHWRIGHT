@@ -80,6 +80,13 @@ describe("demo battle setup boundary", () => {
       passiveAbilityGroupsPerFaction: 1,
       auraAbilityGroupsPerFaction: 1,
     })).toThrow(/auraAbilityGroupsPerFaction/);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-active-ability-group-mix",
+      groupsPerFaction: 2,
+      passiveAbilityGroupsPerFaction: 1,
+      auraAbilityGroupsPerFaction: 1,
+      activeAbilityGroupsPerFaction: 1,
+    })).toThrow(/activeAbilityGroupsPerFaction/);
   });
 
   it("keeps air group counts backward-compatible unless explicit types are supplied", () => {

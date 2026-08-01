@@ -11,6 +11,9 @@ import {
   DEFAULT_AURA_ABILITY_TEMPLATE_ID,
   DEFAULT_AURA_GROUP_TEMPLATE_ID,
   DEFAULT_AURA_MEMBER_TEMPLATE_ID,
+  DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID,
+  DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+  DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
   DEFAULT_DRONE_OPERATOR_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
@@ -19,6 +22,7 @@ import {
   DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID,
   DEFAULT_WEAPON_TEMPLATE_ID,
   PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
+  PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_PLATFORM_BATTLE_RULES_VERSION,
@@ -34,6 +38,7 @@ import type {
   BattleSetupInput,
   MemberInspection,
   PassiveAbilityTemplate,
+  PreActiveAbilityBattleContentBundle,
   PreAuraAbilityBattleContentBundle,
 } from "./types";
 
@@ -58,7 +63,7 @@ describe("battle content templates", () => {
     const migrated = migrateBattleSetup(legacy);
 
     expect(migrated.schemaVersion).toBe(BATTLE_SETUP_SCHEMA_VERSION);
-    expect(migrated.content?.contentVersion).toBe("content-8");
+    expect(migrated.content?.contentVersion).toBe("content-9");
     expect(migrated.groups.every((group) => group.groupTemplateId === DEFAULT_GROUP_TEMPLATE_ID))
       .toBe(true);
     expect(
@@ -100,7 +105,7 @@ describe("battle content templates", () => {
     expect(() => validateBattleContent(content)).not.toThrow();
   });
 
-  it("migrates content-5 snapshots to content-8 without changing setup rules", () => {
+  it("migrates content-5 snapshots to content-9 without changing setup rules", () => {
     const current = createDemoBattleSetup({ seed: "air-units-content-migration", groupsPerFaction: 1 });
     const era = current.content.eraTemplates[current.content.eraId]!;
     const groupTemplates = Object.fromEntries(
@@ -153,7 +158,7 @@ describe("battle content templates", () => {
     } satisfies BattleSetupInput);
 
     expect(migrated.rulesVersion).toBe(current.rulesVersion);
-    expect(migrated.content.contentVersion).toBe("content-8");
+    expect(migrated.content.contentVersion).toBe("content-9");
     expect(migrated.content.groupTemplates[DEFAULT_AIR_ATTACK_GROUP_TEMPLATE_ID]).toBeUndefined();
     expect(migrated.content.groupTemplates[DEFAULT_AIR_DRONE_GROUP_TEMPLATE_ID]).toBeUndefined();
     expect(() => validateBattleSetup(migrated)).not.toThrow();
@@ -170,7 +175,7 @@ describe("battle content templates", () => {
     } satisfies BattleSetupInput);
 
     expect(migrated.rulesVersion).toBe(current.rulesVersion);
-    expect(migrated.content.contentVersion).toBe("content-8");
+    expect(migrated.content.contentVersion).toBe("content-9");
     expect(
       Object.values(migrated.content.memberTemplates).every(
         (member) => member.abilityTemplateIds.length === 0,
@@ -217,11 +222,56 @@ describe("battle content templates", () => {
     } satisfies PreAuraAbilityBattleContentBundle;
     const migrated = migrateBattleSetup({ ...current, content } satisfies BattleSetupInput);
 
-    expect(migrated.content.contentVersion).toBe("content-8");
+    expect(migrated.content.contentVersion).toBe("content-9");
     expect(migrated.content.abilityTemplates[DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]).toMatchObject({
       kind: "passive",
     });
     expect(migrated.content.abilityTemplates[DEFAULT_AURA_ABILITY_TEMPLATE_ID]).toBeUndefined();
+    expect(() => validateBattleSetup(migrated)).not.toThrow();
+  });
+
+  it("migrates content-8 passive and aura abilities without inventing active content", () => {
+    const current = createDemoBattleSetup({ seed: "active-content-migration", groupsPerFaction: 1 });
+    const era = current.content.eraTemplates[current.content.eraId]!;
+    const abilityTemplates = Object.fromEntries(
+      Object.entries(current.content.abilityTemplates).filter(
+        ([, ability]) => ability.kind !== "active",
+      ),
+    ) as PreActiveAbilityBattleContentBundle["abilityTemplates"];
+    const content = {
+      ...current.content,
+      contentVersion: PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION,
+      eraTemplates: {
+        ...current.content.eraTemplates,
+        [era.id]: {
+          ...era,
+          allowedGroupTemplateIds: era.allowedGroupTemplateIds.filter(
+            (id) => id !== DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+          ),
+          allowedMemberTemplateIds: era.allowedMemberTemplateIds.filter(
+            (id) => id !== DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+          ),
+        },
+      },
+      groupTemplates: Object.fromEntries(
+        Object.entries(current.content.groupTemplates).filter(
+          ([id]) => id !== DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+        ),
+      ),
+      memberTemplates: Object.fromEntries(
+        Object.entries(current.content.memberTemplates).filter(
+          ([id]) => id !== DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+        ),
+      ),
+      abilityTemplates,
+    } satisfies PreActiveAbilityBattleContentBundle;
+    const migrated = migrateBattleSetup({ ...current, content } satisfies BattleSetupInput);
+
+    expect(migrated.content.contentVersion).toBe("content-9");
+    expect(migrated.content.abilityTemplates[DEFAULT_AURA_ABILITY_TEMPLATE_ID]).toMatchObject({
+      kind: "aura",
+    });
+    expect(migrated.content.abilityTemplates[DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID]).toBeUndefined();
     expect(() => validateBattleSetup(migrated)).not.toThrow();
   });
 
@@ -348,6 +398,9 @@ describe("battle content templates", () => {
     const invalidGroupAbilityBase = cloneBattleContent(createDefaultBattleContent());
     const passiveAbility =
       invalidGroupAbilityBase.abilityTemplates[DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]!;
+    if (passiveAbility.kind !== "passive") {
+      throw new Error("Expected passive ability template.");
+    }
     const invalidGroupAbility = {
       ...invalidGroupAbilityBase,
       abilityTemplates: {
@@ -424,6 +477,9 @@ describe("battle content templates", () => {
     expect(hashBattleContent(changedPenetration)).not.toBe(hashBattleContent(first));
 
     const passiveAbility = first.abilityTemplates[DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID]!;
+    if (passiveAbility.kind !== "passive") {
+      throw new Error("Expected passive ability template.");
+    }
     const renamedAbility = {
       ...first,
       abilityTemplates: {

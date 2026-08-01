@@ -187,6 +187,23 @@ const abilityConditionLabels: Readonly<Record<string, string>> = {
   presence: "在场条件未满足",
 };
 
+const activeAbilityReasonLabels: Readonly<Record<string, string>> = {
+  ready: "可使用",
+  used: "已使用",
+  "source-condition-unmet": "来源条件未满足",
+  "cooldown-active": "冷却中",
+  "charges-depleted": "次数耗尽",
+  "no-legal-target": "无合法目标",
+  "trigger-unmet": "尚未达到触发阈值",
+};
+
+const activeAbilityRejectionLabels: Readonly<Record<string, string>> = {
+  "target-unavailable": "目标不可用",
+  "out-of-range": "超出范围",
+  "trigger-unmet": "压制不足",
+  "no-effect": "无可恢复压制",
+};
+
 function movementTypeLabel(movementType: PlatformMovementType): string {
   if (movementType === "hover") {
     return "悬停";
@@ -612,6 +629,63 @@ export function Inspector({
                           .join(" / ")
                       : abilityConditionLabels[ability.unmetCondition ?? ""] ?? "条件未满足"}
                   </strong>
+                </div>
+              ))}
+            </section>
+          )}
+
+          {inspection.activeAbilities && inspection.activeAbilities.length > 0 && (
+            <section className="inspector-section" data-testid="active-abilities">
+              <div className="section-title">
+                <Sparkles size={15} />
+                <span>主动能力</span>
+                <b>{inspection.activeAbilities.reduce((sum, ability) => sum + ability.useCount, 0)}</b>
+              </div>
+              {inspection.activeAbilities.map((ability) => (
+                <div key={ability.id}>
+                  <div className="contact-row">
+                    <Sparkles size={14} />
+                    <span>{ability.displayName}</span>
+                    <strong>
+                      {ability.useCount}/{ability.maxCharges} 次
+                    </strong>
+                  </div>
+                  <p>
+                    剩余 {ability.chargesRemaining} 次 ·{" "}
+                    {ability.evaluation
+                      ? activeAbilityReasonLabels[ability.evaluation.reason] ?? ability.evaluation.reason
+                      : "等待评估"}
+                    {ability.evaluation &&
+                    (ability.evaluation.reason === "used" ||
+                      ability.evaluation.reason === "cooldown-active")
+                      ? " · 冷却截止 tick " + ability.cooldownUntilTick
+                      : ""}
+                  </p>
+                  {ability.evaluation?.selectedTargetGroupId && (
+                    <p>
+                      目标 {ability.evaluation.selectedTargetGroupId} ·{" "}
+                      {Math.round(
+                        (ability.evaluation.candidates.find(
+                          (candidate) =>
+                            candidate.targetGroupId === ability.evaluation?.selectedTargetGroupId,
+                        )?.recoverableSuppressionBps ?? 0) / 100,
+                      )}% 压制恢复
+                    </p>
+                  )}
+                  {ability.evaluation && ability.evaluation.candidates.length > 0 && (
+                    <p>
+                      候选 {ability.evaluation.candidates.length} 个 ·{" "}
+                      {ability.evaluation.candidates
+                        .filter((candidate) => candidate.rejectionReason)
+                        .map(
+                          (candidate) =>
+                            activeAbilityRejectionLabels[candidate.rejectionReason!] ??
+                            candidate.rejectionReason,
+                        )
+                        .filter((value, index, values) => values.indexOf(value) === index)
+                        .join(" / ") || "均可用"}
+                    </p>
+                  )}
                 </div>
               ))}
             </section>

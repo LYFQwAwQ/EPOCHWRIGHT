@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID,
+  DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+  DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
   DEFAULT_AURA_ABILITY_TEMPLATE_ID,
   DEFAULT_AURA_GROUP_TEMPLATE_ID,
   DEFAULT_AURA_MEMBER_TEMPLATE_ID,
@@ -71,6 +74,28 @@ describe("manual demo scenarios", () => {
     expect(
       setup.content.memberTemplates[DEFAULT_AURA_MEMBER_TEMPLATE_ID]?.abilityTemplateIds,
     ).toEqual([DEFAULT_AURA_ABILITY_TEMPLATE_ID]);
+  });
+
+  it("exposes one AI-controlled active ability group per faction", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("active-ability", "scenario-active-ability"),
+    );
+    const activeGroups = setup.groups.filter(
+      (group) => group.groupTemplateId === DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+    );
+
+    expect(activeGroups).toHaveLength(setup.factions.length);
+    expect(
+      activeGroups.every(
+        (group) =>
+          group.members.filter(
+            (member) => member.memberTemplateId === DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+          ).length === 1,
+      ),
+    ).toBe(true);
+    expect(
+      setup.content.memberTemplates[DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID]?.abilityTemplateIds,
+    ).toEqual([DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID]);
   });
 
   it("exposes sequence objectives and a defender reserve", () => {

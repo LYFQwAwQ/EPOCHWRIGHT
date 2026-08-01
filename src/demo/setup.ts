@@ -10,6 +10,8 @@ import {
   DEFAULT_AIR_RECON_PLATFORM_TEMPLATE_ID,
   DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
   DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
+  DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+  DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
   DEFAULT_AURA_GROUP_TEMPLATE_ID,
   DEFAULT_AURA_MEMBER_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
@@ -63,6 +65,7 @@ export interface DemoBattleSetupOptions {
   readonly airGroupTypes?: readonly DemoAirGroupType[];
   readonly passiveAbilityGroupsPerFaction?: number;
   readonly auraAbilityGroupsPerFaction?: number;
+  readonly activeAbilityGroupsPerFaction?: number;
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -105,6 +108,7 @@ export function createDemoBattleSetup(
   const airGroupsPerFaction = options.airGroupsPerFaction ?? 0;
   const passiveAbilityGroupsPerFaction = options.passiveAbilityGroupsPerFaction ?? 0;
   const auraAbilityGroupsPerFaction = options.auraAbilityGroupsPerFaction ?? 0;
+  const activeAbilityGroupsPerFaction = options.activeAbilityGroupsPerFaction ?? 0;
   const airGroupTypes = options.airGroupTypes ?? Array.from(
     { length: airGroupsPerFaction },
     () => "recon-helicopter" as const,
@@ -180,6 +184,17 @@ export function createDemoBattleSetup(
     );
   }
   if (
+    !Number.isInteger(activeAbilityGroupsPerFaction) ||
+    activeAbilityGroupsPerFaction < 0 ||
+    activeAbilityGroupsPerFaction >
+      groupsPerFaction - artilleryGroupsPerFaction - airGroupsPerFaction - vehicleGroupsPerFaction -
+        passiveAbilityGroupsPerFaction - auraAbilityGroupsPerFaction
+  ) {
+    throw new Error(
+      "passiveAbilityGroupsPerFaction, auraAbilityGroupsPerFaction, and activeAbilityGroupsPerFaction must fit within infantry groups.",
+    );
+  }
+  if (
     !Number.isInteger(transportPairsPerFaction) ||
     transportPairsPerFaction < 0 ||
     transportPairsPerFaction > vehicleGroupsPerFaction ||
@@ -214,6 +229,7 @@ export function createDemoBattleSetup(
     airGroupTypes,
     passiveAbilityGroupsPerFaction,
     auraAbilityGroupsPerFaction,
+    activeAbilityGroupsPerFaction,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -399,6 +415,7 @@ function createGroupSpawns(
   airGroupTypes: readonly DemoAirGroupType[],
   passiveAbilityGroupsPerFaction: number,
   auraAbilityGroupsPerFaction: number,
+  activeAbilityGroupsPerFaction: number,
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -518,10 +535,19 @@ function createGroupSpawns(
       const usesAuraAbility =
         !usesPassiveAbility &&
         infantryIndex < passiveAbilityGroupsPerFaction + auraAbilityGroupsPerFaction;
+      const usesActiveAbility =
+        !usesPassiveAbility &&
+        !usesAuraAbility &&
+        infantryIndex <
+          passiveAbilityGroupsPerFaction +
+            auraAbilityGroupsPerFaction +
+            activeAbilityGroupsPerFaction;
       const groupId = usesPassiveAbility
         ? `${faction.id}-disciplined-${infantryIndex + 1}`
         : usesAuraAbility
           ? `${faction.id}-command-${infantryIndex + 1}`
+          : usesActiveAbility
+            ? `${faction.id}-rally-${infantryIndex + 1}`
           : `${faction.id}-squad-${groupIndex + 1}`;
       groups.push({
         id: groupId,
@@ -530,6 +556,8 @@ function createGroupSpawns(
           ? DEFAULT_PASSIVE_GROUP_TEMPLATE_ID
           : usesAuraAbility
             ? DEFAULT_AURA_GROUP_TEMPLATE_ID
+            : usesActiveAbility
+              ? DEFAULT_ACTIVE_GROUP_TEMPLATE_ID
             : DEFAULT_GROUP_TEMPLATE_ID,
         spawn,
         evacuation: { ...spawn },
@@ -540,6 +568,8 @@ function createGroupSpawns(
               ? DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID
               : usesAuraAbility && memberIndex === 0
                 ? DEFAULT_AURA_MEMBER_TEMPLATE_ID
+                : usesActiveAbility && memberIndex === 0
+                  ? DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID
                 : DEFAULT_MEMBER_TEMPLATE_ID,
         })),
         platforms: [],

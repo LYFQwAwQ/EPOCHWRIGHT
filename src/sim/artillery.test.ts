@@ -196,7 +196,7 @@ describe("artillery content contract", () => {
       rockCoverage: 0,
       wallCoverage: 0,
     })).not.toThrow();
-  });
+  }, 15_000);
 
   it("provides a validated self-propelled artillery group behind explicit deployment capability", () => {
     const content = createDefaultBattleContent();

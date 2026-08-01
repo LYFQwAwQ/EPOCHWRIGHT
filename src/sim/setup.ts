@@ -19,6 +19,7 @@ import {
   getPlatformTemplate,
   hashBattleContent,
   migrateBattleContent,
+  PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_AIR_UNITS_BATTLE_CONTENT_VERSION,
@@ -127,10 +128,11 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error(
-        "stage-4.2 battle setup requires a content bundle from content-5 through content-8.",
+        "stage-4.2 battle setup requires a content bundle from content-5 through content-9.",
       );
     }
   }
@@ -140,9 +142,10 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
-      throw new Error("stage-4.0/4.1 battle setup requires a supported content-4 through content-8 bundle.");
+      throw new Error("stage-4.0/4.1 battle setup requires a supported content-4 through content-9 bundle.");
     }
   }
   if (isCurrent || isPreAirCombat || isPreAltitude) {
@@ -176,10 +179,11 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error(
-        "stage-3 battle setup requires a supported content-2 through content-8 bundle.",
+        "stage-3 battle setup requires a supported content-2 through content-9 bundle.",
       );
     }
     if (candidate.transportAssignments === undefined) {

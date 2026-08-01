@@ -496,7 +496,11 @@ export interface PlatformTemplate {
 
 export type PassiveAbilityTargetRule = "self" | "own-group";
 export type AuraAbilityTargetRule = "own-group" | "nearby-friendly-groups";
-export type AbilityTargetRule = PassiveAbilityTargetRule | AuraAbilityTargetRule;
+export type ActiveAbilityTargetRule = "own-group" | "nearby-friendly-groups";
+export type AbilityTargetRule =
+  | PassiveAbilityTargetRule
+  | AuraAbilityTargetRule
+  | ActiveAbilityTargetRule;
 export type AuraStackingRule = "stack" | "strongest";
 export type AbilityAttribute =
   | "protection-bps"
@@ -519,29 +523,57 @@ export interface AttributeModifierAbilityEffect {
   readonly modifierBps: number;
 }
 
-export type AbilityEffectDefinition = AttributeModifierAbilityEffect;
+export interface SuppressionRecoveryAbilityEffect {
+  readonly kind: "suppression-recovery";
+  readonly amountBps: number;
+}
 
-interface AbilityTemplateBase {
+export type ActiveAbilityEffectDefinition = SuppressionRecoveryAbilityEffect;
+export type AbilityEffectDefinition =
+  | AttributeModifierAbilityEffect
+  | ActiveAbilityEffectDefinition;
+
+export interface ActiveAbilityTriggerCondition {
+  readonly kind: "target-suppression";
+  readonly minimumBps: number;
+}
+
+interface AbilityTemplateBase<TEffect extends AbilityEffectDefinition> {
   readonly id: TemplateId;
   readonly displayName: string;
   readonly tags: readonly string[];
   readonly conditions: readonly AbilityCondition[];
-  readonly effects: readonly AbilityEffectDefinition[];
+  readonly effects: readonly TEffect[];
 }
 
-export interface PassiveAbilityTemplate extends AbilityTemplateBase {
+export interface PassiveAbilityTemplate
+  extends AbilityTemplateBase<AttributeModifierAbilityEffect> {
   readonly kind: "passive";
   readonly targetRule: PassiveAbilityTargetRule;
 }
 
-export interface AuraAbilityTemplate extends AbilityTemplateBase {
+export interface AuraAbilityTemplate
+  extends AbilityTemplateBase<AttributeModifierAbilityEffect> {
   readonly kind: "aura";
   readonly targetRule: AuraAbilityTargetRule;
   readonly rangeCells: number;
   readonly stacking: AuraStackingRule;
 }
 
-export type AbilityTemplate = PassiveAbilityTemplate | AuraAbilityTemplate;
+export interface ActiveAbilityTemplate
+  extends AbilityTemplateBase<ActiveAbilityEffectDefinition> {
+  readonly kind: "active";
+  readonly targetRule: ActiveAbilityTargetRule;
+  readonly rangeCells: number;
+  readonly cooldownTicks: Tick;
+  readonly maxCharges: number;
+  readonly triggerConditions: readonly ActiveAbilityTriggerCondition[];
+}
+
+export type AbilityTemplate =
+  | PassiveAbilityTemplate
+  | AuraAbilityTemplate
+  | ActiveAbilityTemplate;
 
 export interface StatusTemplate {
   readonly id: TemplateId;
@@ -553,7 +585,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-8";
+  readonly contentVersion: "content-9";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -565,6 +597,16 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreActiveAbilityBattleContentBundle = Omit<
+  BattleContentBundle,
+  "contentVersion" | "abilityTemplates"
+> & {
+  readonly contentVersion: "content-8";
+  readonly abilityTemplates: Readonly<
+    Record<TemplateId, PassiveAbilityTemplate | AuraAbilityTemplate>
+  >;
+};
 
 export type PreAuraAbilityBattleContentBundle = Omit<
   BattleContentBundle,
@@ -825,6 +867,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreActiveAbilityBattleContentBundle
     | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
     | PreAirUnitsBattleContentBundle
@@ -1037,6 +1080,7 @@ export interface GroupInspection {
   readonly capturePower?: number;
   readonly passiveAbilities?: readonly PassiveAbilityInspection[];
   readonly activeAuras?: readonly AuraApplicationInspection[];
+  readonly activeAbilities?: readonly ActiveAbilityInspection[];
   readonly modeEffective?: boolean;
   readonly activeMembers: number;
   readonly woundedMembers: number;
@@ -1245,7 +1289,7 @@ export interface PassiveAbilityInspection {
   readonly targetRule: PassiveAbilityTargetRule;
   readonly active: boolean;
   readonly unmetCondition?: AbilityCondition["kind"];
-  readonly effects: readonly AbilityEffectDefinition[];
+  readonly effects: readonly AttributeModifierAbilityEffect[];
 }
 
 export interface AuraApplicationInspection {
@@ -1261,7 +1305,57 @@ export interface AuraApplicationInspection {
   readonly distanceSquared: number;
   readonly stacking: AuraStackingRule;
   readonly appliedAt: Tick;
-  readonly effects: readonly AbilityEffectDefinition[];
+  readonly effects: readonly AttributeModifierAbilityEffect[];
+}
+
+export type ActiveAbilityEvaluationReason =
+  | "ready"
+  | "used"
+  | "source-condition-unmet"
+  | "cooldown-active"
+  | "charges-depleted"
+  | "no-legal-target"
+  | "trigger-unmet";
+
+export type ActiveAbilityCandidateRejectionReason =
+  | "target-unavailable"
+  | "out-of-range"
+  | "trigger-unmet"
+  | "no-effect";
+
+export interface ActiveAbilityCandidateInspection {
+  readonly targetGroupId: GroupId;
+  readonly distanceSquared: number;
+  readonly suppressionBps: number;
+  readonly recoverableSuppressionBps: number;
+  readonly score: number;
+  readonly rejectionReason?: ActiveAbilityCandidateRejectionReason;
+}
+
+export interface ActiveAbilityEvaluationInspection {
+  readonly evaluatedAt: Tick;
+  readonly reason: ActiveAbilityEvaluationReason;
+  readonly selectedTargetGroupId?: GroupId;
+  readonly candidates: readonly ActiveAbilityCandidateInspection[];
+}
+
+export interface ActiveAbilityInspection {
+  readonly id: string;
+  readonly sourceMemberId: MemberId;
+  readonly sourceGroupId: GroupId;
+  readonly abilityTemplateId: TemplateId;
+  readonly displayName: string;
+  readonly targetRule: ActiveAbilityTargetRule;
+  readonly rangeCells: number;
+  readonly cooldownTicks: Tick;
+  readonly maxCharges: number;
+  readonly chargesRemaining: number;
+  readonly cooldownUntilTick: Tick;
+  readonly useCount: number;
+  readonly lastUsedAt?: Tick;
+  readonly triggerConditions: readonly ActiveAbilityTriggerCondition[];
+  readonly effects: readonly ActiveAbilityEffectDefinition[];
+  readonly evaluation?: ActiveAbilityEvaluationInspection;
 }
 
 export interface ObjectiveInspection {
@@ -1299,6 +1393,17 @@ export type BattleEvent =
       readonly type: "intel-delivered";
       readonly factionId: FactionId;
       readonly targetGroupId: GroupId;
+    })
+  | (BattleEventBase & {
+      readonly type: "ability-used";
+      readonly abilityUseId: string;
+      readonly sourceMemberId: MemberId;
+      readonly sourceGroupId: GroupId;
+      readonly abilityTemplateId: TemplateId;
+      readonly targetGroupId: GroupId;
+      readonly useSequence: number;
+      readonly chargesRemaining: number;
+      readonly suppressionRecoveredBps: number;
     })
   | (BattleEventBase & {
       readonly type: "weapon-fired";
@@ -1479,6 +1584,16 @@ export interface GroupResult {
   readonly moraleState: MoraleState;
   readonly activeMembers: number;
   readonly deployment: "undeployed" | "deployed" | "evacuated";
+  readonly activeAbilities: readonly ActiveAbilityResult[];
+}
+
+export interface ActiveAbilityResult {
+  readonly id: string;
+  readonly sourceMemberId: MemberId;
+  readonly abilityTemplateId: TemplateId;
+  readonly useCount: number;
+  readonly chargesRemaining: number;
+  readonly lastUsedAt?: Tick;
 }
 
 export interface ObjectiveResult {

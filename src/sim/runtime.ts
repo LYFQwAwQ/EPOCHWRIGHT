@@ -24,7 +24,7 @@ import type { BattleSetup, CoverSlot, GridCoord, GroupId } from "./types";
 import { createTransportRuntimeCollections } from "./transport";
 import { derivePlatformCapabilities } from "./vehicle";
 import { isAirMovementType } from "./air";
-import { resolveActiveAuras } from "./ability";
+import { createActiveAbilityStates, resolveActiveAuras } from "./ability";
 
 export function createRuntimeState(
   setup: BattleSetup,
@@ -236,6 +236,12 @@ export function createGroupState(
           reloadTicksRemaining: 0,
           shotCooldownTicks: 0,
           placement: crewPlacementByMemberId.get(member.id) ?? { kind: "dismounted" },
+          activeAbilities: [...createActiveAbilityStates(
+            content,
+            member.id,
+            spawn.id,
+            memberTemplate.id,
+          )],
         };
       }),
     platforms,

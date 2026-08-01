@@ -495,6 +495,77 @@ test("aura scenario exposes active sources without leaking enemy details", async
   expect(errors).toEqual([]);
 });
 
+test("active ability scenario exposes AI use, cooldown, and observer-safe evaluation", async ({
+  page,
+}, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=active-ability&seed=e2e-active-ability",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getGroupIds().includes("ember-rally-1") &&
+      window.__battleTest?.getGroupIds().includes("azure-rally-1"),
+  );
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-rally-1"));
+  const abilities = page.getByTestId("active-abilities");
+  await expect(abilities).toContainText("稳住阵脚");
+  await expect(abilities).toContainText("剩余 2 次");
+  await stepPausedBattle(page, 2);
+  await expect(abilities).toContainText("尚未达到触发阈值");
+
+  let usedSourceGroupId: string | undefined;
+  for (let index = 0; index < 75 && !usedSourceGroupId; index += 1) {
+    await stepPausedBattle(page, 20);
+    usedSourceGroupId = await page.evaluate(
+      () =>
+        (window.__battleTest?.getEventSummaries() ?? []).find(
+          (event) => event.type === "ability-used",
+        )?.sourceGroupId,
+    );
+    if ((await page.evaluate(() => window.__battleTest?.getStatus())) === "finished") {
+      break;
+    }
+  }
+  expect(usedSourceGroupId).toBeDefined();
+  await page.evaluate(
+    (groupId) => window.__battleTest?.selectGroup(groupId),
+    usedSourceGroupId,
+  );
+  await expect(abilities).toContainText("1/2 次");
+  await expect(abilities).toContainText("剩余 1 次");
+  await expect(page.locator(".event-feed")).toContainText("使用主动能力");
+
+  const omniscientHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  const ownerFactionId = usedSourceGroupId!.startsWith("ember") ? "ember" : "azure";
+  const enemyGroupId = ownerFactionId === "ember" ? "azure-rally-1" : "ember-rally-1";
+  await page.evaluate((factionId) => window.__battleTest?.setObservation(factionId), ownerFactionId);
+  await page.waitForFunction(
+    (factionId) => window.__battleTest?.getObservation() === factionId,
+    ownerFactionId,
+  );
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(
+    omniscientHash,
+  );
+  await page.evaluate((groupId) => window.__battleTest?.selectGroup(groupId), enemyGroupId);
+  await expect(page.getByTestId("active-abilities")).toHaveCount(0);
+
+  await page.evaluate(() => window.__battleTest?.setObservation());
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "omniscient");
+  await page.evaluate((groupId) => window.__battleTest?.selectGroup(groupId), usedSourceGroupId);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const inspectorBox = await page.locator(".inspector-panel").boundingBox();
+  expect(inspectorBox).toBeTruthy();
+  expect(inspectorBox!.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("active-ability-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test("air recon scenario renders flight height and exposes hover inspection", async ({
   page,
 }, testInfo) => {

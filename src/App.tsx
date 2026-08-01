@@ -131,6 +131,8 @@ function filterObservationEvents(
         );
       case "intel-delivered":
         return layers.contacts && (observerFactionId === undefined || event.factionId === observerFactionId);
+      case "ability-used":
+        return visibleGroupIds.has(event.sourceGroupId) && visibleGroupIds.has(event.targetGroupId);
       case "member-health-changed":
       case "morale-changed":
       case "group-evacuated":
@@ -499,7 +501,7 @@ export function App() {
         event.type === "platform-deployment-changed"
           ? { groupId: event.groupId }
           : {}),
-        ...(event.type === "projectile-impacted"
+        ...(event.type === "projectile-impacted" || event.type === "ability-used"
           ? { sourceGroupId: event.sourceGroupId }
           : {}),
         ...(event.type === "weapon-fired" ? { fireModeId: event.fireModeId } : {}),
