@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Suspense, useCallback, useEffect, useMemo, useRef } from "react";
 import type CameraControlsImpl from "camera-controls";
 import { Vector3 } from "three";
+import type { DirectorHotspot } from "../client/director";
 import type { BattleEvent, BattleMap, RenderFrame } from "../sim/types";
 import { visualWorldY } from "./elevation";
 import { getRenderQualitySettings, type RenderQuality } from "./quality";
@@ -12,18 +13,45 @@ import { Objectives } from "./Objectives";
 import { Terrain } from "./Terrain";
 import { SquadMarkers, Units } from "./Units";
 
-export type CameraMode = "free" | "follow";
+export type CameraMode = "free" | "follow" | "director";
+
+export interface CameraViewSnapshot {
+  readonly positionX: number;
+  readonly positionY: number;
+  readonly positionZ: number;
+  readonly targetX: number;
+  readonly targetY: number;
+  readonly targetZ: number;
+  readonly zoom: number;
+  readonly directorMoveCount: number;
+}
 
 interface CameraRigProps {
   readonly map: BattleMap;
   readonly frame: RenderFrame;
   readonly selectedGroupId?: string;
   readonly mode: CameraMode;
+  readonly directorTarget?: DirectorHotspot;
   readonly resetSignal: number;
+  readonly onManualControl: () => void;
+  readonly onCameraViewChange?: (snapshot: CameraViewSnapshot) => void;
 }
 
-function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRigProps) {
+function CameraRig({
+  map,
+  frame,
+  selectedGroupId,
+  mode,
+  directorTarget,
+  resetSignal,
+  onManualControl,
+  onCameraViewChange,
+}: CameraRigProps) {
   const controlsRef = useRef<CameraControlsImpl>(null);
+  const lastDirectorCommandRef = useRef<DirectorHotspot | undefined>(undefined);
+  const directorMoveCountRef = useRef(0);
+  const viewPosition = useMemo(() => new Vector3(), []);
+  const viewTarget = useMemo(() => new Vector3(), []);
   const canvasWidth = useThree((state) => state.size.width);
   const cellSize = map.cellSizeMm / 1_000;
   const worldWidth = (map.width - 1) * cellSize;
@@ -37,6 +65,7 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
     3.2,
     Math.max(1, canvasWidth / (Math.hypot(worldWidth, worldHeight) * 1.08)),
   );
+  const directorZoom = Math.min(5.2, Math.max(2.4, fitZoom * 1.4));
   const initialPosition = useMemo(
     () => [center.x + span * 0.56, span * 0.67, center.z + span * 0.62] as const,
     [center, span],
@@ -74,18 +103,65 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
     );
   }, [center, fitZoom, initialPosition, resetSignal]);
 
-  useFrame(() => {
-    if (mode !== "follow" || !selectedGroupId) {
+  useEffect(() => {
+    if (mode !== "director") {
+      if (lastDirectorCommandRef.current) {
+        controlsRef.current?.stop();
+      }
+      lastDirectorCommandRef.current = undefined;
       return;
     }
-    const selected = frame.groups.find((group) => group.id === selectedGroupId);
-    if (selected) {
-      controlsRef.current?.setTarget(
-        selected.worldX,
-        visualWorldY(selected.worldY),
-        selected.worldZ,
-        true,
-      );
+    if (!directorTarget) {
+      controlsRef.current?.stop();
+      lastDirectorCommandRef.current = undefined;
+      return;
+    }
+    if (!controlsRef.current) {
+      lastDirectorCommandRef.current = undefined;
+      return;
+    }
+    const previous = lastDirectorCommandRef.current;
+    const dx = directorTarget.worldX - (previous?.worldX ?? Number.POSITIVE_INFINITY);
+    const dz = directorTarget.worldZ - (previous?.worldZ ?? Number.POSITIVE_INFINITY);
+    if (previous?.id === directorTarget.id && dx * dx + dz * dz < 2.25) {
+      return;
+    }
+    lastDirectorCommandRef.current = directorTarget;
+    directorMoveCountRef.current += 1;
+    void controlsRef.current.moveTo(
+      directorTarget.worldX,
+      visualWorldY(directorTarget.worldY),
+      directorTarget.worldZ,
+      true,
+    );
+    void controlsRef.current.zoomTo(directorZoom, true);
+  }, [directorTarget, directorZoom, mode]);
+
+  useFrame((state) => {
+    if (mode === "follow" && selectedGroupId) {
+      const selected = frame.groups.find((group) => group.id === selectedGroupId);
+      if (selected) {
+        controlsRef.current?.setTarget(
+          selected.worldX,
+          visualWorldY(selected.worldY),
+          selected.worldZ,
+          true,
+        );
+      }
+    }
+    if (onCameraViewChange && controlsRef.current) {
+      controlsRef.current.getPosition(viewPosition);
+      controlsRef.current.getTarget(viewTarget);
+      onCameraViewChange({
+        positionX: viewPosition.x,
+        positionY: viewPosition.y,
+        positionZ: viewPosition.z,
+        targetX: viewTarget.x,
+        targetY: viewTarget.y,
+        targetZ: viewTarget.z,
+        zoom: "zoom" in state.camera ? state.camera.zoom : 1,
+        directorMoveCount: directorMoveCountRef.current,
+      });
     }
   });
 
@@ -110,7 +186,8 @@ function CameraRig({ map, frame, selectedGroupId, mode, resetSignal }: CameraRig
         maxZoom={12}
         maxPolarAngle={Math.PI / 2.25}
         minPolarAngle={Math.PI / 7}
-        smoothTime={0.18}
+        smoothTime={mode === "director" ? 0.7 : 0.18}
+        onControl={onManualControl}
       />
     </>
   );
@@ -125,7 +202,10 @@ interface BattlefieldProps {
   readonly selectedGroupId?: string;
   readonly selectedEntityId?: string;
   readonly cameraMode: CameraMode;
+  readonly directorTarget?: DirectorHotspot;
   readonly resetSignal: number;
+  readonly onManualCameraControl: () => void;
+  readonly onCameraViewChange?: (snapshot: CameraViewSnapshot) => void;
   readonly onSelectGroup: (groupId?: string) => void;
   readonly onSelectPlatform: (platformId: string, groupId: string) => void;
   readonly quality: RenderQuality;
@@ -140,7 +220,10 @@ export function Battlefield({
   selectedGroupId,
   selectedEntityId,
   cameraMode,
+  directorTarget,
   resetSignal,
+  onManualCameraControl,
+  onCameraViewChange,
   onSelectGroup,
   onSelectPlatform,
   quality,
@@ -213,7 +296,10 @@ export function Battlefield({
         frame={frame}
         selectedGroupId={selectedGroupId}
         mode={cameraMode}
+        directorTarget={directorTarget}
         resetSignal={resetSignal}
+        onManualControl={onManualCameraControl}
+        onCameraViewChange={onCameraViewChange}
       />
     </Canvas>
   );

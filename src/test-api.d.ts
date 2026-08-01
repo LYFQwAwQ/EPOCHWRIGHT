@@ -75,6 +75,29 @@ interface BattleTestApi {
   };
   getPerformanceProfile(): "medium" | "large" | undefined;
   getRenderQuality(): "low" | "medium" | "high";
+  getCameraMode(): "free" | "follow" | "director";
+  getDirectorHotspot():
+    | {
+        id: string;
+        worldX: number;
+        worldY: number;
+        worldZ: number;
+        score: number;
+        reason: string;
+      }
+    | undefined;
+  getCameraView():
+    | {
+        positionX: number;
+        positionY: number;
+        positionZ: number;
+        targetX: number;
+        targetY: number;
+        targetZ: number;
+        zoom: number;
+        directorMoveCount: number;
+      }
+    | undefined;
   getPerformanceMetrics(): {
     worker?: {
       initializationDurationMs: number;
@@ -88,6 +111,7 @@ interface BattleTestApi {
   };
   resetPerformanceMetrics(): void;
   setObservation(factionId?: string): void;
+  setCameraMode(mode: "free" | "follow" | "director"): void;
   selectGroup(groupId?: string): void;
   selectPlatform(platformId: string, groupId: string): void;
   pause(): void;

@@ -371,6 +371,82 @@ test("quality changes stay in the renderer and preserve the battle hash", async 
   expect(errors).toEqual([]);
 });
 
+test("automatic director follows legal hotspots and yields to manual camera control", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(45_000);
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=duel-conflict&seed=e2e-director",
+  );
+  await page.waitForFunction(
+    () => window.__battleTest?.getStatus() === "paused" && Boolean(document.querySelector("canvas")),
+  );
+  await stepPausedBattle(page, 20);
+
+  await page.waitForFunction(() => Boolean(window.__battleTest?.getCameraView()));
+  const initialMoveCount = await page.evaluate(
+    () => window.__battleTest?.getCameraView()?.directorMoveCount ?? 0,
+  );
+  const directorButton = page.getByLabel("自动导演");
+  await directorButton.click();
+  await expect(directorButton).toHaveClass(/is-active/);
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getCameraMode())).toBe("director");
+  let hotspot = await page.evaluate(() => window.__battleTest?.getDirectorHotspot());
+  for (let attempt = 0; attempt < 20 && !hotspot; attempt += 1) {
+    await stepPausedBattle(page, 20);
+    hotspot = await page.evaluate(() => window.__battleTest?.getDirectorHotspot());
+  }
+  expect(hotspot).toBeDefined();
+  const pausedHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (before) => (window.__battleTest?.getCameraView()?.directorMoveCount ?? 0) - before,
+        initialMoveCount,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const hotspot = window.__battleTest?.getDirectorHotspot();
+        const view = window.__battleTest?.getCameraView();
+        if (!hotspot || !view) return Number.POSITIVE_INFINITY;
+        return Math.hypot(view.targetX - hotspot.worldX, view.targetZ - hotspot.worldZ);
+      });
+    })
+    .toBeLessThan(2);
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(pausedHash);
+
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getObservation() === "ember" &&
+      window.__battleTest?.getCameraMode() === "director" &&
+      Boolean(window.__battleTest?.getDirectorHotspot()),
+  );
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(pausedHash);
+
+  await page.getByLabel("隐藏战术界面").click();
+  await expect(page.locator(".app-shell")).toHaveClass(/is-clean/);
+  expect(await page.evaluate(() => window.__battleTest?.getCameraMode())).toBe("director");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("canvas")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("director-clean-mobile.png"), fullPage: true });
+
+  await page.getByLabel("显示战术界面").click();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const canvas = page.locator("canvas");
+  await canvas.hover();
+  await page.mouse.wheel(0, -480);
+  await page.waitForFunction(() => window.__battleTest?.getCameraMode() === "free");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(pausedHash);
+  expect(errors).toEqual([]);
+});
+
 test("vehicle scenario renders platforms and exposes crewed platform inspection", async ({
   page,
 }, testInfo) => {

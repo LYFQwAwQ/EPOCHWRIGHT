@@ -1,4 +1,5 @@
 import {
+  Clapperboard,
   Crosshair,
   Eye,
   EyeOff,
@@ -144,6 +145,15 @@ export function Toolbar({
                 onClick={() => onCameraModeChange("follow")}
               >
                 <Crosshair size={17} />
+              </button>
+              <button
+                className={cameraMode === "director" ? "is-active" : ""}
+                type="button"
+                title="自动导演"
+                aria-label="自动导演"
+                onClick={() => onCameraModeChange("director")}
+              >
+                <Clapperboard size={17} />
               </button>
             </div>
             <button

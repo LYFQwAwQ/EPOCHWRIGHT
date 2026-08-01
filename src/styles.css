@@ -1014,8 +1014,11 @@ button:focus-visible {
   .brand-mark,
   .toolbar-separator,
   .segmented-icons:not(.mode-switch),
-  .toolbar-actions > .icon-button:nth-of-type(2),
   .brand-lockup span {
+    display: none;
+  }
+
+  .toolbar:not(.toolbar--clean) .toolbar-actions > .icon-button:nth-of-type(2) {
     display: none;
   }
 

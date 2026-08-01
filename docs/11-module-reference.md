@@ -224,6 +224,10 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 此处不应计算伤亡、目标进度或胜负；它只组合 Worker 已给出的事实。
 
+### `src/client/director.ts`
+
+自动导演的纯客户端规则。它只接收调用方已经按观察权限和图层裁剪的 `RenderFrame`/事件，将稳定来源按世界区域聚合，计算交战、目标、伤亡、平台、炮兵、增援、接触、能力与任务机动权重，并用逻辑 tick 的停留、冷却、分数和距离迟滞选择热点。模块不持有 React、Three.js、Worker 或真实时间状态；输入顺序、事件过期和观察上下文重置由纯函数测试覆盖。
+
 ### `src/App.tsx`
 
 应用组合层。负责：
@@ -231,6 +235,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - 从 URL 读取 seed、场景和兼容模式参数，并调用独立演示场景生成器；
 - 启动、重开和切换模式/开发场景；
 - 暂停、选择、镜头和纯净界面状态；
+- 自动导演观察上下文、热点状态与手动接管；
 - 将公开数据分发给 3D 场景和 UI；
 - 仅在开发服务或显式 `devtools=1` 时显示场景实验台；
 - 仅在 `e2e=1` 时安装测试 API。
@@ -241,7 +246,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 | 文件 | 职责 |
 | --- | --- |
-| `render/Battlefield.tsx` | Canvas、灯光、雾、正交镜头、镜头控制和场景组合 |
+| `render/Battlefield.tsx` | Canvas、灯光、雾、正交镜头、自由/跟随/导演控制、平滑热点移动、实际手动输入回调和场景组合 |
 | `render/Terrain.tsx` | 高度地形网格、标准地表/水深顶点色和水面组合 |
 | `render/StaticObjects.tsx` | 按稳定 ID 实例化权威树木、岩石和带方向墙段 |
 | `render/Units.tsx` | 普通成员与英雄八面体标记实例、轮式/履带/自行火炮平台、带旋翼动画的悬停直升机、编组标记、实体选择反馈和位置插值 |
@@ -255,7 +260,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 
 | 文件 | 职责 |
 | --- | --- |
-| `ui/Toolbar.tsx` | 模式、暂停、重开、镜头和纯净界面控制 |
+| `ui/Toolbar.tsx` | 模式、暂停、重开、自由/跟随/自动导演镜头和纯净界面控制 |
 | `ui/ScenarioLab.tsx` | 开发环境场景、seed 和暂停步进控制；不提供正式战术命令 |
 | `ui/FactionSummary.tsx` | 势力有效成员/平台、伤亡与溃散概览 |
 | `ui/ObjectiveSummary.tsx` | 目标状态、语义化进度条和占领力 |
@@ -271,6 +276,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - `src/sim/ability.test.ts`：覆盖被动/光环默认能力、范围边界、条件失效、`self|own-group|nearby-friendly-groups`、叠加/稳定来源、生命周期、逐 tick 哈希与敌方 inspection 裁剪。
 - `src/sim/active-ability.test.ts`：覆盖 `content-9` 主动能力验证、触发拒绝、稳定友军效用、冷却/次数边界、事件顺序、隐藏敌情负例、逐 tick 哈希、结果和终止冻结。
 - `src/sim/hero.test.ts`：覆盖 `content-10` 英雄槽位、档案/ID 验证、规范哈希/深拷贝、实例能力处理器复用、观察裁剪、伤亡/撤离/未部署结果、逐 tick 复演和终止冻结。
+- `src/client/director.test.ts`：覆盖热点区域聚合、稳定排序、事件窗口、观察上下文清空，以及停留/冷却/分数/距离迟滞。
 - `src/sim/generated-invariants.test.ts`：批量 seed 覆盖地图边界/路线、逐 tick 哈希、非敌对安全和结果人数守恒，并支持按 seed 重放。
 - `src/demo/setup.test.ts`：覆盖演示生成结果、标准输入验证和 Worker 初始化边界。
 - `src/demo/scenarios.test.ts`：覆盖人工场景验证、英雄独立/混编生成、自行火炮自然任务/发射、多目标配置和增援事件接线。
@@ -278,7 +284,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - `src/sim/air.test.ts`：覆盖内容/setup/规则迁移、精确安全半径、空地共享、同带移动/跨带预约、低空净空、高度动作/中断/评分、有限情报负例、传感/暴露修正、冲突/防守逐 tick 哈希与冻结。
 - `src/sim/vehicle.test.ts`：覆盖旧输入迁移、车辆路线/转向/岗位，以及装甲面、穿透、外露部件、同 tick 双向伤害、部件/乘员结算、固定火力、撤离、弃车、投影/结果和逐 tick 复演。
 - `src/sim/transport.test.ts`：覆盖规则迁移、关系/容量验证、初始搭载、整组下车、取消、损毁伤情、受困恢复、同波次增援、目标占领负例和逐 tick 哈希。
-- `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、英雄档案/形状标记、车辆/炮兵/悬停空军/被动/持续光环/主动能力、观察权限、控制、模式、特征像素与响应式布局。
+- `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、自动导演/手动接管、英雄档案/形状标记、车辆/炮兵/悬停空军/被动/持续光环/主动能力、观察权限、控制、模式、特征像素与响应式布局。
 - `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
 - `src/test-api.d.ts`：仅声明 E2E 调试桥。
@@ -293,7 +299,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | 成员健康、平台位置/部件/岗位、弹匣、士气、情报、目标进度 | 模拟 Worker | 是 |
 | Worker 运行/暂停 | Worker 适配 | 只决定是否调用 step |
 | 最近事件列表、当前检查结果 | Client Hook | 否 |
-| 选中单位、镜头模式、纯净界面 | React App | 否 |
+| 选中单位、镜头模式、导演热点/迟滞、纯净界面 | React App | 否 |
 | 插值位置、曳光寿命、相机平滑 | Three.js | 否 |
 
 ## 10. 已知技术债

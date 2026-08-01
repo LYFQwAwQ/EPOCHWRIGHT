@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBattleWorker } from "./client/useBattleWorker";
+import { advanceDirector, createDirectorState } from "./client/director";
 import {
   DEMO_SCENARIOS,
   createDemoBattleSetup,
@@ -14,7 +15,7 @@ import {
   applyPerformanceProfile,
   parsePerformanceProfile,
 } from "./performance/profiles";
-import type { CameraMode } from "./render/Battlefield";
+import type { CameraMode, CameraViewSnapshot } from "./render/Battlefield";
 import {
   DEFAULT_RENDER_QUALITY,
   parseRenderQuality,
@@ -29,6 +30,7 @@ import {
   type BattleSetup,
   type GroupInspection,
   type PlatformInspection,
+  type RenderFrame,
 } from "./sim/types";
 import { EventFeed } from "./ui/EventFeed";
 import { FactionSummary } from "./ui/FactionSummary";
@@ -188,6 +190,8 @@ export function App() {
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [cleanView, setCleanView] = useState(false);
   const [cameraMode, setCameraMode] = useState<CameraMode>("free");
+  const [directorState, setDirectorState] = useState(createDirectorState);
+  const [directorProjectionBlocked, setDirectorProjectionBlocked] = useState(false);
   const [renderQuality, setRenderQuality] = useState<RenderQuality>(initialRenderQuality);
   const [cameraResetSignal, setCameraResetSignal] = useState(0);
   const [observerFactionId, setObserverFactionId] = useState<string>();
@@ -200,6 +204,10 @@ export function App() {
   const initialScenarioRef = useRef(scenarioId);
   const performanceProfileRef = useRef(initialPerformanceProfile());
   const animationFrameDurationsRef = useRef<number[]>([]);
+  const cameraViewRef = useRef<CameraViewSnapshot | undefined>(undefined);
+  const latestFrameRef = useRef<RenderFrame | undefined>(state.frame);
+  const observationFrameBarrierRef = useRef<RenderFrame | undefined>(undefined);
+  latestFrameRef.current = state.frame;
   const {
     start,
     pause,
@@ -287,6 +295,49 @@ export function App() {
     [inspect],
   );
 
+  const changeCameraMode = useCallback(
+    (mode: CameraMode) => {
+      const nextMode = mode === "follow" && !selectedGroupId ? "free" : mode;
+      if (nextMode === "director") {
+        setDirectorState(createDirectorState());
+      }
+      setCameraMode(nextMode);
+    },
+    [selectedGroupId],
+  );
+
+  const changeObservation = useCallback(
+    (factionId?: string) => {
+      setSelectedGroupId(undefined);
+      setSelectedEntityId(undefined);
+      setCameraMode((current) => (current === "follow" ? "free" : current));
+      setDirectorState(createDirectorState());
+      observationFrameBarrierRef.current = latestFrameRef.current;
+      setDirectorProjectionBlocked(true);
+      setObserverFactionId(factionId);
+      setObservation(factionId);
+    },
+    [setObservation],
+  );
+
+  useEffect(() => {
+    if (
+      directorProjectionBlocked &&
+      state.frame !== undefined &&
+      state.frame !== observationFrameBarrierRef.current
+    ) {
+      setDirectorProjectionBlocked(false);
+    }
+  }, [directorProjectionBlocked, state.frame]);
+
+  const handleManualCameraControl = useCallback(() => {
+    setCameraMode((current) => (current === "director" ? "free" : current));
+  }, []);
+
+  const recordCameraView = useCallback((snapshot: CameraViewSnapshot) => {
+    cameraViewRef.current = snapshot;
+  }, []);
+
   const launchScenario = useCallback(
     (nextScenarioId: DemoScenarioId, nextSeed: string, shouldRun: boolean) => {
       const nextMode = getDemoScenario(nextScenarioId).mode;
@@ -298,6 +349,8 @@ export function App() {
       setObserverFactionId(undefined);
       setObservation(undefined);
       setCameraMode("free");
+      setDirectorState(createDirectorState());
+      setDirectorProjectionBlocked(false);
       setCameraResetSignal((value) => value + 1);
       updateBattleUrl(nextSeed, nextMode, nextScenarioId);
       start(
@@ -380,6 +433,38 @@ export function App() {
         : [],
     [observerFactionId, observationLayers, state.events, state.setup, visibleGroupIds],
   );
+  const directorFrame = useMemo(() => {
+    const frame = displayFrame ?? state.frame;
+    if (!frame || observationLayers.objectives) {
+      return frame;
+    }
+    return { ...frame, objectives: [] };
+  }, [displayFrame, observationLayers.objectives, state.frame]);
+  const directorContextKey = `${state.setup?.battleId ?? "uninitialized"}|${
+    observerFactionId ?? "omniscient"
+  }|contacts:${observationLayers.contacts ? 1 : 0}|objectives:${
+    observationLayers.objectives ? 1 : 0
+  }`;
+
+  useEffect(() => {
+    if (
+      cameraMode !== "director" ||
+      directorProjectionBlocked ||
+      !directorFrame ||
+      !state.setup
+    ) {
+      return;
+    }
+    const cellSizeMeters = state.setup.map.cellSizeMm / 1_000;
+    setDirectorState((current) =>
+      advanceDirector(current, {
+        contextKey: directorContextKey,
+        frame: directorFrame,
+        events: visibleEvents,
+        cellSizeMeters,
+      }),
+    );
+  }, [cameraMode, directorContextKey, directorFrame, directorProjectionBlocked, state.setup, visibleEvents]);
   const tick = state.frame?.tick ?? 0;
   const anyEngagement = state.frame?.groups.some((group) => group.action === "engaging") ?? false;
   const objectiveState = state.frame?.objectives[0]?.state;
@@ -511,6 +596,9 @@ export function App() {
       getLayerVisibility: () => ({ ...observationLayers }),
       getPerformanceProfile: () => performanceProfileRef.current,
       getRenderQuality: () => renderQuality,
+      getCameraMode: () => cameraMode,
+      getDirectorHotspot: () => directorState.hotspot,
+      getCameraView: () => cameraViewRef.current,
       getPerformanceMetrics: () => ({
         ...getPerformanceSnapshot(),
         animationFrameIntervalMs: summarizeMetrics(animationFrameDurationsRef.current),
@@ -519,20 +607,15 @@ export function App() {
         animationFrameDurationsRef.current = [];
         resetPerformance();
       },
-      setObservation: (factionId?: string) => {
-        setSelectedGroupId(undefined);
-        setSelectedEntityId(undefined);
-        setCameraMode("free");
-        setObserverFactionId(factionId);
-        setObservation(factionId);
-      },
+      setObservation: changeObservation,
+      setCameraMode: changeCameraMode,
       selectGroup,
       selectPlatform,
       pause,
       run,
       step: stepDebug,
     };
-  }, [battleMode, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, selectPlatform, setObservation, state.frame, state.setup, state.stateHash, state.status, stepDebug, visibleEvents]);
+  }, [battleMode, cameraMode, changeCameraMode, changeObservation, directorState.hotspot, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, selectPlatform, state.frame, state.setup, state.stateHash, state.status, stepDebug, visibleEvents]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -564,7 +647,10 @@ export function App() {
             selectedGroupId={selectedGroupId}
             selectedEntityId={selectedEntityId}
             cameraMode={cameraMode}
+            directorTarget={cameraMode === "director" ? directorState.hotspot : undefined}
             resetSignal={cameraResetSignal}
+            onManualCameraControl={handleManualCameraControl}
+            onCameraViewChange={e2eMode ? recordCameraView : undefined}
             onSelectGroup={selectGroup}
             onSelectPlatform={selectPlatform}
             quality={renderQuality}
@@ -585,11 +671,12 @@ export function App() {
         onTogglePause={state.status === "paused" ? run : pause}
         onBattleModeChange={changeBattleMode}
         onRestart={restart}
-        onResetCamera={() => setCameraResetSignal((value) => value + 1)}
-        onToggleCleanView={() => setCleanView((value) => !value)}
-        onCameraModeChange={(mode) => {
-          setCameraMode(mode === "follow" && !selectedGroupId ? "free" : mode);
+        onResetCamera={() => {
+          setCameraMode((current) => (current === "director" ? "free" : current));
+          setCameraResetSignal((value) => value + 1);
         }}
+        onToggleCleanView={() => setCleanView((value) => !value)}
+        onCameraModeChange={changeCameraMode}
         onQualityChange={(quality) => {
           setRenderQuality(quality);
           updateRenderQualityUrl(quality);
@@ -622,18 +709,12 @@ export function App() {
             factions={state.setup.factions}
             observerFactionId={observerFactionId}
             layers={observationLayers}
-            onObserverChange={(factionId) => {
-              setSelectedGroupId(undefined);
-              setSelectedEntityId(undefined);
-              setCameraMode("free");
-              setObserverFactionId(factionId);
-              setObservation(factionId);
-            }}
+            onObserverChange={changeObservation}
             onLayerChange={(layer, visible) => {
               if (layer === "contacts" && !visible && groupInspection?.visibility === "known") {
                 setSelectedGroupId(undefined);
                 setSelectedEntityId(undefined);
-                setCameraMode("free");
+                setCameraMode((current) => (current === "follow" ? "free" : current));
                 inspect(undefined);
               }
               setObservationLayers((current) => ({ ...current, [layer]: visible }));
