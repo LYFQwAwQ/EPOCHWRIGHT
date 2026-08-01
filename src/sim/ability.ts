@@ -28,6 +28,7 @@ import type {
 export interface AbilityMemberContext {
   readonly id: MemberId;
   readonly memberTemplateId: TemplateId;
+  readonly grantedAbilityTemplateIds?: readonly TemplateId[];
   readonly health: HealthState;
   readonly presence: PresenceState;
 }
@@ -104,7 +105,7 @@ export function memberAbilityAttributeBps(
     throw new Error(`Unknown member template: ${member.memberTemplateId}.`);
   }
   const base = attributeBaseValue(memberTemplate, attribute);
-  const modifier = passiveAbilitiesForMember(content, member.memberTemplateId)
+  const modifier = passiveAbilitiesForMember(content, member)
     .filter(
       (ability) =>
         ability.targetRule === "self" && evaluatePassiveAbility(ability, member).active,
@@ -123,7 +124,7 @@ export function ownGroupAbilityModifierBps(
   return [...members]
     .sort((a, b) => compareStrings(a.id, b.id))
     .flatMap((member) =>
-      passiveAbilitiesForMember(content, member.memberTemplateId)
+      passiveAbilitiesForMember(content, member)
         .filter(
           (ability) =>
             ability.targetRule === "own-group" &&
@@ -149,7 +150,7 @@ export function resolveActiveAuras(
       if (!isAuraSourceActive(member)) {
         continue;
       }
-      for (const ability of auraAbilitiesForMember(content, member.memberTemplateId)) {
+      for (const ability of auraAbilitiesForMember(content, member)) {
         if (!evaluateAbilityConditions(ability, member).active) {
           continue;
         }
@@ -209,8 +210,12 @@ export function createActiveAbilityStates(
   sourceMemberId: MemberId,
   sourceGroupId: GroupId,
   memberTemplateId: TemplateId,
+  grantedAbilityTemplateIds: readonly TemplateId[] = [],
 ): readonly ActiveAbilityRuntimeState[] {
-  return abilityTemplatesForMember(content, memberTemplateId)
+  return abilityTemplatesForMember(content, {
+    memberTemplateId,
+    grantedAbilityTemplateIds,
+  })
     .filter((ability): ability is ActiveAbilityTemplate => ability.kind === "active")
     .map((ability) => ({
       id: activeAbilityId(sourceMemberId, ability.id),
@@ -394,7 +399,7 @@ export function passiveAbilityInspections(
   return [...members]
     .sort((a, b) => compareStrings(a.id, b.id))
     .flatMap((member) =>
-      passiveAbilitiesForMember(content, member.memberTemplateId).map((ability) => {
+      passiveAbilitiesForMember(content, member).map((ability) => {
         const evaluation = evaluatePassiveAbility(ability, member);
         return {
           sourceMemberId: member.id,
@@ -512,31 +517,34 @@ function auraApplicationId(sourceId: string, targetGroupId: GroupId): string {
 
 function passiveAbilitiesForMember(
   content: BattleContentBundle,
-  memberTemplateId: TemplateId,
+  member: Pick<AbilityMemberContext, "memberTemplateId" | "grantedAbilityTemplateIds">,
 ): readonly PassiveAbilityTemplate[] {
-  return abilityTemplatesForMember(content, memberTemplateId).filter(
+  return abilityTemplatesForMember(content, member).filter(
     (ability): ability is PassiveAbilityTemplate => ability.kind === "passive",
   );
 }
 
 function auraAbilitiesForMember(
   content: BattleContentBundle,
-  memberTemplateId: TemplateId,
+  member: Pick<AbilityMemberContext, "memberTemplateId" | "grantedAbilityTemplateIds">,
 ): readonly AuraAbilityTemplate[] {
-  return abilityTemplatesForMember(content, memberTemplateId).filter(
+  return abilityTemplatesForMember(content, member).filter(
     (ability): ability is AuraAbilityTemplate => ability.kind === "aura",
   );
 }
 
 function abilityTemplatesForMember(
   content: BattleContentBundle,
-  memberTemplateId: TemplateId,
+  member: Pick<AbilityMemberContext, "memberTemplateId" | "grantedAbilityTemplateIds">,
 ): readonly AbilityTemplate[] {
-  const memberTemplate = content.memberTemplates[memberTemplateId];
+  const memberTemplate = content.memberTemplates[member.memberTemplateId];
   if (!memberTemplate) {
-    throw new Error(`Unknown member template: ${memberTemplateId}.`);
+    throw new Error(`Unknown member template: ${member.memberTemplateId}.`);
   }
-  return [...memberTemplate.abilityTemplateIds]
+  return [...new Set([
+    ...memberTemplate.abilityTemplateIds,
+    ...(member.grantedAbilityTemplateIds ?? []),
+  ])]
     .sort(compareStrings)
     .map((abilityId) => {
       const ability = content.abilityTemplates[abilityId];

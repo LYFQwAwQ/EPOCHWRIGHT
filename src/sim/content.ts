@@ -8,6 +8,7 @@ import type {
   LegacyBattleContentBundle,
   MemberTemplate,
   PlatformTemplate,
+  PreHeroBattleContentBundle,
   PreActiveAbilityBattleContentBundle,
   PreAuraAbilityBattleContentBundle,
   PrePassiveAbilityBattleContentBundle,
@@ -28,7 +29,8 @@ import {
   MAX_LOGICAL_PROJECTILE_FLIGHT_TICKS,
 } from "./artillery";
 
-export const BATTLE_CONTENT_VERSION = "content-9" as const;
+export const BATTLE_CONTENT_VERSION = "content-10" as const;
+export const PRE_HERO_BATTLE_CONTENT_VERSION = "content-9" as const;
 export const PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-8" as const;
 export const PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION = "content-7" as const;
 export const PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION = "content-6" as const;
@@ -47,6 +49,9 @@ export const DEFAULT_AURA_ABILITY_TEMPLATE_ID = "rallying-presence-v1" as const;
 export const DEFAULT_ACTIVE_GROUP_TEMPLATE_ID = "infantry-rally-squad-v1" as const;
 export const DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID = "infantry-rally-leader-v1" as const;
 export const DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID = "steady-the-line-v1" as const;
+export const DEFAULT_HERO_GROUP_TEMPLATE_ID = "hero-independent-group-v1" as const;
+export const DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID = "infantry-hero-squad-v1" as const;
+export const DEFAULT_HERO_MEMBER_TEMPLATE_ID = "hero-commander-v1" as const;
 export const DEFAULT_SENSOR_TEMPLATE_ID = "infantry-eyesight-v1" as const;
 export const DEFAULT_WEAPON_TEMPLATE_ID = "rifle-standard-v1" as const;
 export const DEFAULT_PLATFORM_WEAPON_TEMPLATE_ID = "vehicle-autocannon-v1" as const;
@@ -98,6 +103,8 @@ export function createDefaultBattleContent(
       DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
       DEFAULT_AURA_GROUP_TEMPLATE_ID,
       DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
+      DEFAULT_HERO_GROUP_TEMPLATE_ID,
+      DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
       DEFAULT_WHEELED_GROUP_TEMPLATE_ID,
       DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
       DEFAULT_ARTILLERY_GROUP_TEMPLATE_ID,
@@ -110,6 +117,7 @@ export function createDefaultBattleContent(
       DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
       DEFAULT_AURA_MEMBER_TEMPLATE_ID,
       DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+      DEFAULT_HERO_MEMBER_TEMPLATE_ID,
       DEFAULT_CREW_MEMBER_TEMPLATE_ID,
       DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
       DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
@@ -309,6 +317,49 @@ export function createDefaultBattleContent(
         memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
         count: 7,
         required: true,
+      },
+    ],
+  };
+  const heroMember: MemberTemplate = {
+    ...member,
+    id: DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+    tags: ["infantry", "hero", "commander"],
+    roleTags: ["rifleman", "leader", "commander"],
+    abilityTemplateIds: [],
+  };
+  const heroGroup: GroupTemplate = {
+    ...group,
+    id: DEFAULT_HERO_GROUP_TEMPLATE_ID,
+    tags: ["infantry", "hero", "independent"],
+    memberSlotRules: [
+      {
+        slotId: "hero",
+        memberTemplateId: DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+        hero: true,
+      },
+    ],
+    cohesionRadiusCells: 0,
+  };
+  const heroSquadGroup: GroupTemplate = {
+    ...group,
+    id: DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
+    tags: ["infantry", "squad", "hero-led"],
+    memberSlotRules: [
+      {
+        slotId: "hero",
+        memberTemplateId: DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+        count: 1,
+        required: true,
+        hero: true,
+      },
+      {
+        slotId: "riflemen",
+        memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+        count: 7,
+        required: true,
+        hero: false,
       },
     ],
   };
@@ -616,6 +667,8 @@ export function createDefaultBattleContent(
       [passiveGroup.id]: passiveGroup,
       [auraGroup.id]: auraGroup,
       [activeGroup.id]: activeGroup,
+      [heroGroup.id]: heroGroup,
+      [heroSquadGroup.id]: heroSquadGroup,
       [wheeledGroup.id]: wheeledGroup,
       [trackedGroup.id]: trackedGroup,
       [artilleryGroup.id]: artilleryGroup,
@@ -628,6 +681,7 @@ export function createDefaultBattleContent(
       [passiveMember.id]: passiveMember,
       [auraMember.id]: auraMember,
       [activeMember.id]: activeMember,
+      [heroMember.id]: heroMember,
       [crewMember.id]: crewMember,
       [gunnerMember.id]: gunnerMember,
       [reliefCrewMember.id]: reliefCrewMember,
@@ -1146,6 +1200,7 @@ function createDefaultPlatformTemplate(
 export function migrateBattleContent(
   content:
     | BattleContentBundle
+    | PreHeroBattleContentBundle
     | PreActiveAbilityBattleContentBundle
     | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
@@ -1159,6 +1214,7 @@ export function migrateBattleContent(
     return cloneBattleContent(content);
   }
   if (
+    content.contentVersion === PRE_HERO_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION ||
     content.contentVersion === PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION
   ) {
@@ -1364,7 +1420,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       weapon.firePattern.kind !== "single" ||
       weapon.firePattern.shotsPerAction !== 1
     ) {
-      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-9.`);
+      throw new Error(`Weapon template ${weapon.id} uses capabilities not supported by content-10.`);
     }
   }
   for (const group of Object.values(content.groupTemplates)) {
@@ -1398,7 +1454,7 @@ export function validateBattleContent(content: BattleContentBundle): void {
       continue;
     }
     if (member.weaponSlotRules.reduce((sum, slot) => sum + slot.count, 0) !== 1) {
-      throw new Error(`Member template ${member.id} must resolve to one content-9 weapon.`);
+      throw new Error(`Member template ${member.id} must resolve to one content-10 weapon.`);
     }
     if (!era.allowedSensorTemplateIds.includes(member.sensorTemplateId)) {
       throw new Error(`Member template ${member.id} references a sensor outside era ${era.id}.`);
@@ -1529,6 +1585,9 @@ function validateGroupTemplate(template: GroupTemplate): void {
     throw new Error(`Group template ${template.id} requires a behavior profile.`);
   }
   validateSlotRules(template.id, template.memberSlotRules, "member");
+  if (template.memberSlotRules.some((slot) => slot.hero !== undefined && typeof slot.hero !== "boolean")) {
+    throw new Error(`Group template ${template.id} has an invalid hero slot marker.`);
+  }
   validateSlotRules(template.id, template.platformSlotRules, "platform");
 }
 
@@ -2045,6 +2104,7 @@ function hashGroupTemplate(hasher: StateHasher, template: GroupTemplate): void {
     hasher.addString(slot.memberTemplateId);
     hasher.addNumber(slot.count);
     hasher.addNumber(slot.required ? 1 : 0);
+    hasher.addNumber(slot.hero ? 1 : 0);
   }
   for (const slot of template.platformSlotRules) {
     hasher.addString(slot.slotId);

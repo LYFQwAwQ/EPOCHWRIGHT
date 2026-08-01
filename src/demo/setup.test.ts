@@ -87,6 +87,18 @@ describe("demo battle setup boundary", () => {
       auraAbilityGroupsPerFaction: 1,
       activeAbilityGroupsPerFaction: 1,
     })).toThrow(/activeAbilityGroupsPerFaction/);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-hero-group-mix",
+      groupsPerFaction: 1,
+      activeAbilityGroupsPerFaction: 1,
+      heroGroupsPerFaction: 1,
+    })).toThrow(/heroGroupsPerFaction/);
+    expect(() => createDemoBattleSetup({
+      seed: "invalid-hero-group-types",
+      groupsPerFaction: 2,
+      heroGroupsPerFaction: 2,
+      heroGroupTypes: ["independent"],
+    })).toThrow(/heroGroupTypes/);
   });
 
   it("keeps air group counts backward-compatible unless explicit types are supplied", () => {

@@ -12,6 +12,8 @@ import {
   DEFAULT_ARTILLERY_PLATFORM_TEMPLATE_ID,
   DEFAULT_ACTIVE_GROUP_TEMPLATE_ID,
   DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID,
+  DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID,
+  DEFAULT_AURA_ABILITY_TEMPLATE_ID,
   DEFAULT_AURA_GROUP_TEMPLATE_ID,
   DEFAULT_AURA_MEMBER_TEMPLATE_ID,
   DEFAULT_CREW_MEMBER_TEMPLATE_ID,
@@ -19,8 +21,12 @@ import {
   DEFAULT_GUNNER_MEMBER_TEMPLATE_ID,
   DEFAULT_RELIEF_CREW_MEMBER_TEMPLATE_ID,
   DEFAULT_GROUP_TEMPLATE_ID,
+  DEFAULT_HERO_GROUP_TEMPLATE_ID,
+  DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+  DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
   DEFAULT_MEMBER_TEMPLATE_ID,
   DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
+  DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
   DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
   DEFAULT_PILOT_MEMBER_TEMPLATE_ID,
   DEFAULT_TRACKED_GROUP_TEMPLATE_ID,
@@ -66,6 +72,8 @@ export interface DemoBattleSetupOptions {
   readonly passiveAbilityGroupsPerFaction?: number;
   readonly auraAbilityGroupsPerFaction?: number;
   readonly activeAbilityGroupsPerFaction?: number;
+  readonly heroGroupsPerFaction?: number;
+  readonly heroGroupTypes?: readonly DemoHeroGroupType[];
   readonly transportPairsPerFaction?: number;
   readonly factions?: readonly FactionSetup[];
   readonly relations?: readonly RelationSetup[];
@@ -88,6 +96,8 @@ export type DemoAirGroupType =
   | "attack-helicopter"
   | "scout-drone";
 
+export type DemoHeroGroupType = "independent" | "embedded";
+
 const DEFAULT_FACTIONS: readonly FactionSetup[] = [
   { id: "ember", displayName: "赤焰", color: "#e45f62" },
   { id: "azure", displayName: "苍蓝", color: "#3e8fd1" },
@@ -109,6 +119,11 @@ export function createDemoBattleSetup(
   const passiveAbilityGroupsPerFaction = options.passiveAbilityGroupsPerFaction ?? 0;
   const auraAbilityGroupsPerFaction = options.auraAbilityGroupsPerFaction ?? 0;
   const activeAbilityGroupsPerFaction = options.activeAbilityGroupsPerFaction ?? 0;
+  const heroGroupsPerFaction = options.heroGroupsPerFaction ?? 0;
+  const heroGroupTypes = options.heroGroupTypes ?? Array.from(
+    { length: heroGroupsPerFaction },
+    () => "independent" as const,
+  );
   const airGroupTypes = options.airGroupTypes ?? Array.from(
     { length: airGroupsPerFaction },
     () => "recon-helicopter" as const,
@@ -195,6 +210,21 @@ export function createDemoBattleSetup(
     );
   }
   if (
+    !Number.isInteger(heroGroupsPerFaction) ||
+    heroGroupsPerFaction < 0 ||
+    heroGroupsPerFaction >
+      groupsPerFaction - artilleryGroupsPerFaction - airGroupsPerFaction - vehicleGroupsPerFaction -
+        passiveAbilityGroupsPerFaction - auraAbilityGroupsPerFaction - activeAbilityGroupsPerFaction
+  ) {
+    throw new Error("heroGroupsPerFaction must fit within remaining infantry groups.");
+  }
+  if (
+    heroGroupTypes.length !== heroGroupsPerFaction ||
+    heroGroupTypes.some((type) => type !== "independent" && type !== "embedded")
+  ) {
+    throw new Error("heroGroupTypes must provide one supported type per hero group.");
+  }
+  if (
     !Number.isInteger(transportPairsPerFaction) ||
     transportPairsPerFaction < 0 ||
     transportPairsPerFaction > vehicleGroupsPerFaction ||
@@ -230,6 +260,8 @@ export function createDemoBattleSetup(
     passiveAbilityGroupsPerFaction,
     auraAbilityGroupsPerFaction,
     activeAbilityGroupsPerFaction,
+    heroGroupsPerFaction,
+    heroGroupTypes,
   );
   const transport = createTransportPairs(
     generatedGroups,
@@ -351,7 +383,15 @@ function cloneWave(wave: ReinforcementWaveSetup): ReinforcementWaveSetup {
       ...group,
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
-      members: group.members.map((member) => ({ ...member })),
+      members: group.members.map((member) => ({
+        ...member,
+        hero: member.hero
+          ? {
+              ...member.hero,
+              abilityTemplateIds: [...member.hero.abilityTemplateIds],
+            }
+          : undefined,
+      })),
       platforms: group.platforms.map((platform) => ({
         ...platform,
         crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
@@ -416,6 +456,8 @@ function createGroupSpawns(
   passiveAbilityGroupsPerFaction: number,
   auraAbilityGroupsPerFaction: number,
   activeAbilityGroupsPerFaction: number,
+  heroGroupsPerFaction: number,
+  heroGroupTypes: readonly DemoHeroGroupType[],
 ): readonly GroupSpawn[] {
   const groups: GroupSpawn[] = [];
   const occupied = new Set<number>();
@@ -542,6 +584,27 @@ function createGroupSpawns(
           passiveAbilityGroupsPerFaction +
             auraAbilityGroupsPerFaction +
             activeAbilityGroupsPerFaction;
+      const heroIndex =
+        infantryIndex -
+        passiveAbilityGroupsPerFaction -
+        auraAbilityGroupsPerFaction -
+        activeAbilityGroupsPerFaction;
+      const heroGroupType =
+        !usesPassiveAbility &&
+        !usesAuraAbility &&
+        !usesActiveAbility &&
+        heroIndex >= 0 &&
+        heroIndex < heroGroupsPerFaction
+          ? heroGroupTypes[heroIndex]
+          : undefined;
+      if (heroGroupType) {
+        const typeIndex =
+          heroGroupTypes
+            .slice(0, heroIndex + 1)
+            .filter((type) => type === heroGroupType).length;
+        groups.push(createHeroGroupSpawn(faction.id, heroGroupType, typeIndex, spawn));
+        continue;
+      }
       const groupId = usesPassiveAbility
         ? `${faction.id}-disciplined-${infantryIndex + 1}`
         : usesAuraAbility
@@ -577,6 +640,50 @@ function createGroupSpawns(
     }
   }
   return groups;
+}
+
+function createHeroGroupSpawn(
+  factionId: string,
+  type: DemoHeroGroupType,
+  typeIndex: number,
+  spawn: GridCoord,
+): GroupSpawn {
+  const groupId = `${factionId}-hero-${type}-${typeIndex}`;
+  const heroMemberId = `${groupId}-hero`;
+  const heroMember = {
+    id: heroMemberId,
+    memberTemplateId: DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+    persistentId: `campaign:${factionId}:hero:${type}:${typeIndex}`,
+    hero: {
+      importanceBps: type === "independent" ? 9_000 : 7_500,
+      abilityTemplateIds: [
+        DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
+        DEFAULT_AURA_ABILITY_TEMPLATE_ID,
+        DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID,
+      ],
+    },
+  } as const;
+  return {
+    id: groupId,
+    factionId,
+    groupTemplateId:
+      type === "independent"
+        ? DEFAULT_HERO_GROUP_TEMPLATE_ID
+        : DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
+    spawn,
+    evacuation: { ...spawn },
+    members:
+      type === "independent"
+        ? [heroMember]
+        : [
+            heroMember,
+            ...Array.from({ length: 7 }, (_, memberIndex) => ({
+              id: `${groupId}-member-${memberIndex + 1}`,
+              memberTemplateId: DEFAULT_MEMBER_TEMPLATE_ID,
+            })),
+          ],
+    platforms: [],
+  };
 }
 
 function createAirGroupSpawn(

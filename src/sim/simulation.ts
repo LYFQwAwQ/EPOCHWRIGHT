@@ -475,6 +475,7 @@ class StageOneBattleSimulation implements BattleSimulation {
           worldZ: (renderPosition.z + offset[1]) * cellSizeMeters,
           health: member.health,
           presence: member.presence,
+          hero: member.hero !== undefined,
         });
       });
     }
@@ -625,6 +626,13 @@ class StageOneBattleSimulation implements BattleSimulation {
       id: member.id,
       groupId: member.groupId,
       factionId: member.factionId,
+      persistentId: member.persistentMemberId,
+      hero: member.hero
+        ? {
+            ...member.hero,
+            abilityTemplateIds: [...member.hero.abilityTemplateIds],
+          }
+        : undefined,
       health: member.health,
       presence: member.presence,
       placement: { ...member.placement },
@@ -872,6 +880,12 @@ class StageOneBattleSimulation implements BattleSimulation {
       for (const member of group.members) {
         hasher.addString(member.id);
         hasher.addString(member.memberTemplateId);
+        hasher.addString(member.persistentMemberId ?? "");
+        hasher.addNumber(member.hero ? 1 : 0);
+        hasher.addNumber(member.hero?.importanceBps ?? 0);
+        for (const abilityTemplateId of [...member.grantedAbilityTemplateIds].sort(compareStrings)) {
+          hasher.addString(abilityTemplateId);
+        }
         hasher.addString(member.weaponTemplateId);
         hasher.addString(member.health);
         hasher.addString(member.presence);
@@ -6886,6 +6900,7 @@ class StageOneBattleSimulation implements BattleSimulation {
                 member.id,
                 group.id,
                 member.memberTemplateId,
+                member.hero?.abilityTemplateIds,
               ),
             )
             .map((ability) => ({
@@ -6909,6 +6924,13 @@ class StageOneBattleSimulation implements BattleSimulation {
         id: member.id,
         groupId: group.id,
         factionId: group.factionId,
+        persistentId: member.persistentMemberId,
+        hero: member.hero
+          ? {
+              ...member.hero,
+              abilityTemplateIds: [...member.hero.abilityTemplateIds],
+            }
+          : undefined,
         health: member.health,
         presence: member.presence,
         finalPlacement: { ...member.placement },
@@ -6929,6 +6951,13 @@ class StageOneBattleSimulation implements BattleSimulation {
             id: member.id,
             groupId: group.id,
             factionId: group.factionId,
+            persistentId: member.persistentId,
+            hero: member.hero
+              ? {
+                  ...member.hero,
+                  abilityTemplateIds: [...member.hero.abilityTemplateIds],
+                }
+              : undefined,
             health: member.initialHealth ?? "healthy" as const,
             presence: "undeployed" as const,
             finalPlacement: placementForSpawnMember(group, member.id),
@@ -7415,6 +7444,16 @@ class StageOneBattleSimulation implements BattleSimulation {
         this.setup.content,
         group.members.flatMap((member) => member.activeAbilities),
       ),
+      heroes: group.members
+        .filter((member) => member.hero !== undefined && member.persistentMemberId !== undefined)
+        .map((member) => ({
+          memberId: member.id,
+          persistentId: member.persistentMemberId!,
+          importanceBps: member.hero!.importanceBps,
+          abilityTemplateIds: [...member.hero!.abilityTemplateIds],
+          health: member.health,
+          presence: member.presence,
+        })),
       modeEffective: this.isGroupModeEffective(group),
       activeMembers: activeMemberCount(group),
       woundedMembers: group.members.filter((member) => member.health === "wounded").length,

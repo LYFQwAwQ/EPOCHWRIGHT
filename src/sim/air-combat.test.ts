@@ -8,6 +8,7 @@ import {
   DEFAULT_MEMBER_TEMPLATE_ID,
   PRE_AIR_COMBAT_BATTLE_CONTENT_VERSION,
   PRE_AIR_COMBAT_BATTLE_RULES_VERSION,
+  PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION,
   cellIndex,
   cloneBattleContent,
   createDefaultBattleContent,
@@ -108,6 +109,7 @@ describe("AIR-003 air weapon rules", () => {
     const current = createAirCombatSetup("air-combat-migration");
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_AIR_COMBAT_BATTLE_RULES_VERSION,
       content: {
         ...current.content,

@@ -33,14 +33,17 @@ function positionSmoothingAlpha(deltaSeconds: number): number {
 interface FactionUnitsProps {
   readonly members: readonly RenderMember[];
   readonly color: string;
+  readonly hero?: boolean;
   readonly selectedGroupId?: string;
   readonly onSelectGroup: (groupId: string) => void;
 }
 
-function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: FactionUnitsProps) {
+function FactionUnits({ members, color, hero = false, selectedGroupId, onSelectGroup }: FactionUnitsProps) {
   const meshRef = useRef<InstancedMesh>(null);
+  const markerRef = useRef<InstancedMesh>(null);
   const currentPositions = useRef(new Map<string, Vector3>());
   const dummy = useMemo(() => new Object3D(), []);
+  const markerDummy = useMemo(() => new Object3D(), []);
 
   useFrame((_, delta) => {
     const mesh = meshRef.current;
@@ -75,28 +78,64 @@ function FactionUnits({ members, color, selectedGroupId, onSelectGroup }: Factio
       }
       dummy.updateMatrix();
       mesh.setMatrixAt(index, dummy.matrix);
+      if (markerRef.current) {
+        markerDummy.position.set(
+          current.x,
+          groundY + (inactive ? 0.92 : 2.42),
+          current.z,
+        );
+        markerDummy.quaternion.copy(uprightQuaternion);
+        markerDummy.rotation.y = Math.PI / 4;
+        markerDummy.scale.setScalar(
+          (member.groupId === selectedGroupId ? 0.56 : 0.46) *
+            (inactive ? 0.72 : 1),
+        );
+        markerDummy.updateMatrix();
+        markerRef.current.setMatrixAt(index, markerDummy.matrix);
+      }
     });
 
     mesh.instanceMatrix.needsUpdate = true;
+    if (markerRef.current) {
+      markerRef.current.instanceMatrix.needsUpdate = true;
+    }
   });
 
   return (
-    <instancedMesh
-      key={members.length}
-      ref={meshRef}
-      args={[undefined, undefined, Math.max(1, members.length)]}
-      castShadow
-      onPointerDown={(event) => {
-        event.stopPropagation();
-        const member = members[event.instanceId ?? -1];
-        if (member) {
-          onSelectGroup(member.groupId);
-        }
-      }}
-    >
-      <capsuleGeometry args={[0.42, 0.92, 4, 8]} />
-      <meshBasicMaterial color={color} toneMapped={false} />
-    </instancedMesh>
+    <>
+      <instancedMesh
+        key={`${hero ? "hero" : "member"}:${members.length}`}
+        ref={meshRef}
+        args={[undefined, undefined, Math.max(1, members.length)]}
+        castShadow
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          const member = members[event.instanceId ?? -1];
+          if (member) {
+            onSelectGroup(member.groupId);
+          }
+        }}
+      >
+        <capsuleGeometry args={[0.42, 0.92, 4, 8]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </instancedMesh>
+      {hero && (
+        <instancedMesh
+          ref={markerRef}
+          args={[undefined, undefined, Math.max(1, members.length)]}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            const member = members[event.instanceId ?? -1];
+            if (member) {
+              onSelectGroup(member.groupId);
+            }
+          }}
+        >
+          <octahedronGeometry args={[1, 0]} />
+          <meshBasicMaterial color="#ffe08a" toneMapped={false} />
+        </instancedMesh>
+      )}
+    </>
   );
 }
 
@@ -420,15 +459,34 @@ export function Units({
 
   return (
     <group>
-      {Object.entries(factionColors).map(([factionId, color]) => (
-        <FactionUnits
-          key={factionId}
-          members={deployedMembers.filter((member) => member.factionId === factionId)}
-          color={color}
-          selectedGroupId={selectedGroupId}
-          onSelectGroup={onSelectGroup}
-        />
-      ))}
+      {Object.entries(factionColors).map(([factionId, color]) => {
+        const factionMembers = deployedMembers.filter(
+          (member) => member.factionId === factionId,
+        );
+        const regularMembers = factionMembers.filter((member) => !member.hero);
+        const heroMembers = factionMembers.filter((member) => member.hero);
+        return (
+          <group key={factionId}>
+            {regularMembers.length > 0 && (
+              <FactionUnits
+                members={regularMembers}
+                color={color}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={onSelectGroup}
+              />
+            )}
+            {heroMembers.length > 0 && (
+              <FactionUnits
+                members={heroMembers}
+                color={color}
+                hero
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={onSelectGroup}
+              />
+            )}
+          </group>
+        );
+      })}
       {frame.platforms.map((platform) => (
         <PlatformMesh
           key={platform.id}

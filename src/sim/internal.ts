@@ -45,6 +45,7 @@ import type {
   FireMissionEvaluationInspection,
   FireMissionIntelSource,
   FlightAltitudeEvaluationInspection,
+  HeroMemberProfile,
 } from "./types";
 import type { ActiveAbilityRuntimeState, ActiveAuraApplication } from "./ability";
 
@@ -53,6 +54,9 @@ export interface MemberState {
   readonly groupId: GroupId;
   readonly factionId: FactionId;
   readonly memberTemplateId: string;
+  readonly persistentMemberId?: string;
+  readonly hero?: HeroMemberProfile;
+  readonly grantedAbilityTemplateIds: readonly string[];
   readonly weaponTemplateId: string;
   health: HealthState;
   presence: PresenceState;

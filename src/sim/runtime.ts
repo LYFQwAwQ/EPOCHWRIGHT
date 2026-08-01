@@ -87,7 +87,7 @@ export function createRuntimeState(
         ...group,
         spawn: { ...group.spawn },
         evacuation: { ...group.evacuation },
-        members: group.members.map((member) => ({ ...member })),
+        members: group.members.map(cloneMemberSpawn),
         platforms: group.platforms.map(clonePlatformSpawn),
       })),
       blockedPolicy: wave.blockedPolicy,
@@ -229,6 +229,14 @@ export function createGroupState(
           groupId: spawn.id,
           factionId: spawn.factionId,
           memberTemplateId: memberTemplate.id,
+          persistentMemberId: member.persistentId,
+          hero: member.hero
+            ? {
+                ...member.hero,
+                abilityTemplateIds: [...member.hero.abilityTemplateIds],
+              }
+            : undefined,
+          grantedAbilityTemplateIds: [...(member.hero?.abilityTemplateIds ?? [])],
           weaponTemplateId: weapon.id,
           health: member.initialHealth ?? "healthy",
           presence: "deployed",
@@ -241,6 +249,7 @@ export function createGroupState(
             member.id,
             spawn.id,
             memberTemplate.id,
+            member.hero?.abilityTemplateIds,
           )],
         };
       }),
@@ -316,7 +325,7 @@ export function cloneBattleSetup(setup: BattleSetup): BattleSetup {
       ...group,
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
-      members: group.members.map((member) => ({ ...member })),
+      members: group.members.map(cloneMemberSpawn),
       platforms: group.platforms.map(clonePlatformSpawn),
     })),
     reinforcementEntrances: setup.reinforcementEntrances.map((entrance) => ({
@@ -331,7 +340,7 @@ export function cloneBattleSetup(setup: BattleSetup): BattleSetup {
         ...group,
         spawn: { ...group.spawn },
         evacuation: { ...group.evacuation },
-        members: group.members.map((member) => ({ ...member })),
+        members: group.members.map(cloneMemberSpawn),
         platforms: group.platforms.map(clonePlatformSpawn),
       })),
     })),
@@ -362,5 +371,19 @@ function clonePlatformSpawn(
   return {
     ...platform,
     crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+  };
+}
+
+function cloneMemberSpawn(
+  member: BattleSetup["groups"][number]["members"][number],
+): BattleSetup["groups"][number]["members"][number] {
+  return {
+    ...member,
+    hero: member.hero
+      ? {
+          ...member.hero,
+          abilityTemplateIds: [...member.hero.abilityTemplateIds],
+        }
+      : undefined,
   };
 }

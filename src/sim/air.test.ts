@@ -10,6 +10,7 @@ import {
   PRE_AIR_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_ALTITUDE_BATTLE_RULES_VERSION,
+  PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION,
   altitudeBandModifiers,
   altitudeTransitionTicks,
   airspaceOccupantsConflict,
@@ -246,6 +247,7 @@ describe("AIR-002 altitude rules", () => {
     const current = createAirSetup("air-altitude-migration", 1);
     const migrated = migrateBattleSetup({
       ...current,
+      schemaVersion: PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION,
       rulesVersion: PRE_ALTITUDE_BATTLE_RULES_VERSION,
     });
 

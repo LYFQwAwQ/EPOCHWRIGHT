@@ -19,6 +19,7 @@ import {
   getPlatformTemplate,
   hashBattleContent,
   migrateBattleContent,
+  PRE_HERO_BATTLE_CONTENT_VERSION,
   PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION,
   PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION,
@@ -30,6 +31,7 @@ import {
 import {
   BATTLE_RULES_VERSION,
   BATTLE_SETUP_SCHEMA_VERSION,
+  PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION,
   PRE_AIR_COMBAT_BATTLE_RULES_VERSION,
   PRE_ALTITUDE_BATTLE_RULES_VERSION,
   PRE_AIR_BATTLE_RULES_VERSION,
@@ -112,27 +114,31 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
   const isPreAir =
     candidate.schemaVersion === PRE_AIR_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_AIR_BATTLE_RULES_VERSION;
+  const isPreHero =
+    candidate.schemaVersion === PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.rulesVersion === BATTLE_RULES_VERSION;
   const injectDefaults = isLegacyTwoFaction || isPreContent;
   const migratePlatformFields = injectDefaults || isPrePlatform;
   const isCurrent =
     candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === BATTLE_RULES_VERSION;
   const isPreAirCombat =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.schemaVersion === PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_AIR_COMBAT_BATTLE_RULES_VERSION;
   const isPreAltitude =
-    candidate.schemaVersion === BATTLE_SETUP_SCHEMA_VERSION &&
+    candidate.schemaVersion === PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION &&
     candidate.rulesVersion === PRE_ALTITUDE_BATTLE_RULES_VERSION;
-  if (isCurrent) {
+  if (isCurrent || isPreHero) {
     if (
       candidate.content?.contentVersion !== PRE_AIR_UNITS_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_HERO_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error(
-        "stage-4.2 battle setup requires a content bundle from content-5 through content-9.",
+        "stage-4.2 battle setup requires a content bundle from content-5 through content-10.",
       );
     }
   }
@@ -143,12 +149,13 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_HERO_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
-      throw new Error("stage-4.0/4.1 battle setup requires a supported content-4 through content-9 bundle.");
+      throw new Error("stage-4.0/4.1 battle setup requires a supported content-4 through content-10 bundle.");
     }
   }
-  if (isCurrent || isPreAirCombat || isPreAltitude) {
+  if (isCurrent || isPreHero || isPreAirCombat || isPreAltitude) {
     if (candidate.transportAssignments === undefined) {
       throw new Error("stage-4 battle setup requires transportAssignments.");
     }
@@ -180,10 +187,11 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
       candidate.content?.contentVersion !== PRE_PASSIVE_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_AURA_ABILITY_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== PRE_ACTIVE_ABILITY_BATTLE_CONTENT_VERSION &&
+      candidate.content?.contentVersion !== PRE_HERO_BATTLE_CONTENT_VERSION &&
       candidate.content?.contentVersion !== BATTLE_CONTENT_VERSION
     ) {
       throw new Error(
-        "stage-3 battle setup requires a supported content-2 through content-9 bundle.",
+        "stage-3 battle setup requires a supported content-2 through content-10 bundle.",
       );
     }
     if (candidate.transportAssignments === undefined) {
@@ -225,6 +233,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
     isPreProjectile ||
     isPreIndirect ||
     isPreAir ||
+    isPreHero ||
     isPreAirCombat ||
     isPreAltitude
   ) {
@@ -245,6 +254,7 @@ export function migrateBattleSetup(inputSetup: BattleSetupInput): BattleSetup {
           isPreProjectile ||
           isPreIndirect ||
           isPreAir ||
+          isPreHero ||
           isPreAirCombat ||
           isPreAltitude
           ? candidate.transportAssignments?.map((assignment) => ({ ...assignment })) ?? []
@@ -303,10 +313,11 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
   validateRelations(setup.factions, setup.relations);
 
   const entityIds = new Set<string>();
+  const persistentIds = new Set<string>();
   for (const staticObject of setup.map.staticObjects) {
     claimUniqueId(staticObject.id, entityIds);
   }
-  validateReinforcements(setup, factionIds, entityIds);
+  validateReinforcements(setup, factionIds, entityIds, persistentIds);
   const initialPassengerGroupIds = validateTransportAssignments(setup);
   const occupiedSpawnCells = new Set<number>();
   const initialAirspaceOccupants: AirspaceOccupant[] = [];
@@ -380,17 +391,11 @@ export function validateBattleSetup(inputSetup: BattleSetupInput): void {
     validateGroupRoster(setup, group);
     for (const member of group.members) {
       claimUniqueId(member.id, entityIds);
-      if (
-        member.initialHealth !== undefined &&
-        !["healthy", "wounded", "incapacitated", "dead"].includes(
-          member.initialHealth,
-        )
-      ) {
-        throw new Error(`Member ${member.id} has an invalid initial health state.`);
-      }
+      validateMemberSpawn(setup, member, persistentIds);
     }
     for (const platform of group.platforms) {
       claimUniqueId(platform.id, entityIds);
+      claimPersistentId(platform.persistentId, `Platform ${platform.id}`, persistentIds);
     }
     const movementType = movementTypeForGroup(setup, group);
     if (!isLegalDeployment(setup.map, group.spawn, movementType)) {
@@ -602,9 +607,7 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
     hasher.addNumber(group.evacuation.x);
     hasher.addNumber(group.evacuation.z);
     for (const member of group.members) {
-      hasher.addString(member.id);
-      hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
-      hasher.addString(member.initialHealth ?? "healthy");
+      hashMemberSpawn(hasher, member);
     }
     hashPlatformSpawns(hasher, group.platforms);
   }
@@ -639,9 +642,7 @@ export function hashBattleSetup(setup: BattleSetupInput): string {
       hasher.addNumber(group.evacuation.x);
       hasher.addNumber(group.evacuation.z);
       for (const member of group.members) {
-        hasher.addString(member.id);
-        hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
-        hasher.addString(member.initialHealth ?? "healthy");
+        hashMemberSpawn(hasher, member);
       }
       hashPlatformSpawns(hasher, group.platforms);
     }
@@ -698,6 +699,7 @@ function validateReinforcements(
   setup: BattleSetup,
   factionIds: ReadonlySet<string>,
   entityIds: Set<string>,
+  persistentIds: Set<string>,
 ): void {
   const entrancesById = new Map<string, ReinforcementEntranceSetup>();
   for (const entrance of setup.reinforcementEntrances) {
@@ -755,15 +757,11 @@ function validateReinforcements(
       validateGroupRoster(setup, group);
       for (const member of group.members) {
         claimUniqueId(member.id, entityIds);
-        if (
-          member.initialHealth !== undefined &&
-          !["healthy", "wounded", "incapacitated", "dead"].includes(member.initialHealth)
-        ) {
-          throw new Error(`Member ${member.id} has an invalid initial health state.`);
-        }
+        validateMemberSpawn(setup, member, persistentIds);
       }
       for (const platform of group.platforms) {
         claimUniqueId(platform.id, entityIds);
+        claimPersistentId(platform.persistentId, `Platform ${platform.id}`, persistentIds);
       }
       const movementType = movementTypeForGroup(setup, group);
       if (
@@ -808,7 +806,7 @@ function cloneWave(wave: ReinforcementWaveSetupInput): ReinforcementWaveSetupInp
       ...group,
       spawn: { ...group.spawn },
       evacuation: { ...group.evacuation },
-      members: group.members.map((member) => ({ ...member })),
+      members: group.members.map(cloneMemberSpawn),
       platforms: group.platforms?.map(clonePlatformSpawn),
     })),
   };
@@ -835,7 +833,7 @@ function normalizeGroup(
       if (!memberTemplateId) {
         throw new Error(`Member ${member.id} requires a member template ID.`);
       }
-      return { ...member, memberTemplateId };
+      return { ...cloneMemberSpawn(member), memberTemplateId };
     }),
     platforms: (group.platforms ?? (injectPlatformDefaults ? [] : undefined))?.map(
       clonePlatformSpawn,
@@ -847,6 +845,18 @@ function clonePlatformSpawn(platform: NonNullable<GroupSpawnInput["platforms"]>[
   return {
     ...platform,
     crewAssignments: platform.crewAssignments.map((assignment) => ({ ...assignment })),
+  };
+}
+
+function cloneMemberSpawn<T extends GroupSpawnInput["members"][number]>(member: T): T {
+  return {
+    ...member,
+    hero: member.hero
+      ? {
+          ...member.hero,
+          abilityTemplateIds: [...member.hero.abilityTemplateIds],
+        }
+      : undefined,
   };
 }
 
@@ -900,6 +910,19 @@ function validateGroupRoster(
     if (!expected.has(memberTemplateId)) {
       throw new Error(
         `Group ${group.id} references member template ${memberTemplateId} outside its roster.`,
+      );
+    }
+  }
+  for (const memberTemplateId of expected.keys()) {
+    const expectedHeroCount = groupTemplate.memberSlotRules
+      .filter((slot) => slot.memberTemplateId === memberTemplateId && slot.hero === true)
+      .reduce((sum, slot) => sum + slot.count, 0);
+    const actualHeroCount = group.members.filter(
+      (member) => member.memberTemplateId === memberTemplateId && member.hero !== undefined,
+    ).length;
+    if (actualHeroCount !== expectedHeroCount) {
+      throw new Error(
+        `Group ${group.id} has an invalid hero slot count for member template ${memberTemplateId}.`,
       );
     }
   }
@@ -1127,6 +1150,68 @@ function countWalkableObjectiveCells(
   return count;
 }
 
+function validateMemberSpawn(
+  setup: BattleSetup,
+  member: BattleSetup["groups"][number]["members"][number],
+  persistentIds: Set<string>,
+): void {
+  if (
+    member.initialHealth !== undefined &&
+    !["healthy", "wounded", "incapacitated", "dead"].includes(member.initialHealth)
+  ) {
+    throw new Error(`Member ${member.id} has an invalid initial health state.`);
+  }
+  claimPersistentId(member.persistentId, `Member ${member.id}`, persistentIds);
+  if (member.hero === undefined) {
+    return;
+  }
+  if (typeof member.hero !== "object" || Array.isArray(member.hero)) {
+    throw new Error(`Hero member ${member.id} requires a valid hero profile.`);
+  }
+  if (!member.persistentId) {
+    throw new Error(`Hero member ${member.id} requires a persistent ID.`);
+  }
+  if (
+    !Number.isInteger(member.hero.importanceBps) ||
+    member.hero.importanceBps < 1 ||
+    member.hero.importanceBps > 10_000
+  ) {
+    throw new Error(`Hero member ${member.id} has an invalid importance value.`);
+  }
+  if (
+    !Array.isArray(member.hero.abilityTemplateIds) ||
+    new Set(member.hero.abilityTemplateIds).size !== member.hero.abilityTemplateIds.length ||
+    member.hero.abilityTemplateIds.some(
+      (abilityTemplateId) =>
+        !abilityTemplateId || !setup.content.abilityTemplates[abilityTemplateId],
+    )
+  ) {
+    throw new Error(`Hero member ${member.id} has invalid ability references.`);
+  }
+  const memberTemplate = setup.content.memberTemplates[member.memberTemplateId];
+  const effectiveAbilityIds = [
+    ...(memberTemplate?.abilityTemplateIds ?? []),
+    ...member.hero.abilityTemplateIds,
+  ];
+  if (new Set(effectiveAbilityIds).size !== effectiveAbilityIds.length) {
+    throw new Error(`Hero member ${member.id} has duplicate effective ability references.`);
+  }
+}
+
+function claimPersistentId(
+  id: string | undefined,
+  owner: string,
+  ids: Set<string>,
+): void {
+  if (id === undefined) {
+    return;
+  }
+  if (typeof id !== "string" || !id || ids.has(id)) {
+    throw new Error(`Persistent ID for ${owner} must be non-empty and globally unique: ${id}`);
+  }
+  ids.add(id);
+}
+
 function claimUniqueId(id: string, ids: Set<string>): void {
   if (!id || ids.has(id)) {
     throw new Error(`Entity ID must be non-empty and globally unique: ${id}`);
@@ -1268,6 +1353,23 @@ function hashPlatformSpawns(
       hasher.addString(assignment.stationId);
       hasher.addString(assignment.memberId);
     }
+  }
+}
+
+function hashMemberSpawn(
+  hasher: StateHasher,
+  member: GroupSpawnInput["members"][number],
+): void {
+  hasher.addString(member.id);
+  hasher.addString(requireTemplateId(member.memberTemplateId, `Member ${member.id}`));
+  hasher.addString(member.initialHealth ?? "healthy");
+  hasher.addString(member.persistentId ?? "");
+  hasher.addNumber(member.hero ? 1 : 0);
+  hasher.addNumber(member.hero?.importanceBps ?? 0);
+  for (const abilityTemplateId of [...(member.hero?.abilityTemplateIds ?? [])].sort(
+    compareStrings,
+  )) {
+    hasher.addString(abilityTemplateId);
   }
 }
 

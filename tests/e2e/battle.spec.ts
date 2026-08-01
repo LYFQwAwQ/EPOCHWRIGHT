@@ -230,6 +230,22 @@ async function countSelectedPlatformPixels(page: Page): Promise<number> {
   return count;
 }
 
+async function countHeroMarkerPixels(page: Page): Promise<number> {
+  const screenshot = await page.locator("canvas").screenshot();
+  const image = PNG.sync.read(screenshot);
+  let count = 0;
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const red = image.data[offset] ?? 0;
+    const green = image.data[offset + 1] ?? 0;
+    const blue = image.data[offset + 2] ?? 0;
+    const alpha = image.data[offset + 3] ?? 0;
+    if (alpha > 0 && red > 235 && green > 195 && blue > 90 && blue < 190) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 async function countDroneSensorPixels(page: Page): Promise<number> {
   const screenshot = await page.locator("canvas").screenshot();
   const image = PNG.sync.read(screenshot);
@@ -563,6 +579,61 @@ test("active ability scenario exposes AI use, cooldown, and observer-safe evalua
   expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("active-ability-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("hero scenario exposes persistent profiles, instance abilities, and shape markers", async ({
+  page,
+}, testInfo) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&autostart=0&scenario=hero-showcase&seed=e2e-hero-showcase",
+  );
+  await page.waitForFunction(
+    () =>
+      window.__battleTest?.getStatus() === "paused" &&
+      window.__battleTest?.getGroupIds().includes("ember-hero-independent-1") &&
+      window.__battleTest?.getGroupIds().includes("ember-hero-embedded-1"),
+  );
+
+  expect(await countHeroMarkerPixels(page)).toBeGreaterThan(8);
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-hero-independent-1"));
+  const heroes = page.getByTestId("hero-members");
+  await expect(heroes).toContainText("campaign:ember:hero:independent:1");
+  await expect(heroes).toContainText("重要度 90%");
+  await expect(heroes).toContainText("formation-discipline-v1");
+  await expect(heroes).toContainText("rallying-presence-v1");
+  await expect(heroes).toContainText("steady-the-line-v1");
+  await expect(page.getByTestId("passive-abilities")).toContainText("队列纪律");
+  await expect(page.getByTestId("active-auras")).toContainText("集结号令");
+  await expect(page.getByTestId("active-abilities")).toContainText("稳住阵脚");
+
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-hero-embedded-1"));
+  await expect(heroes).toContainText("campaign:ember:hero:embedded:1");
+  await expect(heroes).toContainText("重要度 75%");
+
+  const omniscientHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  await page.evaluate(() => window.__battleTest?.setObservation("ember"));
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "ember");
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(
+    omniscientHash,
+  );
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-hero-independent-1"));
+  await expect(heroes).toContainText("campaign:ember:hero:independent:1");
+  await page.evaluate(() => window.__battleTest?.selectGroup("azure-hero-independent-1"));
+  await expect(page.getByTestId("hero-members")).toHaveCount(0);
+
+  await page.evaluate(() => window.__battleTest?.setObservation());
+  await page.waitForFunction(() => window.__battleTest?.getObservation() === "omniscient");
+  await page.evaluate(() => window.__battleTest?.selectGroup("ember-hero-embedded-1"));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const inspectorBox = await page.locator(".inspector-panel").boundingBox();
+  expect(inspectorBox).toBeTruthy();
+  expect(inspectorBox!.x).toBeGreaterThanOrEqual(0);
+  expect(inspectorBox!.x + inspectorBox!.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("hero-showcase-mobile.png"), fullPage: true });
   expect(errors).toEqual([]);
 });
 

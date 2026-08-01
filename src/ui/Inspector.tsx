@@ -1,4 +1,4 @@
-import { Activity, Plane, Radio, Route, ShieldAlert, ShieldCheck, Sparkles, Target, Truck } from "lucide-react";
+import { Activity, Crown, Plane, Radio, Route, ShieldAlert, ShieldCheck, Sparkles, Target, Truck } from "lucide-react";
 import type {
   GroupInspection,
   PlatformFlightInspection,
@@ -180,6 +180,19 @@ const abilityAttributeLabels: Readonly<Record<string, string>> = {
   "protection-bps": "防护",
   "suppression-resistance-bps": "压制抗性",
   "capture-power-bps": "占领力",
+};
+
+const heroHealthLabels: Readonly<Record<string, string>> = {
+  healthy: "状态正常",
+  wounded: "负伤",
+  incapacitated: "失能",
+  dead: "阵亡",
+};
+
+const heroPresenceLabels: Readonly<Record<string, string>> = {
+  undeployed: "未部署",
+  deployed: "在场",
+  evacuated: "已撤离",
 };
 
 const abilityConditionLabels: Readonly<Record<string, string>> = {
@@ -493,6 +506,33 @@ export function Inspector({
               </div>
             )}
           </section>
+
+          {inspection.heroes && inspection.heroes.length > 0 && (
+            <section className="inspector-section" data-testid="hero-members">
+              <div className="section-title">
+                <Crown size={15} />
+                <span>英雄成员</span>
+                <b>{inspection.heroes.length}</b>
+              </div>
+              {inspection.heroes.map((hero) => (
+                <div key={hero.memberId}>
+                  <div className="contact-row">
+                    <Crown size={14} />
+                    <span>{hero.persistentId}</span>
+                    <strong>
+                      重要度 {Math.round(hero.importanceBps / 100)}% · {heroHealthLabels[hero.health] ?? hero.health}
+                    </strong>
+                  </div>
+                  <p>
+                    {hero.memberId} · {heroPresenceLabels[hero.presence] ?? hero.presence} ·{" "}
+                    {hero.abilityTemplateIds.length > 0
+                      ? hero.abilityTemplateIds.join(" / ")
+                      : "无实例能力"}
+                  </p>
+                </div>
+              ))}
+            </section>
+          )}
 
           {inspection.targetEvaluation && (
             <section className="inspector-section" data-testid="target-evaluation">

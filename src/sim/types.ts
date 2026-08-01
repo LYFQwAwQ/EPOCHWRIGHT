@@ -1,7 +1,9 @@
 export const SIMULATION_HZ = 20 as const;
 export const TICK_DURATION_MS = 1_000 / SIMULATION_HZ;
-export const BATTLE_SETUP_SCHEMA_VERSION = "stage-4" as const;
+export const BATTLE_SETUP_SCHEMA_VERSION = "stage-4.1" as const;
 export const BATTLE_RULES_VERSION = "stage-4.2" as const;
+/** The final air-and-ability setup contract before persistent hero members. */
+export const PRE_HERO_BATTLE_SETUP_SCHEMA_VERSION = "stage-4" as const;
 /** The altitude-capable hover rules before air weapon and recovery behavior. */
 export const PRE_AIR_COMBAT_BATTLE_RULES_VERSION = "stage-4.1" as const;
 /** The fixed-altitude hover rules before authoritative altitude actions. */
@@ -270,6 +272,7 @@ export interface MemberSlotRule {
   readonly memberTemplateId: TemplateId;
   readonly count: number;
   readonly required: boolean;
+  readonly hero?: boolean;
 }
 
 export interface PlatformSlotRule {
@@ -585,7 +588,7 @@ export interface TerrainCatalog {
 }
 
 export interface BattleContentBundle {
-  readonly contentVersion: "content-9";
+  readonly contentVersion: "content-10";
   readonly eraId: TemplateId;
   readonly eraTemplates: Readonly<Record<TemplateId, EraTemplate>>;
   readonly groupTemplates: Readonly<Record<TemplateId, GroupTemplate>>;
@@ -597,6 +600,13 @@ export interface BattleContentBundle {
   readonly statusTemplates: Readonly<Record<TemplateId, StatusTemplate>>;
   readonly terrainCatalog: TerrainCatalog;
 }
+
+export type PreHeroBattleContentBundle = Omit<
+  BattleContentBundle,
+  "contentVersion"
+> & {
+  readonly contentVersion: "content-9";
+};
 
 export type PreActiveAbilityBattleContentBundle = Omit<
   BattleContentBundle,
@@ -711,6 +721,15 @@ export interface MemberSpawn {
   readonly id: MemberId;
   readonly memberTemplateId: TemplateId;
   readonly initialHealth?: HealthState;
+  readonly persistentId?: string;
+  readonly hero?: HeroMemberProfile;
+}
+
+export interface HeroMemberProfile {
+  /** Combat-neutral priority supplied by the external roster, from 1 to 10000. */
+  readonly importanceBps: number;
+  /** Instance abilities added to the member template's ability references. */
+  readonly abilityTemplateIds: readonly TemplateId[];
 }
 
 export interface CrewAssignment {
@@ -867,6 +886,7 @@ export type BattleSetupInput = Omit<
   readonly rulesVersion: string;
   readonly content?:
     | BattleContentBundle
+    | PreHeroBattleContentBundle
     | PreActiveAbilityBattleContentBundle
     | PreAuraAbilityBattleContentBundle
     | PrePassiveAbilityBattleContentBundle
@@ -983,6 +1003,7 @@ export interface RenderMember {
   readonly worldZ: number;
   readonly health: HealthState;
   readonly presence: PresenceState;
+  readonly hero: boolean;
 }
 
 export type PlatformMobilityState = "mobile" | "immobilized";
@@ -1081,6 +1102,7 @@ export interface GroupInspection {
   readonly passiveAbilities?: readonly PassiveAbilityInspection[];
   readonly activeAuras?: readonly AuraApplicationInspection[];
   readonly activeAbilities?: readonly ActiveAbilityInspection[];
+  readonly heroes?: readonly HeroMemberInspection[];
   readonly modeEffective?: boolean;
   readonly activeMembers: number;
   readonly woundedMembers: number;
@@ -1266,6 +1288,8 @@ export interface MemberInspection {
   readonly id: MemberId;
   readonly groupId: GroupId;
   readonly factionId: FactionId;
+  readonly persistentId?: string;
+  readonly hero?: HeroMemberProfile;
   readonly health: HealthState;
   readonly presence: PresenceState;
   readonly placement: MemberPlacement;
@@ -1274,6 +1298,13 @@ export interface MemberInspection {
   readonly magazineRounds: number;
   readonly reloadTicksRemaining: Tick;
   readonly shotCooldownTicks: Tick;
+}
+
+export interface HeroMemberInspection extends HeroMemberProfile {
+  readonly memberId: MemberId;
+  readonly persistentId: string;
+  readonly health: HealthState;
+  readonly presence: PresenceState;
 }
 
 export interface MemberAttributeInspection {
@@ -1570,6 +1601,8 @@ export interface MemberResult {
   readonly id: MemberId;
   readonly groupId: GroupId;
   readonly factionId: FactionId;
+  readonly persistentId?: string;
+  readonly hero?: HeroMemberProfile;
   readonly health: HealthState;
   readonly presence: PresenceState;
   readonly disposition: "present" | "evacuated" | "missing" | "undeployed";

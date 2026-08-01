@@ -9,6 +9,9 @@ import {
   DEFAULT_PASSIVE_ABILITY_TEMPLATE_ID,
   DEFAULT_PASSIVE_GROUP_TEMPLATE_ID,
   DEFAULT_PASSIVE_MEMBER_TEMPLATE_ID,
+  DEFAULT_HERO_GROUP_TEMPLATE_ID,
+  DEFAULT_HERO_MEMBER_TEMPLATE_ID,
+  DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
   createSimulation,
   validateBattleSetup,
 } from "../sim";
@@ -96,6 +99,37 @@ describe("manual demo scenarios", () => {
     expect(
       setup.content.memberTemplates[DEFAULT_ACTIVE_MEMBER_TEMPLATE_ID]?.abilityTemplateIds,
     ).toEqual([DEFAULT_ACTIVE_ABILITY_TEMPLATE_ID]);
+  });
+
+  it("exposes independent and embedded heroes with stable external profiles", () => {
+    const setup = createDemoBattleSetup(
+      createDemoScenarioOptions("hero-showcase", "scenario-heroes"),
+    );
+    const independentGroups = setup.groups.filter(
+      (group) => group.groupTemplateId === DEFAULT_HERO_GROUP_TEMPLATE_ID,
+    );
+    const embeddedGroups = setup.groups.filter(
+      (group) => group.groupTemplateId === DEFAULT_HERO_SQUAD_GROUP_TEMPLATE_ID,
+    );
+    const heroMembers = setup.groups.flatMap((group) =>
+      group.members.filter((member) => member.hero !== undefined),
+    );
+
+    expect(independentGroups).toHaveLength(setup.factions.length);
+    expect(embeddedGroups).toHaveLength(setup.factions.length);
+    expect(independentGroups.every((group) => group.members.length === 1)).toBe(true);
+    expect(embeddedGroups.every((group) => group.members.length === 8)).toBe(true);
+    expect(
+      heroMembers.every(
+        (member) =>
+          member.memberTemplateId === DEFAULT_HERO_MEMBER_TEMPLATE_ID &&
+          member.persistentId?.startsWith("campaign:") &&
+          member.hero?.abilityTemplateIds.length === 3,
+      ),
+    ).toBe(true);
+    expect(new Set(heroMembers.map((member) => member.persistentId)).size).toBe(
+      heroMembers.length,
+    );
   });
 
   it("exposes sequence objectives and a defender reserve", () => {

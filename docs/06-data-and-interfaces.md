@@ -97,7 +97,7 @@ interface BattleContentBundle {
 
 - `contentVersion` 使用独立的 `content-1` 版本；`BattleSetup` schema 在实现接入时从 `stage-2.1` 升为 `stage-2.2`，`rulesVersion` 保持 `stage-2.5`。模板替换当前等价常量时不改变规则语义。
 - `BattleContentBundle.eraId` 标识本场已选择的时代，`eraTemplates` 保存时代元数据和允许的模板 ID。时代选择发生在外部内容解析层；模拟不根据 `eraId`、`displayName` 或时代标签分支。
-- `CONTENT-001` 首个切片要求 `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 为必需集合，`sensorTemplates` 至少包含每个成员引用的传感器；当时平台、能力和状态模板只保留接口。当前平台已由 spawn 引用，`content-9` 还允许成员模板按 `abilityTemplateIds` 引用通过 §9.3 验证的被动、持续光环或 AI 主动能力。
+- `CONTENT-001` 首个切片要求 `groupTemplates`、`memberTemplates` 和 `weaponTemplates` 为必需集合，`sensorTemplates` 至少包含每个成员引用的传感器；当时平台、能力和状态模板只保留接口。当前平台已由 spawn 引用，`content-10` 允许成员模板和英雄实例档案按 `abilityTemplateIds` 引用通过 §9.3 验证的被动、持续光环或 AI 主动能力。
 - 不引入模板继承、运行时脚本或任意字段覆盖。模板之间使用显式 ID 引用；成员 spawn 只允许引用模板并提供健康、持久化 ID 等边界字段。这样可以避免继承环、字符串特判和不可复现的内容脚本。
 - 每个模板的数值在初始化时一次性验证，随后运行时只使用不可变的解析结果。模板引用缺失、时代白名单不匹配、槽位数量不匹配或不支持的移动/目标域必须在初始化阶段拒绝。
 
@@ -283,10 +283,14 @@ interface TacticalGroupSpawn {
 interface MemberSpawn {
   readonly id: MemberId;
   readonly memberTemplateId: TemplateId;
+  readonly initialHealth?: HealthState;
   readonly persistentId?: string;
-  readonly hero: boolean;
+  readonly hero?: HeroMemberProfile;
+}
+
+interface HeroMemberProfile {
+  readonly importanceBps: number;
   readonly abilityTemplateIds: readonly TemplateId[];
-  readonly overrides?: Readonly<Record<string, number | string | boolean>>;
 }
 
 interface PlatformSpawn {
@@ -311,7 +315,7 @@ interface TransportAssignment {
 }
 ```
 
-固定编制由 `GroupTemplate` 和具体 spawn 成员/平台共同验证。英雄既可以是单成员编组，也可以占普通编组中的特殊成员槽位。成员 ID、平台 ID 和编组 ID 在整场战斗内共享全局唯一性约束。
+固定编制由 `GroupTemplate` 和具体 spawn 成员/平台共同验证。英雄既可以是单成员编组，也可以占普通编组中的特殊成员槽位。普通成员可以携带 `persistentId`；英雄必须携带该字段。所有初始与增援成员/平台的持久化 ID 在整场战斗内非空且全局唯一，不能与战术实体 ID 混作同一命名空间。`importanceBps` 必须是 `1..10_000` 的整数，目前只用于外部优先级和观察摘要，不改变战斗属性或 AI。
 
 阶段 3/4 初始化额外验证：
 
@@ -383,6 +387,7 @@ interface MemberSlotRule {
   readonly memberTemplateId: TemplateId;
   readonly count: number;
   readonly required: boolean;
+  readonly hero?: boolean;
 }
 
 interface WeaponSlotRule {
@@ -393,7 +398,7 @@ interface WeaponSlotRule {
 }
 ```
 
-`GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额。`MemberTemplate.weaponSlotRules` 决定成员的默认装备，`abilityTemplateIds` 是唯一且可解析的被动能力引用；首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员名称推导。
+`GroupTemplate.memberSlotRules` 的总数定义固定编制；每个 `MemberSpawn.memberTemplateId` 必须匹配一个槽位且不能超额，`hero: true` 的槽位还要求匹配成员携带英雄档案，普通槽位反之。`MemberTemplate.weaponSlotRules` 决定成员的默认装备。模板和英雄实例的 `abilityTemplateIds` 都必须唯一且可解析，两处不能重复引用同一能力；首个切片不允许战斗内自由换装。`protectionBps`、`suppressionResistanceBps` 和 `capturePowerBps` 都是能力字段，不得由成员或英雄名称推导。
 
 ### 9.1.2 平台、部件与岗位
 
@@ -721,7 +726,7 @@ type AbilityEffectDefinition =
   | SuppressionRecoveryAbilityEffect;
 ```
 
-成员模板通过唯一 `abilityTemplateIds` 引用能力。条件全部检查能力来源成员，按 `health`、`presence` 固定顺序求交；没有条件表示始终满足。修正值是 `-10_000..10_000` 的整数，成员属性和编组压制抗性最终钳制到 `0..10_000`，编组占领力聚合在应用编组倍率前钳制为非负整数。
+成员模板和可选英雄实例档案通过唯一 `abilityTemplateIds` 引用能力。运行时先按能力模板 ID 对两处引用求稳定并集，再交给同一套 `passive|aura|active` 注册处理器；英雄不会触发名称或类型专用分支。条件全部检查能力来源成员，按 `health`、`presence` 固定顺序求交；没有条件表示始终满足。修正值是 `-10_000..10_000` 的整数，成员属性和编组压制抗性最终钳制到 `0..10_000`，编组占领力聚合在应用编组倍率前钳制为非负整数。
 
 `passive` 的 `self` 可以修正来源成员的防护、压制抗性或占领力。`own-group` 只允许修正编组聚合的压制抗性或占领力：前者在有效成员基础值取平均后相加，后者在成员占领力求和后相加，再应用编组倍率。多个被动来源按稳定成员 ID 和能力 ID 累加；它不建立空间来源状态。
 
@@ -766,7 +771,7 @@ interface EraTemplate {
 | `preferredRangeCells = 7` | `optimalRangeMm = 28_000` | 转换为 7 格；命中距离计算改读武器能力 |
 | `sightRangeCells` | `infantry-eyesight-v1.rangeMm` | 传感器能力取代全局单位名称分支 |
 
-当前 `content-9` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机、可组合的防空武器模板，以及分别演示队列纪律被动、邻近友军持续光环和“稳住阵脚”主动压制恢复的步兵编组；直接/间接逻辑弹丸、平台展开、三个悬停高度带、`ground|air` 目标域、属性修正与注册式压制恢复效果均由模板表达。`stage-4.2` 规则保持不变；功能门禁必须由规则版本、内容版本和验证器明确执行。
+当前 `content-10` 提供步兵、车辆、自行火炮、无武装观察直升机、挂载空地/空空武器部件的武装直升机、无武装侦察无人机、可组合的防空武器模板，以及分别演示队列纪律被动、邻近友军持续光环、“稳住阵脚”主动压制恢复和独立/混编英雄槽位的编组；直接/间接逻辑弹丸、平台展开、三个悬停高度带、`ground|air` 目标域、属性修正与注册式压制恢复效果均由模板表达。`stage-4.2` 规则保持不变；功能门禁必须由规则版本、内容版本和验证器明确执行。
 
 ### 9.5 内容验证和哈希要求
 
@@ -774,12 +779,13 @@ interface EraTemplate {
 
 1. 所有模板 ID 在各自命名空间内唯一且非空；`contentVersion`、`eraId` 和模板引用存在。
 2. 槽位 `count`、距离、tick、基点和弹匣值均为有限整数；最小/最佳/最大射程满足 `minimum <= optimal <= maximum`。
-3. 编组 spawn 的成员数量与 `GroupTemplate` 槽位总数一致，成员模板和默认武器槽位均可解析；增强波次使用相同规则。
+3. 编组 spawn 的成员数量、英雄标记数量与 `GroupTemplate` 槽位总数和 `hero` 槽位一致，成员模板和默认武器槽位均可解析；增援波次使用相同规则。
 4. 成员传感器和武器的目标域、移动类型、弹道类型都在当前规则支持集合内。
 5. 时代白名单覆盖所有被引用的编组、成员和武器模板；未使用模板可以存在，但不会进入运行时。
 6. 每个武器至少有一个 mode 且 ID 唯一；射程有序，逻辑弹丸速度为正整数，发射高度、顶点高度、爆炸半径和误差字段是有界非负整数，最大飞行时间不超过规则上限。
 7. 间射 mode 必须提供误差规则，`maximumContactAgeTicks` 与各散布项有界；要求展开的 mode 只能安装到具有合法展开规则的平台部件。
 8. 展开规则引用同一平台内存在的岗位和部件，持续 tick 为正整数；首批自行火炮仍必须满足轮式/履带平台现有机动与撤离路线验证。
+9. 英雄档案要求非空且全局唯一的持久化 ID、`1..10_000` 重要度，以及唯一、可解析且不与成员模板重复的能力引用。
 
 规范内容哈希按命名空间和模板 ID 排序，覆盖所有会影响模拟的字段（包括时代 ID、标签、槽位顺序、武器效果和传感器参数）。`displayName`、颜色和其他纯观察元数据不参与战斗哈希；但完整 setup 快照仍必须可克隆并通过 Worker 结构化克隆。
 
@@ -900,6 +906,18 @@ interface RenderFrame {
   readonly objectives: readonly RenderObjective[];
 }
 
+interface RenderMember {
+  readonly id: MemberId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly worldX: number;
+  readonly worldY: number;
+  readonly worldZ: number;
+  readonly health: HealthState;
+  readonly presence: PresenceState;
+  readonly hero: boolean;
+}
+
 interface RenderPlatform {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -932,11 +950,11 @@ interface RenderProjectile {
 
 表现层在前后两个逻辑帧之间插值。Worker 可以把这些逻辑数组编码为 TypedArray，但编码层不得丢失稳定实体 ID、观察时间或状态轴。死亡、爆炸、射击等短事件通过事件批次驱动，不通过猜测位置变化生成。
 
-乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观、粗状态和可选飞行状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客、实时高度或实时朝向。
+乘员和乘客不作为独立地面 `RenderMember` 输出；它们通过平台实例和按需 inspection 表达。`RenderMember.hero` 只提供非权威视觉分类，当前渲染器用独立八面体形状标记英雄，不读取持久化 ID、重要度或能力来推导战斗事实。势力视角只投影直接可见或接触快照中已知的平台。已知敌方平台的位置、朝向、外观、粗状态和可选飞行状态都来自 `observedAt` 时的历史快照，不读取当前部件、乘员、乘客、实时高度或实时朝向。
 
 逻辑弹丸使用紧凑的 `RenderProjectile` 投影，位置从权威发射/命中 tick 和固定点轨迹派生；渲染端只插值。全知视角投影全部弹丸；势力视角投影本方弹丸以及位于该势力当前可见格的其他弹丸，不公开任务快照、目标 ID、预定弹着格或尚未发生的爆炸结果。
 
-`EntityInspection` 增加 `PlatformInspection` 分支。本方或全知检查可以返回部件完整度、岗位占用/换岗进度、当前乘客编组和能力派生原因；敌方已知接触只返回最后已知的 `RenderPlatform` 粗状态，不能返回实时部件、岗位、乘员健康或乘客身份。
+`EntityInspection` 的本方或全知成员检查返回可选持久化 ID 与英雄档案，编组检查返回按成员 ID 稳定排列的英雄摘要；敌方已知编组不返回英雄身份、持久化 ID、重要度、成员健康或实例能力。平台分支可以返回部件完整度、岗位占用/换岗进度、当前乘客编组和能力派生原因；敌方已知接触只返回最后已知的 `RenderPlatform` 粗状态，不能返回实时部件、岗位、乘员健康或乘客身份。
 
 本方或全知 `PlatformInspection` 可增加 `artillery`：展开状态/剩余 tick、当前任务、情报来源与年龄、误差公式分项、选中偏移、瞄准进度和拒绝原因。敌方已知平台 inspection 不返回这些实时字段；发射和弹着只通过该观察者合法可见的帧/事件表达。
 
@@ -1092,6 +1110,19 @@ interface BattleResult {
   readonly statistics: BattleStatistics;
 }
 
+interface MemberResult {
+  readonly id: MemberId;
+  readonly groupId: GroupId;
+  readonly factionId: FactionId;
+  readonly persistentId?: string;
+  readonly hero?: HeroMemberProfile;
+  readonly health: HealthState;
+  readonly presence: PresenceState;
+  readonly disposition: "present" | "evacuated" | "missing" | "undeployed";
+  readonly deployment: "undeployed" | "deployed" | "evacuated";
+  readonly finalPlacement: MemberPlacement;
+}
+
 interface PlatformResult {
   readonly id: PlatformId;
   readonly groupId: GroupId;
@@ -1125,7 +1156,7 @@ interface ActiveAbilityResult {
 }
 ```
 
-成员结果必须区分受伤、失能、死亡、撤离和失散，并保存最终战术位置为徒步、具体平台岗位或具体平台乘客；该位置不能覆盖健康和在场状态。编组结果保存主动能力使用摘要，包括未部署增援中仍为满次数的来源。平台结果通过独立的 `mobility`、`combat`、`disposition`、`damaged` 和部件结果区分受损、失去机动、失去作战能力、废弃和摧毁。`finalFlight` 保存最终 `state`、高度带和离地高度：迫降对应 `forced-landed/abandoned/0`，坠毁对应 `crashed/destroyed/0`，正常飞行保持 `airborne`。外部系统根据这些事实决定医疗、俘获、维修或永久损失。
+成员结果必须区分受伤、失能、死亡、撤离和失散，并保存最终战术位置为徒步、具体平台岗位或具体平台乘客；该位置不能覆盖健康和在场状态。持久化 ID 与英雄档案对已部署、撤离及未部署增援都原样返回，外部系统以这些字段关联战役角色，再依据普通健康/在场轴处理后续状态。编组结果保存主动能力使用摘要，包括未部署增援中仍为满次数的来源。平台结果通过独立的 `mobility`、`combat`、`disposition`、`damaged` 和部件结果区分受损、失去机动、失去作战能力、废弃和摧毁。`finalFlight` 保存最终 `state`、高度带和离地高度：迫降对应 `forced-landed/abandoned/0`，坠毁对应 `crashed/destroyed/0`，正常飞行保持 `airborne`。外部系统根据这些事实决定医疗、俘获、维修或永久损失。
 
 完成结果时不得残留逻辑弹丸；硬截止后的 `settlement` 解释为何 `finalTick` 晚于胜负触发 tick。最终展开状态和计数用于战后统计，不把已完成/取消任务或临时瞄准点持久化到外部世界。没有逻辑弹丸能力的迁移输入令三个 settlement tick 字段相等、计数为 0，避免调用方猜测可选语义。
 
@@ -1152,7 +1183,7 @@ interface ActiveAbilityResult {
 
 加载旧输入时先通过显式迁移器转换，再进入验证。核心不应到处兼容旧字段。版本不匹配且无法迁移时返回明确错误。
 
-当前运行代码的 `BattleSetup` schema 为 `stage-4`，规则为 `stage-4.2`，内容为 `content-9`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4`、`stage-4.2/content-5`、`content-6`、`content-7` 及 `content-8` 输入显式升级；`content-2` 武器会转换为单一直接 mode，`content-6` 成员会补入空能力引用并丢弃当时不可引用的占位能力模板。新的当前输入必须显式提供 `content-9`、模板引用、每组平台数组和顶层运输关系数组。
+当前运行代码的 `BattleSetup` schema 为 `stage-4.1`，规则为 `stage-4.2`，内容为 `content-10`，地图为 `map-2`。迁移器会把 `stage-2`/`stage-2.1`/`stage-2.2` 输入补入或转换为等价默认内容、模板 ID、空平台和空运输关系，也会把 `stage-3` 下 `stage-3.0` 至 `stage-3.8`、固定高度 `stage-4.0`、高度动作 `stage-4.1/content-4`、`stage-4.2/content-5`、`content-6`、`content-7`、`content-8` 以及 `stage-4/content-9` 输入显式升级；`content-2` 武器会转换为单一直接 mode，`content-6` 成员会补入空能力引用并丢弃当时不可引用的占位能力模板。新的当前输入必须显式提供 `stage-4.1/content-10`、模板引用、每组平台数组和顶层运输关系数组。
 
 `VEHICLE-002` 只增加未被当时 setup 引用的轮式/履带成本能力；`VEHICLE-003` 已允许 `PlatformSpawn` 并统一升级到 `schemaVersion = stage-3`、`rulesVersion = stage-3.0` 和 `contentVersion = content-2`：
 
@@ -1191,6 +1222,8 @@ interface ActiveAbilityResult {
 `ABILITY-002` 保持 setup schema 和 `stage-4.2` 规则不变，把默认内容升级到 `content-8`：能力模板增加持续光环分支，运行时保存按稳定 ID 排序的活动应用，并在移动后、武器结算前刷新。`content-7` 快照保留原被动模板与成员引用，不注入默认光环；未引用光环的旧场景仍只因规范内容哈希升级而改变黄金哈希。临时光环不增加 `BattleResult` 字段。
 
 `ABILITY-003` 继续保持 setup schema 和 `stage-4.2` 规则不变，把默认内容升级到 `content-9`：能力模板增加 `active`、目标压制触发条件、整数冷却/次数和注册式 `suppression-recovery` 效果；运行时保存每个来源能力的稳定状态与最近评估，成功使用产生 `ability-used`，并把使用摘要写入 `BattleResult.groups[].activeAbilities`。`content-8` 快照保留原被动/光环模板和成员引用，不注入默认主动能力；没有主动能力引用的旧场景只因规范内容哈希升级而改变黄金哈希。
+
+`HERO-001` 把 setup schema 升到 `stage-4.1`、默认内容升到 `content-10`，规则继续保持 `stage-4.2`：成员 spawn 增加可选持久化 ID 与英雄档案，成员槽位增加英雄约束，inspection/render/result 投影对应身份。英雄实例能力与成员模板能力复用同一处理器；持久化 ID、档案和规范能力引用进入 setup/state 哈希。`stage-4/content-9` 快照只升级版本并深拷贝既有内容与 spawn，不静默注入英雄模板或身份；新的默认 `content-10` 才提供独立与混编英雄内容。
 
 迁移按 `stage-3/content-2 -> stage-3.1/content-3` 一次完成，不允许核心长期同时读取旧顶层射程字段和 `fireModes`。旧 rules 输入先运行既有迁移链到 `stage-3.5`，再进入炮兵迁移；未知的中间版本必须明确拒绝。
 

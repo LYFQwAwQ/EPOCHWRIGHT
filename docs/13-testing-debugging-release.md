@@ -131,6 +131,8 @@ window.__battleTest?.step(200);
 
 `ABILITY-001/002/003` 在 `src/sim/ability.test.ts`、`src/sim/active-ability.test.ts`、`src/sim/content.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `content-6 -> content-7 -> content-8 -> content-9` 迁移、成员能力引用、条件/触发/目标/效果/范围/叠加/冷却/次数负例、显示名不进哈希、效果值进入哈希、被动派生值、光环半径边界、`stack|strongest`、主动友军效用、稳定事件顺序、隐藏敌情成对负例、终止冻结、结果摘要和逐 tick 双实例复演。`passive-ability`、`aura-ability` 与 `active-ability` 的真实 Worker E2E 检查全知/本方中文解释、主动使用事件、冷却/次数、敌方 inspection 裁剪、观察切换哈希不变，以及桌面和 `390 x 844` 无溢出。
 
+`HERO-001` 的 `src/sim/hero.test.ts`、`src/sim/content.test.ts`、`src/demo/setup.test.ts` 与 `src/demo/scenarios.test.ts` 覆盖 `stage-4/content-9 -> stage-4.1/content-10` 迁移不注入、独立/混编槽位、持久化 ID 与档案负例、规范哈希/深拷贝、实例能力处理器复用、敌方观察裁剪、伤亡/撤离/未部署结果、终止冻结和逐 tick 双实例复演。`hero-showcase` 的真实 Worker/WebGL E2E 检查英雄独立形状像素、持久化 ID/重要度/实例能力、被动/光环/主动解释、敌方档案隐藏、观察切换哈希不变，以及桌面和 `390 x 844` 无溢出。
+
 ### 批量 seed 重放
 
 `src/sim/generated-invariants.test.ts` 默认运行 12 个稳定 seed，每个 seed 分别验证生成地图的边界/路线/哈希，以及三方交火的逐 tick 哈希、非敌对安全和结果人数守恒。测试名直接包含 seed；失败后可只重放该输入：
