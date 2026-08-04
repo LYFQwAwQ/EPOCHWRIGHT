@@ -119,7 +119,9 @@ export function useBattleWorker(): BattleWorkerController {
       }
       if (collectPerformanceRef.current) {
         const messageBytes = estimateMessageBytes(message);
-        recordMetric(workerMessageBytesRef.current, messageBytes);
+        if (message.type === "frame" || message.type === "finished") {
+          recordMetric(workerMessageBytesRef.current, messageBytes);
+        }
         totalWorkerMessageBytesRef.current += messageBytes;
         if ("performance" in message && message.performance) {
           workerPerformanceRef.current = message.performance;

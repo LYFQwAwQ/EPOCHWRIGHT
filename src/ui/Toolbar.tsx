@@ -3,6 +3,7 @@ import {
   Crosshair,
   Eye,
   EyeOff,
+  Gauge,
   LocateFixed,
   Pause,
   Play,
@@ -25,6 +26,8 @@ interface ToolbarProps {
   readonly statusLabel: string;
   readonly seed: string;
   readonly quality: RenderQuality;
+  readonly performanceToolsAvailable: boolean;
+  readonly performancePanelOpen: boolean;
   readonly onTogglePause: () => void;
   readonly onBattleModeChange: (mode: "conflict" | "defense") => void;
   readonly onRestart: () => void;
@@ -32,6 +35,7 @@ interface ToolbarProps {
   readonly onToggleCleanView: () => void;
   readonly onCameraModeChange: (mode: CameraMode) => void;
   readonly onQualityChange: (quality: RenderQuality) => void;
+  readonly onTogglePerformancePanel: () => void;
 }
 
 function formatBattleTime(tick: number): string {
@@ -52,6 +56,8 @@ export function Toolbar({
   statusLabel,
   seed,
   quality,
+  performanceToolsAvailable,
+  performancePanelOpen,
   onTogglePause,
   onBattleModeChange,
   onRestart,
@@ -59,6 +65,7 @@ export function Toolbar({
   onToggleCleanView,
   onCameraModeChange,
   onQualityChange,
+  onTogglePerformancePanel,
 }: ToolbarProps) {
   return (
     <header className={`toolbar ${cleanView ? "toolbar--clean" : ""}`}>
@@ -177,6 +184,18 @@ export function Toolbar({
                 <option value="high">高</option>
               </select>
             </label>
+            {performanceToolsAvailable && (
+              <button
+                className={`icon-button ${performancePanelOpen ? "is-active" : ""}`}
+                type="button"
+                title={performancePanelOpen ? "隐藏性能诊断" : "显示性能诊断"}
+                aria-label={performancePanelOpen ? "隐藏性能诊断" : "显示性能诊断"}
+                aria-pressed={performancePanelOpen}
+                onClick={onTogglePerformancePanel}
+              >
+                <Gauge size={17} />
+              </button>
+            )}
           </>
         )}
 

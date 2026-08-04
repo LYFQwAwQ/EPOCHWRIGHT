@@ -447,6 +447,50 @@ test("automatic director follows legal hotspots and yields to manual camera cont
   expect(errors).toEqual([]);
 });
 
+test("performance diagnostics reports budgets and resets without changing the battle", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(
+    "/?e2e=1&devtools=1&profile=medium&autostart=0&seed=e2e-performance-panel",
+  );
+  await page.waitForFunction(
+    () => window.__battleTest?.getStatus() === "paused" && Boolean(document.querySelector("canvas")),
+  );
+
+  const panel = page.locator(".performance-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("采样中");
+
+  const initialHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  const initialTick = await page.evaluate(() => window.__battleTest?.getTick() ?? -1);
+  await stepPausedBattle(page, 4);
+  await expect.poll(() => page.evaluate(() => window.__battleTest?.getPerformanceMetrics().worker?.tickDurationMs.samples ?? 0)).toBeGreaterThan(0);
+  await expect(panel).toHaveClass(/performance-panel--(within-budget|over-budget)/);
+  await expect(panel).toContainText("P99");
+  expect(await page.evaluate(() => window.__battleTest?.getTick() ?? -1)).toBe(initialTick + 4);
+  const sampledHash = await page.evaluate(() => window.__battleTest?.getStateHash() ?? "");
+  expect(sampledHash).not.toBe(initialHash);
+
+  await page.getByLabel("隐藏性能诊断").click();
+  await expect(panel).toBeHidden();
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(sampledHash);
+  await page.getByLabel("显示性能诊断").click();
+  await expect(panel).toBeVisible();
+
+  await panel.getByLabel("重置性能采样").click();
+  await expect(panel).toContainText("无样本");
+  expect(await page.evaluate(() => window.__battleTest?.getTick() ?? -1)).toBe(initialTick + 4);
+  expect(await page.evaluate(() => window.__battleTest?.getStateHash() ?? "")).toBe(sampledHash);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const panelBox = await panel.boundingBox();
+  expect(panelBox?.width ?? 0).toBeLessThanOrEqual(374);
+  expect(errors).toEqual([]);
+});
+
 test("vehicle scenario renders platforms and exposes crewed platform inspection", async ({
   page,
 }, testInfo) => {

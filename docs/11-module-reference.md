@@ -210,7 +210,7 @@ future game systems -> complete BattleSetup --+
 | Worker -> 主线程 | `finished` | 返回最终帧、事件和结果 |
 | Worker -> 主线程 | `error` | 返回边界内错误信息 |
 
-所有消息携带 `sessionId`，用于隔离模式切换和重开战斗后的迟到消息。显式性能模式下，`ready/frame/finished` 可附带初始化、tick 和渲染投影耗时摘要；普通战斗不采样。
+所有消息携带 `sessionId`，用于隔离模式切换和重开战斗后的迟到消息。显式性能模式（`profile=medium|large` 或 `performance=1`）下，`ready/frame/finished` 可附带初始化、tick 和渲染投影耗时摘要；普通战斗不采样。
 
 ### `src/worker/battle.worker.ts`
 
@@ -236,6 +236,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - 启动、重开和切换模式/开发场景；
 - 暂停、选择、镜头和纯净界面状态；
 - 自动导演观察上下文、热点状态与手动接管；
+- 开发性能诊断开关、预算状态和非权威采样重置；
 - 将公开数据分发给 3D 场景和 UI；
 - 仅在开发服务或显式 `devtools=1` 时显示场景实验台；
 - 仅在 `e2e=1` 时安装测试 API。
@@ -266,6 +267,7 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 | `ui/ObjectiveSummary.tsx` | 目标状态、语义化进度条和占领力 |
 | `ui/Inspector.tsx` | 选中编组的行动原因、英雄持久化摘要、被动/持续光环、主动能力次数/冷却/候选原因、士气、压制、伤情、平台/运输摘要、接触、掩体评估和路线；选中平台的飞行高度/动作/原因、部件、展开与炮兵任务检查 |
 | `ui/EventFeed.tsx` | 将重要领域事件（含主动能力使用、炮兵任务、弹着和上下车事实）转换为有限的观察提示 |
+| `ui/PerformancePanel.tsx` | 显示 Worker/消息/RAF 指标、预算状态、超限指标和客户端采样重置；不修改战斗状态 |
 | `styles.css` | 全局工作台布局和桌面/窄屏响应式规则 |
 
 行动原因码由模拟产生，UI 负责本地化。新增原因码时必须提供可理解标签，但不得在 UI 中重新推导原因。
@@ -285,7 +287,8 @@ React Hook，负责 Worker 生命周期、会话 ID、客户端状态机和最�
 - `src/sim/vehicle.test.ts`：覆盖旧输入迁移、车辆路线/转向/岗位，以及装甲面、穿透、外露部件、同 tick 双向伤害、部件/乘员结算、固定火力、撤离、弃车、投影/结果和逐 tick 复演。
 - `src/sim/transport.test.ts`：覆盖规则迁移、关系/容量验证、初始搭载、整组下车、取消、损毁伤情、受困恢复、同波次增援、目标占领负例和逐 tick 哈希。
 - `tests/e2e/battle.spec.ts`：真实 Worker、WebGL、自动导演/手动接管、英雄档案/形状标记、车辆/炮兵/悬停空军/被动/持续光环/主动能力、观察权限、控制、模式、特征像素与响应式布局。
-- `src/performance`：固定中型/大型预设、分位数摘要和消息载荷估算，不拥有战斗状态。
+- `src/performance`：固定中型/大型预设、分位数摘要、消息载荷估算和预算判定，不拥有战斗状态。
+- `src/performance/budget.test.ts`：覆盖无样本、采样中、预算内和各预算指标超限判定。
 - `tests/performance/battle.perf.spec.ts`：生产构建上的可选规模基准与固定 tick 哈希重放。
 - `src/test-api.d.ts`：仅声明 E2E 调试桥。
 - `scripts/run-e2e.mjs`：复用或启动 `4173` 端口 Vite，并可靠清理子进程。

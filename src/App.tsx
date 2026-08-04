@@ -37,6 +37,7 @@ import { FactionSummary } from "./ui/FactionSummary";
 import { Inspector } from "./ui/Inspector";
 import { ObjectiveSummary } from "./ui/ObjectiveSummary";
 import { ObservationControls, type ObservationLayers } from "./ui/ObservationControls";
+import { PerformancePanel } from "./ui/PerformancePanel";
 import { ScenarioLab } from "./ui/ScenarioLab";
 import { Toolbar } from "./ui/Toolbar";
 
@@ -193,6 +194,11 @@ export function App() {
   const [directorState, setDirectorState] = useState(createDirectorState);
   const [directorProjectionBlocked, setDirectorProjectionBlocked] = useState(false);
   const [renderQuality, setRenderQuality] = useState<RenderQuality>(initialRenderQuality);
+  const [performancePanelOpen, setPerformancePanelOpen] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("profile") !== null || params.get("performance") === "1";
+  });
+  const [performanceRevision, setPerformanceRevision] = useState(0);
   const [cameraResetSignal, setCameraResetSignal] = useState(0);
   const [observerFactionId, setObserverFactionId] = useState<string>();
   const [observationLayers, setObservationLayers] = useState<ObservationLayers>({
@@ -221,9 +227,15 @@ export function App() {
   const searchParams = new URLSearchParams(window.location.search);
   const e2eMode = searchParams.get("e2e") === "1";
   const autostart = searchParams.get("autostart") !== "0";
+  const performanceCollectionEnabled =
+    performanceProfileRef.current !== undefined || searchParams.get("performance") === "1";
+  const performanceToolsAvailable =
+    import.meta.env.DEV ||
+    searchParams.get("devtools") === "1" ||
+    performanceCollectionEnabled;
   const showScenarioLab =
     (import.meta.env.DEV || searchParams.get("devtools") === "1") &&
-    performanceProfileRef.current === undefined;
+    !performanceCollectionEnabled;
 
   const createScenarioSetup = useCallback((nextScenarioId: DemoScenarioId, nextSeed: string) => {
     const profile =
@@ -239,16 +251,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const performanceProfile = performanceProfileRef.current;
     start(
       createScenarioSetup(initialScenarioRef.current, initialSeedRef.current),
       autostart,
-      performanceProfile !== undefined,
+      performanceCollectionEnabled,
     );
-  }, [autostart, createScenarioSetup, start]);
+  }, [autostart, createScenarioSetup, performanceCollectionEnabled, start]);
 
   useEffect(() => {
-    if (!performanceProfileRef.current) {
+    if (!performanceCollectionEnabled) {
       return;
     }
     let animationFrame = 0;
@@ -262,7 +273,7 @@ export function App() {
     };
     animationFrame = requestAnimationFrame(sample);
     return () => cancelAnimationFrame(animationFrame);
-  }, []);
+  }, [performanceCollectionEnabled]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -338,6 +349,12 @@ export function App() {
     cameraViewRef.current = snapshot;
   }, []);
 
+  const resetPerformanceMetrics = useCallback(() => {
+    animationFrameDurationsRef.current = [];
+    resetPerformance();
+    setPerformanceRevision((value) => value + 1);
+  }, [resetPerformance]);
+
   const launchScenario = useCallback(
     (nextScenarioId: DemoScenarioId, nextSeed: string, shouldRun: boolean) => {
       const nextMode = getDemoScenario(nextScenarioId).mode;
@@ -356,10 +373,10 @@ export function App() {
       start(
         createScenarioSetup(nextScenarioId, nextSeed),
         shouldRun,
-        performanceProfileRef.current !== undefined,
+        performanceCollectionEnabled,
       );
     },
-    [createScenarioSetup, setObservation, start],
+    [createScenarioSetup, performanceCollectionEnabled, setObservation, start],
   );
 
   const restart = useCallback(() => {
@@ -485,6 +502,14 @@ export function App() {
               ? "攻防进行中"
               : "搜索中";
 
+  const performanceSnapshot = useMemo(
+    () => ({
+      ...getPerformanceSnapshot(),
+      animationFrameIntervalMs: summarizeMetrics(animationFrameDurationsRef.current),
+    }),
+    [getPerformanceSnapshot, performanceRevision, state.frame],
+  );
+
   useEffect(() => {
     if (!e2eMode) {
       return;
@@ -600,13 +625,9 @@ export function App() {
       getDirectorHotspot: () => directorState.hotspot,
       getCameraView: () => cameraViewRef.current,
       getPerformanceMetrics: () => ({
-        ...getPerformanceSnapshot(),
-        animationFrameIntervalMs: summarizeMetrics(animationFrameDurationsRef.current),
+        ...performanceSnapshot,
       }),
-      resetPerformanceMetrics: () => {
-        animationFrameDurationsRef.current = [];
-        resetPerformance();
-      },
+      resetPerformanceMetrics,
       setObservation: changeObservation,
       setCameraMode: changeCameraMode,
       selectGroup,
@@ -615,7 +636,7 @@ export function App() {
       run,
       step: stepDebug,
     };
-  }, [battleMode, cameraMode, changeCameraMode, changeObservation, directorState.hotspot, displayFrame, e2eMode, getPerformanceSnapshot, observationLayers, observerFactionId, pause, renderQuality, resetPerformance, run, scenarioId, selectGroup, selectPlatform, state.frame, state.setup, state.stateHash, state.status, stepDebug, visibleEvents]);
+  }, [battleMode, cameraMode, changeCameraMode, changeObservation, directorState.hotspot, displayFrame, e2eMode, observationLayers, observerFactionId, pause, performanceSnapshot, renderQuality, resetPerformanceMetrics, run, scenarioId, selectGroup, selectPlatform, state.frame, state.setup, state.stateHash, state.status, stepDebug, visibleEvents]);
 
   if (!state.setup || !state.frame) {
     return (
@@ -681,7 +702,18 @@ export function App() {
           setRenderQuality(quality);
           updateRenderQualityUrl(quality);
         }}
+        performanceToolsAvailable={performanceToolsAvailable}
+        performancePanelOpen={performancePanelOpen}
+        onTogglePerformancePanel={() => setPerformancePanelOpen((value) => !value)}
       />
+
+      {performancePanelOpen && !cleanView && performanceToolsAvailable && (
+        <PerformancePanel
+          profile={performanceProfileRef.current}
+          snapshot={performanceSnapshot}
+          onReset={resetPerformanceMetrics}
+        />
+      )}
 
       {showScenarioLab && !cleanView && (
         <ScenarioLab

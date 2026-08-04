@@ -208,6 +208,8 @@ AI 行为“看起来不聪明”可能是数值问题，也可能是状态机�
 
 `npm run perf` 在 `4174` 端口启动生产预览，依次运行固定的 `medium` 和 `large` 场景。可用 `$env:PERF_PROFILE='medium'` 或 `large` 只运行一个档位。每个场景暂停启动，每 2 tick 推进一次并等待两个 RAF，共采集 120 tick；第二个会话一次性重放相同 tick 数并断言最终哈希一致。输出中的 `PERF_RESULT` 是可机器读取的单行 JSON。
 
+开发服务或带 `devtools=1` 的显式入口提供性能诊断开关；`profile=medium|large` 会自动打开对应预算面板，`performance=1` 只开启采样而不改变演示规模。面板状态依次区分无样本、采样中、预算内和超预算，预算阈值与 `src/performance/budget.ts` 同源；重置只清空客户端和 Worker 的非权威采样，不重开战斗。帧投影 P95/P99 继续显示，但当前设备预算只约束初始化、tick P99、RAF P99 和常规帧消息 P99。
+
 固定场景：
 
 | 档位 | seed | 地图 | 编组 | 成员 |
